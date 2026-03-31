@@ -1,12 +1,24 @@
-format:
-	npm run build
-	npm run format
-	npm run lint --fix
+.PHONY: install build test lint typecheck clean pack
+
+install:
+	pnpm install
+
+build:
+	pnpm build
 
 test:
-	npm run test
-	npx tsc --noEmit
+	pnpm test
 
-alpha:
-	npm version prerelease --preid=alpha
-	npm publish --tag alpha
+lint:
+	pnpm lint
+
+typecheck:
+	pnpm typecheck
+
+clean:
+	pnpm clean
+
+pack:
+	pnpm --filter @traceroot/sdk build
+	cd packages/sdk && npm pack
+	@echo "Tarball ready in packages/sdk/"

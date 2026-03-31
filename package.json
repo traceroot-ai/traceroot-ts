@@ -1,63 +1,24 @@
 {
-  "name": "traceroot-sdk-ts",
-  "version": "0.0.1-alpha.37",
-  "description": "TypeScript SDK for TraceRoot tracing and logging",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/traceroot-ai/traceroot-sdk-ts.git"
-  },
-  "homepage": "https://github.com/traceroot-ai/traceroot-sdk-ts#readme",
-  "bugs": {
-    "url": "https://github.com/traceroot-ai/traceroot-sdk-ts/issues"
-  },
+  "name": "traceroot-ts",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "jest",
-    "format": "prettier --write \"src/**/*.{ts,js}\" \"*.{ts,js}\" \"examples/**/*.{ts,js}\" \"tests/**/*.{ts,js}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,js}\" \"*.{ts,js}\" \"examples/**/*.{ts,js}\" \"tests/**/*.{ts,js}\"",
-    "lint": "eslint \"src/**/*.{ts,js}\" \"examples/**/*.{ts,js}\" \"tests/**/*.{ts,js}\"",
-    "lint:fix": "eslint \"src/**/*.{ts,js}\" \"examples/**/*.{ts,js}\" \"tests/**/*.{ts,js}\" --fix",
-    "prepublishOnly": "npm run build && npm run lint && npm run format:check",
-    "prepack": "npm run build"
+    "build": "pnpm --filter @traceroot/sdk build",
+    "test": "pnpm --filter @traceroot/sdk test",
+    "lint": "pnpm --filter @traceroot/sdk lint",
+    "typecheck": "pnpm --filter @traceroot/sdk typecheck",
+    "clean": "pnpm --filter @traceroot/sdk clean"
   },
-  "keywords": [
-    "tracing",
-    "logging",
-    "opentelemetry",
-    "aws",
-    "cloudwatch"
-  ],
-  "author": "TraceRoot",
-  "license": "Apache-2.0",
   "devDependencies": {
-    "@types/jest": "^29.0.0",
-    "@types/node": "^20.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.38.0",
-    "@typescript-eslint/parser": "^8.38.0",
-    "eslint": "^9.31.0",
-    "jest": "^29.0.0",
-    "prettier": "^3.6.2",
-    "ts-jest": "^29.0.0",
-    "ts-node": "^10.9.0",
-    "typescript": "^5.0.4"
+    "typescript": "^5.5.0"
   },
-  "dependencies": {
-    "@aws-sdk/client-cloudwatch-logs": "^3.855.0",
-    "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/auto-instrumentations-node": "^0.53.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.53.0",
-    "@opentelemetry/resources": "^1.28.0",
-    "@opentelemetry/sdk-node": "^0.53.0",
-    "@opentelemetry/sdk-trace-base": "^1.28.0",
-    "@opentelemetry/sdk-trace-node": "^1.28.0",
-    "@opentelemetry/semantic-conventions": "^1.36.0",
-    "axios": "^1.6.0",
-    "effect": "^3.17.9",
-    "winston": "^3.11.0",
-    "winston-cloudwatch": "^6.3.0",
-    "yaml": "^2.3.4"
+  "pnpm": {
+    "packageExtensions": {
+      "@arizeai/openinference-instrumentation-openai": {
+        "peerDependencies": {
+          "openai": ">=6.0.0"
+        }
+      }
+    }
   }
 }

@@ -1,67 +1,124 @@
 # TraceRoot TypeScript SDK
 
-<div align="center">
-  <a href="https://traceroot.ai/">
-    <img src="https://raw.githubusercontent.com/traceroot-ai/traceroot/main/misc/images/traceroot_logo.png" alt="TraceRoot Logo">
-  </a>
-</div>
-
-<div align="center">
-
-[![Testing Status][testing-image]][testing-url]
-[![Documentation][docs-image]][docs-url]
-[![npm version][npm-image]][npm-url]
-[![TraceRoot.AI Website](https://raw.githubusercontent.com/traceroot-ai/traceroot/refs/heads/main/misc/images/custom-website-badge.svg)][company-website-url]
-
-</div>
-
-Please see [TypeScript SDK Docs](https://docs.traceroot.ai/sdk/typescript) for details
+TypeScript SDK for [TraceRoot](https://traceroot.ai) — AI observability for LLM applications.
 
 ## Installation
 
 ```bash
-npm install traceroot-sdk-ts@latest
+npm install @traceroot/sdk
 ```
 
-## Examples
+## Quickstart
 
 ```typescript
-import * as traceroot from 'traceroot-sdk-ts';
+import OpenAI from 'openai';
+import { TraceRoot, observe } from '@traceroot/sdk';
 
-const logger = traceroot.get_logger();
+TraceRoot.initialize({
+  apiKey: process.env.TRACEROOT_API_KEY,
+  instrumentModules: { openAI: OpenAI },
+});
+
+const openai = new OpenAI();
 
 async function main() {
-  const greet = traceroot.traceFunction(
-    async function greet(name: string): Promise<string> {
-      logger.info(`Greeting inside traced function: ${name}`);
-      // Simulate some async work
-      await new Promise(resolve => setTimeout(resolve, 100));
-      return `Hello, ${name}!`;
-    },
-    { spanName: 'greet' }
-  );
-
-  const result = await greet('world');
-  logger.info(`Greeting result: ${result}`);
+  try {
+    await observe({ name: 'my_session' }, async () => {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'Hello!' }],
+      });
+      console.log(response.choices[0].message.content);
+    });
+  } finally {
+    await TraceRoot.shutdown();
+  }
 }
 
-main().then(async () => {
-  await traceroot.forceFlushTracer();
-  await traceroot.shutdownTracing();
-  await traceroot.forceFlushLogger();
-  await traceroot.shutdownLogger();
-  process.exit(0);
+main();
+```
+
+## API
+
+### `TraceRoot.initialize(options?)`
+
+Call once at startup before making any LLM calls.
+
+| Option | Type | Description |
+|---|---|---|
+| `apiKey` | `string` | TraceRoot API key. Defaults to `TRACEROOT_API_KEY` env var. |
+| `baseUrl` | `string` | Override API endpoint. Defaults to `TRACEROOT_HOST_URL` env var or `https://app.traceroot.ai`. |
+| `instrumentModules` | `object` | Libraries to auto-instrument (see below). |
+| `disableBatch` | `boolean` | Use `SimpleSpanProcessor` instead of batched. Useful for short-lived scripts. |
+| `logLevel` | `'debug' \| 'info' \| 'warn' \| 'error'` | OTel diagnostic log level. Default: `'error'`. |
+
+### `instrumentModules`
+
+Pass the imported module object to enable auto-instrumentation:
+
+```typescript
+import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
+import * as lcCallbackManager from '@langchain/core/callbacks/manager';
+
+TraceRoot.initialize({
+  instrumentModules: {
+    openAI: OpenAI,            // OpenAI SDK
+    anthropic: Anthropic,      // Anthropic SDK
+    langchain: lcCallbackManager, // LangChain / LangGraph (do NOT also pass openAI)
+  },
 });
 ```
 
-## Contact Us
+> **Note:** When using LangChain/LangGraph, do not also pass `openAI` — LangChain already captures LLM spans. Passing both creates duplicate spans.
 
-Please reach out to founders@traceroot.ai if you have any questions.
+### `observe(options, fn)`
 
-[company-website-url]: https://traceroot.ai
-[docs-image]: https://img.shields.io/badge/docs-traceroot.ai-0dbf43
-[docs-url]: https://docs.traceroot.ai
-[npm-image]: https://img.shields.io/npm/v/traceroot-sdk-ts?style=flat-square&logo=npm&logoColor=fff
-[npm-url]: https://www.npmjs.com/package/traceroot-sdk-ts
-[testing-image]: https://github.com/traceroot-ai/traceroot-sdk-ts/actions/workflows/test.yml/badge.svg
-[testing-url]: https://github.com/traceroot-ai/traceroot-sdk-ts/actions/workflows/test.yml
+Wraps an async function in a named span. Nested calls automatically become child spans.
+
+```typescript
+const result = await observe({ name: 'agent_turn', type: 'agent' }, async () => {
+  // everything inside is traced as children
+  return await myAgent.run(input);
+});
+```
+
+| Option | Type | Description |
+|---|---|---|
+| `name` | `string` | Span name. Defaults to function name. |
+| `type` | `'span' \| 'agent' \| 'tool' \| 'llm'` | OpenInference span kind. Default: `'span'`. |
+| `input` | `unknown` | Input value to record on the span. |
+
+### `TraceRoot.shutdown()`
+
+Flushes all pending spans and closes the exporter. Call in a `finally` block for scripts.
+
+```typescript
+try {
+  await observe({ name: 'session' }, async () => { /* ... */ });
+} finally {
+  await TraceRoot.shutdown();
+}
+```
+
+### `updateCurrentSpan(attrs)` / `updateCurrentTrace(attrs)`
+
+Set custom attributes on the active span or trace from anywhere in the call stack.
+
+```typescript
+import { updateCurrentSpan } from '@traceroot/sdk';
+
+updateCurrentSpan({ userId: 'u_123', environment: 'production' });
+```
+
+## Development
+
+```bash
+pnpm install
+make build
+make test
+```
+
+## License
+
+Apache-2.0
