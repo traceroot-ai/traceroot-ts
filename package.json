@@ -3,11 +3,11 @@
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "pnpm --filter @traceroot/sdk build",
-    "test": "pnpm --filter @traceroot/sdk test",
-    "lint": "pnpm --filter @traceroot/sdk lint",
-    "typecheck": "pnpm --filter @traceroot/sdk typecheck",
-    "clean": "pnpm --filter @traceroot/sdk clean"
+    "build": "pnpm --filter @traceroot-ai/traceroot build",
+    "test": "pnpm --filter @traceroot-ai/traceroot test",
+    "lint": "pnpm --filter @traceroot-ai/traceroot lint",
+    "typecheck": "pnpm --filter @traceroot-ai/traceroot typecheck",
+    "clean": "pnpm --filter @traceroot-ai/traceroot clean"
   },
   "devDependencies": {
     "typescript": "^5.5.0"

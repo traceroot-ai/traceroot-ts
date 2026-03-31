@@ -1,6 +1,6 @@
 {
-  "name": "@traceroot/sdk",
-  "version": "0.1.0",
+  "name": "@traceroot-ai/traceroot",
+  "version": "0.1.0-alpha.1",
   "description": "TraceRoot TypeScript SDK for AI observability",
   "license": "Apache-2.0",
   "engines": { "node": ">=20" },
