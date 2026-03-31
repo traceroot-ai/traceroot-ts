@@ -7,7 +7,6 @@ import { LangChainInstrumentation } from '@arizeai/openinference-instrumentation
 import { OpenAIInstrumentation } from '@arizeai/openinference-instrumentation-openai';
 import { InitializeOptions } from './types';
 
-type InstrumentModules = NonNullable<InitializeOptions['instrumentModules']>;
 
 /**
  * Wires OpenInference instrumentations based on the instrumentModules option:
