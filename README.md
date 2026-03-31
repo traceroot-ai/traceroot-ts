@@ -19,8 +19,8 @@ Please see the [TypeScript SDK Docs](https://traceroot.ai/docs/tracing/get-start
 [docs-url]: https://traceroot.ai/docs/tracing/get-started
 [license-image]: https://img.shields.io/badge/License-Apache%202.0-blue.svg
 [license-url]: https://opensource.org/licenses/Apache-2.0
-[npm-sdk-downloads-image]: https://img.shields.io/npm/dm/%40traceroot%2Fsdk
-[npm-sdk-downloads-url]: https://www.npmjs.com/package/@traceroot/sdk
+[npm-sdk-downloads-image]: https://img.shields.io/npm/dm/%40traceroot-ai%2Ftraceroot
+[npm-sdk-downloads-url]: https://www.npmjs.com/package/@traceroot-ai/traceroot
 [twitter-image]: https://img.shields.io/twitter/follow/TracerootAI
 [twitter-url]: https://x.com/TracerootAI
 [y-combinator-image]: https://img.shields.io/badge/Combinator-S25-orange?logo=ycombinator&labelColor=white
