@@ -6,9 +6,11 @@ import {
   OUTPUT_VALUE,
   SemanticConventions,
 } from '@arizeai/openinference-semantic-conventions';
+import { SPAN_METADATA, SPAN_TAGS } from './constants';
+import { ObserveOptions, SpanType } from './types';
+import { captureSourceLocation } from './git_context';
 
 const OPENINFERENCE_SPAN_KIND = SemanticConventions.OPENINFERENCE_SPAN_KIND;
-import { ObserveOptions, SpanType } from './types';
 
 const SPAN_KIND_MAP: Record<SpanType, string> = {
   agent: 'AGENT',
@@ -68,6 +70,26 @@ export async function observe<T>(
           // Non-serializable input — skip attribute
         }
       }
+
+      if (options.metadata !== undefined) {
+        try {
+          span.setAttribute(SPAN_METADATA, JSON.stringify(options.metadata));
+        } catch {
+          // Non-serializable metadata — skip
+        }
+      }
+      if (options.tags !== undefined) {
+        try {
+          span.setAttribute(SPAN_TAGS, JSON.stringify(options.tags));
+        } catch {
+          // Non-serializable tags — skip
+        }
+      }
+
+      const loc = captureSourceLocation();
+      if (loc.file !== undefined) span.setAttribute('traceroot.git.source_file', loc.file);
+      if (loc.line !== undefined) span.setAttribute('traceroot.git.source_line', loc.line);
+      if (loc.functionName !== undefined) span.setAttribute('traceroot.git.source_function', loc.functionName);
 
       const result = await fn();
 

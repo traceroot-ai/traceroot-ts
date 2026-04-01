@@ -9,6 +9,10 @@ export interface ObserveOptions {
   type?: SpanType;
   /** Input to record on the span. Explicitly passed — no auto-inference. */
   input?: unknown;
+  /** Arbitrary metadata to attach to this span. */
+  metadata?: Record<string, unknown>;
+  /** Tags to attach to this span. */
+  tags?: string[];
 }
 
 export interface InitializeOptions {
@@ -36,4 +40,25 @@ export interface InitializeOptions {
   disableBatch?: boolean;
   /** OTel diagnostic log level. Defaults to 'error'. */
   logLevel?: 'debug' | 'info' | 'warn' | 'error';
+  /**
+   * Disable all tracing. Falls back to TRACEROOT_ENABLED env var ('false' disables).
+   * When false, initialize() is a no-op and no spans are recorded.
+   */
+  enabled?: boolean;
+  /**
+   * Deployment environment tag (e.g. 'production', 'staging').
+   * Falls back to TRACEROOT_ENVIRONMENT env var.
+   * Stamped on every span as 'deployment.environment'.
+   */
+  environment?: string;
+  /**
+   * Git repository in normalized 'owner/repo' form (e.g. 'acme/my-service').
+   * Falls back to TRACEROOT_GIT_REPO env var, then auto-detected via `git remote get-url origin`.
+   */
+  gitRepo?: string;
+  /**
+   * Git commit SHA (typically a 40-character hash). Falls back to TRACEROOT_GIT_REF env var,
+   * then auto-detected via `git rev-parse HEAD`.
+   */
+  gitRef?: string;
 }

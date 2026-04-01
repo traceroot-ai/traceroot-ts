@@ -6,10 +6,14 @@ import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { observe } from '../src/observe';
 import { _resetForTesting } from '../src/traceroot';
 
-// OpenInference attribute keys
+// Attribute keys
 const SPAN_KIND_ATTR = 'openinference.span.kind';
 const INPUT_VALUE_ATTR = 'input.value';
 const OUTPUT_VALUE_ATTR = 'output.value';
+const METADATA_ATTR = 'traceroot.span.metadata';
+const TAG_TAGS_ATTR = 'traceroot.span.tags';
+const GIT_SOURCE_FILE_ATTR = 'traceroot.git.source_file';
+const GIT_SOURCE_LINE_ATTR = 'traceroot.git.source_line';
 
 describe('observe()', () => {
   let exporter: InMemorySpanExporter;
@@ -121,6 +125,42 @@ describe('observe()', () => {
     const parent = spans.find((s) => s.name === 'parent')!;
     const child = spans.find((s) => s.name === 'child')!;
     assert.equal(child.parentSpanId, parent.spanContext().spanId);
+  });
+
+  it('records metadata attribute when metadata is provided', async () => {
+    await observe({ name: 'x', metadata: { key: 'val' } }, async () => null);
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes[METADATA_ATTR], JSON.stringify({ key: 'val' }));
+  });
+
+  it('does not set metadata attribute when metadata is not provided', async () => {
+    await observe({ name: 'x' }, async () => null);
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes[METADATA_ATTR], undefined);
+  });
+
+  it('records tag.tags attribute when tags are provided', async () => {
+    await observe({ name: 'x', tags: ['a', 'b'] }, async () => null);
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes[TAG_TAGS_ATTR], JSON.stringify(['a', 'b']));
+  });
+
+  it('does not set tag.tags when tags not provided', async () => {
+    await observe({ name: 'x' }, async () => null);
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes[TAG_TAGS_ATTR], undefined);
+  });
+
+  it('stamps traceroot.git.source_file on the span', async () => {
+    await observe({ name: 'x' }, async () => null);
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(typeof span.attributes[GIT_SOURCE_FILE_ATTR], 'string');
+  });
+
+  it('stamps traceroot.git.source_line as a number on the span', async () => {
+    await observe({ name: 'x' }, async () => null);
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(typeof span.attributes[GIT_SOURCE_LINE_ATTR], 'number');
   });
 
   it('runs fn() as a no-op and returns result when not initialized', async () => {
