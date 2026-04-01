@@ -20,5 +20,5 @@ clean:
 
 pack:
 	pnpm --filter @traceroot-ai/traceroot build
-	cd packages/sdk && npm pack
+	cd packages/traceroot && npm pack
 	@echo "Tarball ready in packages/sdk/"
