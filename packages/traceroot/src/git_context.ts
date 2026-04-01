@@ -78,6 +78,7 @@ export function captureSourceLocation(): { file?: string; line?: number; functio
   for (const line of lines) {
     if (line.includes('/packages/traceroot/src/')) continue;
     if (line.includes('/node_modules/')) continue;
+    if (line.includes('(node:')) continue; // skip Node.js built-in frames (e.g. node:internal/async_local_storage)
 
     // Parse "    at functionName (file:line:col)" or "    at file:line:col"
     const match = line.match(/^\s+at (?:(.+?) \()?(.+?):(\d+):\d+\)?$/);

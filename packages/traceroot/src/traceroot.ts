@@ -13,6 +13,7 @@ const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
 let _isInitialized = false;
 let _provider: NodeTracerProvider | undefined;
+let _keepAlive: ReturnType<typeof setInterval> | undefined;
 
 export class TraceRoot {
   private constructor() {}
@@ -94,9 +95,9 @@ export class TraceRoot {
     // Keep the event loop alive long enough for the BatchSpanProcessor to flush on process exit.
     // `beforeExit` fires only when the event loop drains; a keepAlive timer ensures pending spans
     // aren't dropped before they can be exported.
-    const keepAlive = setInterval(() => {}, 1000);
+    _keepAlive = setInterval(() => {}, 1000);
     process.once('beforeExit', () => {
-      void _provider?.forceFlush().finally(() => clearInterval(keepAlive));
+      void _provider?.forceFlush().finally(() => { clearInterval(_keepAlive); _keepAlive = undefined; });
     });
   }
 
@@ -105,6 +106,8 @@ export class TraceRoot {
   }
 
   static async shutdown(): Promise<void> {
+    clearInterval(_keepAlive);
+    _keepAlive = undefined;
     await _provider?.shutdown();
     _isInitialized = false;
     _provider = undefined;
@@ -114,6 +117,8 @@ export class TraceRoot {
 
 /** @internal */
 export function _resetForTesting(): void {
+  clearInterval(_keepAlive);
+  _keepAlive = undefined;
   _isInitialized = false;
   _provider = undefined;
   _resetObserveState();
