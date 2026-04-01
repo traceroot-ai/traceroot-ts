@@ -7,8 +7,11 @@ import {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { version } = require('../package.json') as { version: string };
+
 export const SDK_NAME = 'traceroot-ts';
-export const SDK_VERSION = '0.1.0';
+export const SDK_VERSION = version;
 
 /**
  * Wraps an inner SpanProcessor (Batch or Simple) and injects TraceRoot SDK
