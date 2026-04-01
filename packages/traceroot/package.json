@@ -1,13 +1,21 @@
 {
   "name": "@traceroot-ai/traceroot",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0",
   "description": "TraceRoot TypeScript SDK for AI observability",
-  "keywords": ["traceroot", "sdk"],
+  "keywords": [
+    "traceroot",
+    "sdk"
+  ],
   "license": "Apache-2.0",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "exports": {
     ".": {
       "require": "./dist/index.js",
@@ -62,7 +70,11 @@
     "openai": ">=6.0.0"
   },
   "peerDependenciesMeta": {
-    "openai": { "optional": true },
-    "@anthropic-ai/sdk": { "optional": true }
+    "openai": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
+      "optional": true
+    }
   }
 }
