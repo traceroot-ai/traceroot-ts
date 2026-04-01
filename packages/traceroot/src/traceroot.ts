@@ -7,7 +7,7 @@ import { InitializeOptions } from './types';
 import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { _resetObserveState } from './observe';
-import { autoDetectGitContext, _resetGitContextCache } from './git_context';
+import { autoDetectGitContext, getGitRoot, _resetGitContextCache } from './git_context';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
@@ -68,9 +68,17 @@ export class TraceRoot {
 
     const environment = options.environment ?? process.env['TRACEROOT_ENVIRONMENT'];
 
-    const autoGit = autoDetectGitContext();
-    const gitRepo = options.gitRepo ?? process.env['TRACEROOT_GIT_REPO'] ?? autoGit.gitRepo;
-    const gitRef = options.gitRef ?? process.env['TRACEROOT_GIT_REF'] ?? autoGit.gitRef;
+    const gitRepoOverride = options.gitRepo ?? process.env['TRACEROOT_GIT_REPO'];
+    const gitRefOverride = options.gitRef ?? process.env['TRACEROOT_GIT_REF'];
+    let gitRepo = gitRepoOverride;
+    let gitRef = gitRefOverride;
+    if (gitRepo === undefined || gitRef === undefined) {
+      const autoGit = autoDetectGitContext(); // also warms the git root cache
+      gitRepo ??= autoGit.gitRepo;
+      gitRef ??= autoGit.gitRef;
+    } else {
+      getGitRoot(); // warm git root cache for captureSourceLocation without shelling out for repo/ref
+    }
 
     const innerProcessor = options.disableBatch
       ? new SimpleSpanProcessor(exporter)
@@ -83,7 +91,13 @@ export class TraceRoot {
     wireInstrumentations(options.instrumentModules);
 
     _isInitialized = true;
-    process.once('beforeExit', () => { void _provider?.forceFlush(); });
+    // Keep the event loop alive long enough for the BatchSpanProcessor to flush on process exit.
+    // `beforeExit` fires only when the event loop drains; a keepAlive timer ensures pending spans
+    // aren't dropped before they can be exported.
+    const keepAlive = setInterval(() => {}, 1000);
+    process.once('beforeExit', () => {
+      void _provider?.forceFlush().finally(() => clearInterval(keepAlive));
+    });
   }
 
   static async flush(): Promise<void> {

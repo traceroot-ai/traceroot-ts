@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { autoDetectGitContext, captureSourceLocation } from '../src/git_context';
 
 describe('autoDetectGitContext()', () => {
@@ -61,11 +62,11 @@ describe('captureSourceLocation()', () => {
     }
   });
 
-  it('file path does not contain a home directory or absolute path prefix', () => {
+  it('file path is not absolute', () => {
     const result = captureSourceLocation();
     if (result.file !== undefined) {
       assert.ok(
-        !result.file.startsWith('/Users/') && !result.file.startsWith('/home/'),
+        !path.isAbsolute(result.file),
         `file path must not be absolute, got: ${result.file}`,
       );
     }

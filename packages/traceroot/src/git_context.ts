@@ -3,7 +3,7 @@ import { execSync } from 'node:child_process';
 
 let _gitRootCache: string | null = null; // null = not yet detected, '' = failed
 
-function getGitRoot(): string | undefined {
+export function getGitRoot(): string | undefined {
   if (_gitRootCache !== null) return _gitRootCache || undefined;
   try {
     _gitRootCache = execSync('git rev-parse --show-toplevel', {
@@ -16,12 +16,13 @@ function getGitRoot(): string | undefined {
   return _gitRootCache || undefined;
 }
 
-function relativePath(filepath: string): string {
+function relativePath(filepath: string): string | undefined {
   const gitRoot = getGitRoot();
   if (gitRoot && filepath.startsWith(gitRoot)) {
     return filepath.slice(gitRoot.length).replace(/^[/\\]/, '');
   }
-  return filepath;
+  // If we can't make the path relative, don't stamp it — avoid leaking absolute paths.
+  return undefined;
 }
 
 /**
