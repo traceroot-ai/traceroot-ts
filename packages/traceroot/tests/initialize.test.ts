@@ -1,6 +1,7 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
+import { TraceRootSpanProcessor } from '../src/processor';
 
 describe('TraceRoot.initialize()', () => {
   afterEach(() => {
@@ -58,5 +59,75 @@ describe('TraceRoot.initialize()', () => {
     TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
     await TraceRoot.shutdown();
     assert.equal(TraceRoot.isInitialized(), false);
+  });
+
+  it('skips initialization when enabled: false is passed', () => {
+    TraceRoot.initialize({ enabled: false });
+    assert.equal(TraceRoot.isInitialized(), false);
+  });
+
+  it('skips initialization when TRACEROOT_ENABLED=false env var is set', () => {
+    const prev = process.env['TRACEROOT_ENABLED'];
+    process.env['TRACEROOT_ENABLED'] = 'false';
+    try {
+      TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+      assert.equal(TraceRoot.isInitialized(), false);
+    } finally {
+      if (prev === undefined) {
+        delete process.env['TRACEROOT_ENABLED'];
+      } else {
+        process.env['TRACEROOT_ENABLED'] = prev;
+      }
+    }
+  });
+
+  it('completes initialization without error when environment is provided', () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true, environment: 'prod' });
+    assert.equal(TraceRoot.isInitialized(), true);
+  });
+});
+
+// Shared fixture for TraceRootSpanProcessor unit tests
+function makeProcessorFixture() {
+  const attributes: Record<string, unknown> = {};
+  const span = {
+    setAttribute: (k: string, v: unknown) => { attributes[k] = v; },
+    setAttributes: (a: Record<string, unknown>) => { Object.assign(attributes, a); },
+  } as unknown as import('@opentelemetry/api').Span;
+  const inner = {
+    onStart: () => {},
+    onEnd: () => {},
+    forceFlush: () => Promise.resolve(),
+    shutdown: () => Promise.resolve(),
+  } as unknown as import('@opentelemetry/sdk-trace-base').SimpleSpanProcessor;
+  const ctx = {} as import('@opentelemetry/api').Context;
+  return { span, inner, attributes, ctx };
+}
+
+describe('TraceRootSpanProcessor', () => {
+  it('stamps deployment.environment on spans when environment is set', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner, { environment: 'prod' });
+    processor.onStart(span, ctx);
+    assert.equal(attributes['deployment.environment'], 'prod');
+    assert.equal(attributes['traceroot.sdk.name'], 'traceroot-ts');
+  });
+
+  it('stamps traceroot.git.repo and traceroot.git.ref with exact key names', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner, {
+      gitRepo: 'org/repo',
+      gitRef: 'abc1234abc1234abc1234abc1234abc1234abc123',
+    });
+    processor.onStart(span, ctx);
+    assert.equal(attributes['traceroot.git.repo'], 'org/repo');
+    assert.equal(attributes['traceroot.git.ref'], 'abc1234abc1234abc1234abc1234abc1234abc123');
+  });
+
+  it('does not stamp deployment.environment when environment is not set', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner);
+    processor.onStart(span, ctx);
+    assert.equal(Object.prototype.hasOwnProperty.call(attributes, 'deployment.environment'), false);
   });
 });

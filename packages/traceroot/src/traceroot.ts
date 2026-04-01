@@ -7,6 +7,7 @@ import { InitializeOptions } from './types';
 import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { _resetObserveState } from './observe';
+import { autoDetectGitContext, _resetGitContextCache } from './git_context';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
@@ -21,6 +22,11 @@ export class TraceRoot {
   }
 
   static initialize(options: InitializeOptions = {}): void {
+    const enabled = options.enabled ?? (process.env['TRACEROOT_ENABLED'] !== 'false');
+    if (!enabled) {
+      return;
+    }
+
     if (_isInitialized) {
       console.warn('[TraceRoot] Already initialized. Skipping duplicate initialize() call.');
       return;
@@ -60,17 +66,24 @@ export class TraceRoot {
       compression: 'gzip' as any,
     });
 
+    const environment = options.environment ?? process.env['TRACEROOT_ENVIRONMENT'];
+
+    const autoGit = autoDetectGitContext();
+    const gitRepo = options.gitRepo ?? process.env['TRACEROOT_GIT_REPO'] ?? autoGit.gitRepo;
+    const gitRef = options.gitRef ?? process.env['TRACEROOT_GIT_REF'] ?? autoGit.gitRef;
+
     const innerProcessor = options.disableBatch
       ? new SimpleSpanProcessor(exporter)
       : new BatchSpanProcessor(exporter);
 
     _provider = new NodeTracerProvider();
-    _provider.addSpanProcessor(new TraceRootSpanProcessor(innerProcessor));
+    _provider.addSpanProcessor(new TraceRootSpanProcessor(innerProcessor, { environment, gitRepo, gitRef }));
     _provider.register();
 
     wireInstrumentations(options.instrumentModules);
 
     _isInitialized = true;
+    process.once('beforeExit', () => { void _provider?.forceFlush(); });
   }
 
   static async flush(): Promise<void> {
@@ -90,6 +103,7 @@ export function _resetForTesting(): void {
   _isInitialized = false;
   _provider = undefined;
   _resetObserveState();
+  _resetGitContextCache();
   trace.disable();
   context.disable();
   propagation.disable();

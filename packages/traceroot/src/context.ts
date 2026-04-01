@@ -2,12 +2,11 @@
 import { trace } from '@opentelemetry/api';
 import {
   INPUT_VALUE,
-  METADATA,
   OUTPUT_VALUE,
   SESSION_ID,
-  TAG_TAGS,
   USER_ID,
 } from '@arizeai/openinference-semantic-conventions';
+import { SPAN_METADATA, SPAN_TAGS } from './constants';
 
 /**
  * Sets input, output, or metadata attributes on the currently active span.
@@ -28,7 +27,7 @@ export function updateCurrentSpan(attrs: {
     try { span.setAttribute(OUTPUT_VALUE, JSON.stringify(attrs.output)); } catch { /* non-serializable */ }
   }
   if (attrs.metadata !== undefined) {
-    try { span.setAttribute(METADATA, JSON.stringify(attrs.metadata)); } catch { /* non-serializable */ }
+    try { span.setAttribute(SPAN_METADATA, JSON.stringify(attrs.metadata)); } catch { /* non-serializable */ }
   }
 }
 
@@ -51,6 +50,25 @@ export function updateCurrentTrace(attrs: {
     span.setAttribute(SESSION_ID, attrs.sessionId);
   }
   if (attrs.tags !== undefined) {
-    try { span.setAttribute(TAG_TAGS, JSON.stringify(attrs.tags)); } catch { /* non-serializable */ }
+    try { span.setAttribute(SPAN_TAGS, JSON.stringify(attrs.tags)); } catch { /* non-serializable */ }
   }
+}
+
+function activeSpanContext() {
+  const span = trace.getActiveSpan();
+  return span ? span.spanContext() : undefined;
+}
+
+/**
+ * Returns the trace ID of the currently active span, or undefined if no span is active.
+ */
+export function getCurrentTraceId(): string | undefined {
+  return activeSpanContext()?.traceId;
+}
+
+/**
+ * Returns the span ID of the currently active span, or undefined if no span is active.
+ */
+export function getCurrentSpanId(): string | undefined {
+  return activeSpanContext()?.spanId;
 }
