@@ -19,6 +19,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: '>=0.20.0'
         version: 0.81.0(zod@3.25.76)
+      '@arizeai/openinference-core':
+        specifier: ^2.0.5
+        version: 2.0.5
       '@arizeai/openinference-instrumentation-anthropic':
         specifier: ^0.1.7
         version: 0.1.7

@@ -1,5 +1,6 @@
 // src/observe.ts
-import { SpanStatusCode, trace } from '@opentelemetry/api';
+import { context, SpanStatusCode, trace } from '@opentelemetry/api';
+import { getAttributesFromContext } from '@arizeai/openinference-core';
 import {
   INPUT_VALUE,
   OUTPUT_VALUE,
@@ -53,6 +54,12 @@ export async function observe<T>(
 
     try {
       span.setAttribute(OPENINFERENCE_SPAN_KIND, SPAN_KIND_MAP[options.type ?? 'span']);
+
+      // Propagate any ambient attributes set by usingAttributes() in the call stack.
+      const ctxAttrs = getAttributesFromContext(context.active());
+      if (ctxAttrs && Object.keys(ctxAttrs).length > 0) {
+        span.setAttributes(ctxAttrs);
+      }
 
       if (options.input !== undefined) {
         try {

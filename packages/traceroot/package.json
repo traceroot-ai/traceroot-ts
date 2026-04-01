@@ -1,6 +1,6 @@
 {
   "name": "@traceroot-ai/traceroot",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "TraceRoot TypeScript SDK for AI observability",
   "keywords": ["traceroot", "sdk"],
   "license": "Apache-2.0",
@@ -34,6 +34,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@arizeai/openinference-core": "^2.0.5",
     "@arizeai/openinference-instrumentation-anthropic": "^0.1.7",
     "@arizeai/openinference-instrumentation-bedrock": "^0.4.8",
     "@arizeai/openinference-instrumentation-claude-agent-sdk": "^0.2.0",
