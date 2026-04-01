@@ -22,13 +22,13 @@ export function updateCurrentSpan(attrs: {
   if (!span) return;
 
   if (attrs.input !== undefined) {
-    span.setAttribute(INPUT_VALUE, JSON.stringify(attrs.input));
+    try { span.setAttribute(INPUT_VALUE, JSON.stringify(attrs.input)); } catch { /* non-serializable */ }
   }
   if (attrs.output !== undefined) {
-    span.setAttribute(OUTPUT_VALUE, JSON.stringify(attrs.output));
+    try { span.setAttribute(OUTPUT_VALUE, JSON.stringify(attrs.output)); } catch { /* non-serializable */ }
   }
   if (attrs.metadata !== undefined) {
-    span.setAttribute(METADATA, JSON.stringify(attrs.metadata));
+    try { span.setAttribute(METADATA, JSON.stringify(attrs.metadata)); } catch { /* non-serializable */ }
   }
 }
 
@@ -51,6 +51,6 @@ export function updateCurrentTrace(attrs: {
     span.setAttribute(SESSION_ID, attrs.sessionId);
   }
   if (attrs.tags !== undefined) {
-    span.setAttribute(TAG_TAGS, JSON.stringify(attrs.tags));
+    try { span.setAttribute(TAG_TAGS, JSON.stringify(attrs.tags)); } catch { /* non-serializable */ }
   }
 }
