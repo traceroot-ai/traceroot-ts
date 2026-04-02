@@ -2,8 +2,7 @@
 
 [![Y Combinator][y-combinator-image]][y-combinator-url]
 [![License][license-image]][license-url]
-[![npm version][npm-version-image]][npm-url]
-[![npm SDK Downloads][npm-sdk-downloads-image]][npm-url]
+[![npm][npm-image]][npm-url]
 [![X (Twitter)][twitter-image]][twitter-url]
 [![Discord][discord-image]][discord-url]
 [![Documentation][docs-image]][docs-url]
@@ -20,8 +19,7 @@ Please see the [TypeScript SDK Docs](https://traceroot.ai/docs/tracing/get-start
 [docs-url]: https://traceroot.ai/docs/tracing/get-started
 [license-image]: https://img.shields.io/badge/License-Apache%202.0-blue.svg
 [license-url]: https://opensource.org/licenses/Apache-2.0
-[npm-version-image]: https://img.shields.io/npm/v/%40traceroot-ai%2Ftraceroot?logo=npm&labelColor=%23CC3534&color=%23CC3534&logoColor=white
-[npm-sdk-downloads-image]: https://img.shields.io/npm/dm/%40traceroot-ai%2Ftraceroot
+[npm-image]: https://img.shields.io/npm/v/%40traceroot-ai%2Ftraceroot?label=traceroot&labelColor=0dbf43&color=555555
 [npm-url]: https://www.npmjs.com/package/@traceroot-ai/traceroot
 [twitter-image]: https://img.shields.io/twitter/follow/TracerootAI
 [twitter-url]: https://x.com/TracerootAI
