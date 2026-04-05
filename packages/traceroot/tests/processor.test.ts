@@ -29,7 +29,10 @@ describe('TraceRootSpanProcessor', () => {
   it('injects traceroot.sdk.name on every span', async () => {
     const tracer = trace.getTracer('test');
     await new Promise<void>((resolve) => {
-      tracer.startActiveSpan('test-span', (span) => { span.end(); resolve(); });
+      tracer.startActiveSpan('test-span', (span) => {
+        span.end();
+        resolve();
+      });
     });
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['traceroot.sdk.name'], 'traceroot-ts');
@@ -38,7 +41,10 @@ describe('TraceRootSpanProcessor', () => {
   it('injects traceroot.sdk.version on every span', async () => {
     const tracer = trace.getTracer('test');
     await new Promise<void>((resolve) => {
-      tracer.startActiveSpan('test-span', (span) => { span.end(); resolve(); });
+      tracer.startActiveSpan('test-span', (span) => {
+        span.end();
+        resolve();
+      });
     });
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['traceroot.sdk.version'], SDK_VERSION);
@@ -47,7 +53,10 @@ describe('TraceRootSpanProcessor', () => {
   it('still exports the span through the inner processor', async () => {
     const tracer = trace.getTracer('test');
     await new Promise<void>((resolve) => {
-      tracer.startActiveSpan('test-span', (span) => { span.end(); resolve(); });
+      tracer.startActiveSpan('test-span', (span) => {
+        span.end();
+        resolve();
+      });
     });
     assert.equal(exporter.getFinishedSpans().length, 1);
   });

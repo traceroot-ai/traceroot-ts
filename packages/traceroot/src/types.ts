@@ -7,12 +7,31 @@ export interface ObserveOptions {
   name?: string;
   /** Span kind. Defaults to 'span' → openinference.span.kind = 'CHAIN'. */
   type?: SpanType;
-  /** Input to record on the span. Explicitly passed — no auto-inference. */
-  input?: unknown;
   /** Arbitrary metadata to attach to this span. */
   metadata?: Record<string, unknown>;
   /** Tags to attach to this span. */
   tags?: string[];
+  /**
+   * Whether to auto-capture function arguments as input.value. Defaults to true.
+   * Set to false to suppress input recording (e.g. for PII or non-serializable args).
+   * Only applies when args are passed: observe(opts, fn, arg1, arg2).
+   */
+  captureInput?: boolean;
+  /**
+   * Whether to capture the return value as output.value. Defaults to true.
+   * Set to false to suppress output recording (e.g. for large or sensitive responses).
+   */
+  captureOutput?: boolean;
+  /**
+   * Session / conversation ID to associate with this span.
+   * Equivalent to calling updateCurrentTrace({ sessionId }) inside fn.
+   */
+  sessionId?: string;
+  /**
+   * User ID to associate with this span.
+   * Equivalent to calling updateCurrentTrace({ userId }) inside fn.
+   */
+  userId?: string;
 }
 
 export interface InitializeOptions {

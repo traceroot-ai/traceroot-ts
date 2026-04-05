@@ -13,11 +13,21 @@ describe('autoDetectGitContext()', () => {
     const { gitRepo } = autoDetectGitContext();
     if (gitRepo !== undefined) {
       // Must be "owner/repo", never a full URL with protocol or .git suffix
-      assert.ok(!gitRepo.startsWith('https://'), `gitRepo must not start with https://, got: ${gitRepo}`);
+      assert.ok(
+        !gitRepo.startsWith('https://'),
+        `gitRepo must not start with https://, got: ${gitRepo}`,
+      );
       assert.ok(!gitRepo.startsWith('git@'), `gitRepo must not start with git@, got: ${gitRepo}`);
-      assert.ok(!gitRepo.startsWith('ssh://'), `gitRepo must not start with ssh://, got: ${gitRepo}`);
+      assert.ok(
+        !gitRepo.startsWith('ssh://'),
+        `gitRepo must not start with ssh://, got: ${gitRepo}`,
+      );
       assert.ok(!gitRepo.endsWith('.git'), `gitRepo must not end with .git, got: ${gitRepo}`);
-      assert.match(gitRepo, /^[^/]+\/[^/]+$/, `gitRepo must be "owner/repo" format, got: ${gitRepo}`);
+      assert.match(
+        gitRepo,
+        /^[^/]+\/[^/]+$/,
+        `gitRepo must be "owner/repo" format, got: ${gitRepo}`,
+      );
     }
   });
 
@@ -30,7 +40,9 @@ describe('autoDetectGitContext()', () => {
 
   it('handles missing git gracefully (does not throw)', () => {
     let result: ReturnType<typeof autoDetectGitContext> | undefined;
-    assert.doesNotThrow(() => { result = autoDetectGitContext(); });
+    assert.doesNotThrow(() => {
+      result = autoDetectGitContext();
+    });
     assert.ok(result !== null && typeof result === 'object');
   });
 });
@@ -39,7 +51,10 @@ describe('captureSourceLocation()', () => {
   it('returns an object with file and line when called from user code', () => {
     const result = captureSourceLocation();
     assert.ok(typeof result.file === 'string', 'file should be a string');
-    assert.ok(typeof result.line === 'number' && result.line > 0, 'line should be a positive number');
+    assert.ok(
+      typeof result.line === 'number' && result.line > 0,
+      'line should be a positive number',
+    );
   });
 
   it('file path does not include SDK internals', () => {
@@ -73,7 +88,9 @@ describe('captureSourceLocation()', () => {
   });
 
   it('functionName is defined when called from a named function', () => {
-    function myTestFn() { return captureSourceLocation(); }
+    function myTestFn() {
+      return captureSourceLocation();
+    }
     const result = myTestFn();
     if (result.functionName !== undefined) {
       assert.ok(
