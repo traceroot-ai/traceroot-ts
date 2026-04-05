@@ -129,9 +129,8 @@ export class TraceRootExporter extends BaseExporter {
       return;
     }
 
-    const baseUrl = (
-      config.baseUrl ?? process.env['TRACEROOT_HOST_URL'] ?? DEFAULT_BASE_URL
-    ).replace(/\/+$/, '');
+    let baseUrl = config.baseUrl ?? process.env['TRACEROOT_HOST_URL'] ?? DEFAULT_BASE_URL;
+    while (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
