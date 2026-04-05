@@ -3,17 +3,17 @@
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "pnpm --filter @traceroot-ai/traceroot build",
+    "build": "pnpm --filter '@traceroot-ai/*' build",
     "test": "pnpm --filter @traceroot-ai/traceroot test",
-    "lint": "pnpm --filter @traceroot-ai/traceroot lint",
-    "typecheck": "pnpm --filter @traceroot-ai/traceroot typecheck",
-    "clean": "pnpm --filter @traceroot-ai/traceroot clean",
-    "format": "prettier --write packages/traceroot/src packages/traceroot/tests",
-    "format:check": "prettier --check packages/traceroot/src packages/traceroot/tests",
+    "lint": "pnpm --filter '@traceroot-ai/*' lint",
+    "typecheck": "pnpm --filter '@traceroot-ai/*' typecheck",
+    "clean": "pnpm --filter '@traceroot-ai/*' clean",
+    "format": "prettier --write packages/traceroot/src packages/traceroot/tests packages/mastra/src",
+    "format:check": "prettier --check packages/traceroot/src packages/traceroot/tests packages/mastra/src",
     "prepare": "husky"
   },
   "lint-staged": {
-    "packages/traceroot/**/*.ts": [
+    "packages/**/*.ts": [
       "prettier --write"
     ]
   },

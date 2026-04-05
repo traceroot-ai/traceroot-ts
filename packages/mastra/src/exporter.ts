@@ -433,17 +433,22 @@ function buildUsageAttributes(usage?: UsageStats): Attributes {
 
 function serialize(value: unknown): string {
   if (typeof value === 'string') return value;
-  try { return JSON.stringify(value); } catch { return '[unserializable]'; }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '[unserializable]';
+  }
 }
 
 function toAttributeValue(value: unknown): Attributes[string] | undefined {
   if (value == null) return undefined;
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+    return value;
   if (Array.isArray(value)) {
     const isHomogeneous =
-      value.every(v => typeof v === 'string') ||
-      value.every(v => typeof v === 'number') ||
-      value.every(v => typeof v === 'boolean');
+      value.every((v) => typeof v === 'string') ||
+      value.every((v) => typeof v === 'number') ||
+      value.every((v) => typeof v === 'boolean');
     if (isHomogeneous) return value as Attributes[string];
   }
   return serialize(value);
