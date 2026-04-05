@@ -40,20 +40,23 @@ export function autoDetectGitContext(): { gitRepo?: string; gitRef?: string } {
     }).trim();
 
     // Normalize to "owner/repo" — handles https, git@, ssh:// formats
-    const match = remote.match(
-      /(?:https?:\/\/|ssh:\/\/git@|git@)github\.com[:/](.+?)(?:\.git)?$/,
-    );
+    const match = remote.match(/(?:https?:\/\/|ssh:\/\/git@|git@)github\.com[:/](.+?)(?:\.git)?$/);
     if (match) {
       gitRepo = match[1].replace(/\/$/, '');
     }
-  } catch { /* git unavailable */ }
+  } catch {
+    /* git unavailable */
+  }
 
   try {
-    gitRef = execSync('git rev-parse HEAD', {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim() || undefined;
-  } catch { /* git unavailable */ }
+    gitRef =
+      execSync('git rev-parse HEAD', {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim() || undefined;
+  } catch {
+    /* git unavailable */
+  }
 
   // Warm the git root cache now so the first observe() call doesn't shell out.
   getGitRoot();

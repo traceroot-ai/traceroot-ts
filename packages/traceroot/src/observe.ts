@@ -25,7 +25,8 @@ const SPAN_KIND_MAP: Record<SpanType, string> = {
 let _tracer: ReturnType<typeof trace.getTracer> | undefined;
 let _hasWarnedUninit = false;
 
-const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {}).constructor as FunctionConstructor;
+const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {})
+  .constructor as FunctionConstructor;
 
 /** Returns true if fn is declared as `async function*` — without calling it. */
 function isAsyncGeneratorFunction(fn: unknown): boolean {
@@ -91,12 +92,7 @@ export function observe<A extends unknown[], T>(
   _tracer ??= trace.getTracer('traceroot-ts');
 
   if (isAsyncGeneratorFunction(fn)) {
-    return _observeAsyncGenerator(
-      name,
-      options,
-      fn as (...args: A) => AsyncGenerator<T>,
-      args,
-    );
+    return _observeAsyncGenerator(name, options, fn as (...args: A) => AsyncGenerator<T>, args);
   }
 
   return _observeRegular(name, options, fn as (...args: A) => T | Promise<T>, args);
@@ -203,11 +199,7 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
  * Apply attributes common to all span types: kind, ambient context, session/user,
  * input from args, metadata, tags, git source location.
  */
-function _applyCommonAttributes(
-  span: Span,
-  options: ObserveOptions,
-  args: unknown[],
-): void {
+function _applyCommonAttributes(span: Span, options: ObserveOptions, args: unknown[]): void {
   span.setAttribute(OPENINFERENCE_SPAN_KIND, SPAN_KIND_MAP[options.type ?? 'span']);
 
   // Propagate any ambient attributes set by usingAttributes() in the call stack.
@@ -238,7 +230,8 @@ function _applyCommonAttributes(
   const loc = captureSourceLocation();
   if (loc.file !== undefined) span.setAttribute('traceroot.git.source_file', loc.file);
   if (loc.line !== undefined) span.setAttribute('traceroot.git.source_line', loc.line);
-  if (loc.functionName !== undefined) span.setAttribute('traceroot.git.source_function', loc.functionName);
+  if (loc.functionName !== undefined)
+    span.setAttribute('traceroot.git.source_function', loc.functionName);
 }
 
 /** @internal — reset module state between tests */

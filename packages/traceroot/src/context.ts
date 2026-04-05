@@ -6,7 +6,15 @@ import {
   SESSION_ID,
   USER_ID,
 } from '@arizeai/openinference-semantic-conventions';
-import { LLM_MODEL, LLM_MODEL_PARAMETERS, LLM_USAGE, LLM_PROMPT, SPAN_METADATA, SPAN_TAGS, TRACE_METADATA } from './constants';
+import {
+  LLM_MODEL,
+  LLM_MODEL_PARAMETERS,
+  LLM_USAGE,
+  LLM_PROMPT,
+  SPAN_METADATA,
+  SPAN_TAGS,
+  TRACE_METADATA,
+} from './constants';
 
 /**
  * Sets attributes on the currently active span.
@@ -37,25 +45,49 @@ export function updateCurrentSpan(attrs: {
     span.updateName(attrs.name);
   }
   if (attrs.input !== undefined) {
-    try { span.setAttribute(INPUT_VALUE, JSON.stringify(attrs.input)); } catch { /* non-serializable */ }
+    try {
+      span.setAttribute(INPUT_VALUE, JSON.stringify(attrs.input));
+    } catch {
+      /* non-serializable */
+    }
   }
   if (attrs.output !== undefined) {
-    try { span.setAttribute(OUTPUT_VALUE, JSON.stringify(attrs.output)); } catch { /* non-serializable */ }
+    try {
+      span.setAttribute(OUTPUT_VALUE, JSON.stringify(attrs.output));
+    } catch {
+      /* non-serializable */
+    }
   }
   if (attrs.metadata !== undefined) {
-    try { span.setAttribute(SPAN_METADATA, JSON.stringify(attrs.metadata)); } catch { /* non-serializable */ }
+    try {
+      span.setAttribute(SPAN_METADATA, JSON.stringify(attrs.metadata));
+    } catch {
+      /* non-serializable */
+    }
   }
   if (attrs.model !== undefined) {
     span.setAttribute(LLM_MODEL, attrs.model);
   }
   if (attrs.modelParameters !== undefined) {
-    try { span.setAttribute(LLM_MODEL_PARAMETERS, JSON.stringify(attrs.modelParameters)); } catch { /* non-serializable */ }
+    try {
+      span.setAttribute(LLM_MODEL_PARAMETERS, JSON.stringify(attrs.modelParameters));
+    } catch {
+      /* non-serializable */
+    }
   }
   if (attrs.usage !== undefined) {
-    try { span.setAttribute(LLM_USAGE, JSON.stringify(attrs.usage)); } catch { /* non-serializable */ }
+    try {
+      span.setAttribute(LLM_USAGE, JSON.stringify(attrs.usage));
+    } catch {
+      /* non-serializable */
+    }
   }
   if (attrs.prompt !== undefined) {
-    try { span.setAttribute(LLM_PROMPT, JSON.stringify(attrs.prompt)); } catch { /* non-serializable */ }
+    try {
+      span.setAttribute(LLM_PROMPT, JSON.stringify(attrs.prompt));
+    } catch {
+      /* non-serializable */
+    }
   }
 }
 
@@ -79,10 +111,18 @@ export function updateCurrentTrace(attrs: {
     span.setAttribute(SESSION_ID, attrs.sessionId);
   }
   if (attrs.tags !== undefined) {
-    try { span.setAttribute(SPAN_TAGS, JSON.stringify(attrs.tags)); } catch { /* non-serializable */ }
+    try {
+      span.setAttribute(SPAN_TAGS, JSON.stringify(attrs.tags));
+    } catch {
+      /* non-serializable */
+    }
   }
   if (attrs.metadata !== undefined) {
-    try { span.setAttribute(TRACE_METADATA, JSON.stringify(attrs.metadata)); } catch { /* non-serializable */ }
+    try {
+      span.setAttribute(TRACE_METADATA, JSON.stringify(attrs.metadata));
+    } catch {
+      /* non-serializable */
+    }
   }
 }
 

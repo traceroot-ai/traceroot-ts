@@ -39,7 +39,9 @@ describe('observe()', () => {
   });
 
   it('falls back to fn.name when name is omitted', async () => {
-    async function myFunction() { return 42; }
+    async function myFunction() {
+      return 42;
+    }
     await observe({}, myFunction);
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.name, 'myFunction');
@@ -103,7 +105,10 @@ describe('observe()', () => {
   it('records exception and sets ERROR status on throw, then re-throws', async () => {
     const err = new Error('boom');
     await assert.rejects(
-      () => observe({ name: 'x' }, async () => { throw err; }),
+      () =>
+        observe({ name: 'x' }, async () => {
+          throw err;
+        }),
       { message: 'boom' },
     );
     const [span] = exporter.getFinishedSpans();
@@ -112,7 +117,11 @@ describe('observe()', () => {
   });
 
   it('ends the span even when fn() throws', async () => {
-    await assert.rejects(() => observe({ name: 'x' }, async () => { throw new Error('fail'); }));
+    await assert.rejects(() =>
+      observe({ name: 'x' }, async () => {
+        throw new Error('fail');
+      }),
+    );
     const spans = exporter.getFinishedSpans();
     assert.equal(spans.length, 1);
     assert.ok(spans[0].endTime[0] > 0); // endTime is set

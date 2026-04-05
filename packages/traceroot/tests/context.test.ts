@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { observe } from '../src/observe';
-import { updateCurrentSpan, updateCurrentTrace, getCurrentTraceId, getCurrentSpanId } from '../src/context';
+import {
+  updateCurrentSpan,
+  updateCurrentTrace,
+  getCurrentTraceId,
+  getCurrentSpanId,
+} from '../src/context';
 import { _resetForTesting } from '../src/traceroot';
 
 describe('updateCurrentSpan()', () => {

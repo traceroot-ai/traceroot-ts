@@ -25,8 +25,8 @@ export const TRACE_TAGS = 'traceroot.trace.tags';
 export const SpanAttributes = {
   // Span-level
   SPAN_TYPE: 'traceroot.span.type',
-  SPAN_INPUT: 'input.value',           // OpenInference
-  SPAN_OUTPUT: 'output.value',         // OpenInference
+  SPAN_INPUT: 'input.value', // OpenInference
+  SPAN_OUTPUT: 'output.value', // OpenInference
   SPAN_METADATA,
   SPAN_TAGS,
 
@@ -37,8 +37,8 @@ export const SpanAttributes = {
   LLM_PROMPT,
 
   // Trace-level
-  TRACE_USER_ID: 'user.id',            // OpenInference
-  TRACE_SESSION_ID: 'session.id',      // OpenInference
+  TRACE_USER_ID: 'user.id', // OpenInference
+  TRACE_SESSION_ID: 'session.id', // OpenInference
   TRACE_METADATA,
   TRACE_TAGS,
 
