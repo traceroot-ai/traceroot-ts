@@ -76,7 +76,7 @@ describe('observe()', () => {
   });
 
   it('records input.value when args are provided', async () => {
-    const fn = async (query: string) => null;
+    const fn = async (_query: string) => null;
     await observe({ name: 'x' }, fn, 'hello');
     const [span] = exporter.getFinishedSpans();
     // Single arg captured directly (not wrapped in array)

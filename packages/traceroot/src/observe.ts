@@ -25,22 +25,11 @@ const SPAN_KIND_MAP: Record<SpanType, string> = {
 let _tracer: ReturnType<typeof trace.getTracer> | undefined;
 let _hasWarnedUninit = false;
 
-// eslint-disable-next-line @typescript-eslint/no-empty-function
 const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {}).constructor as FunctionConstructor;
 
 /** Returns true if fn is declared as `async function*` — without calling it. */
 function isAsyncGeneratorFunction(fn: unknown): boolean {
   return typeof fn === 'function' && fn instanceof AsyncGeneratorFunction;
-}
-
-/** Returns true if v is an async generator object (already running). */
-function isAsyncGeneratorObject(v: unknown): v is AsyncGenerator {
-  return (
-    v != null &&
-    typeof v === 'object' &&
-    typeof (v as AsyncGenerator)[Symbol.asyncIterator] === 'function' &&
-    typeof (v as AsyncGenerator).next === 'function'
-  );
 }
 
 /** Serialize a value for a span attribute, returning undefined on failure. */
@@ -98,15 +87,6 @@ export function observe<A extends unknown[], T>(
   fn: (...args: A) => T | Promise<T> | AsyncGenerator<T>,
   ...args: A
 ): Promise<T> | AsyncGenerator<T> {
-  // Auto-initialize from env if SDK not yet initialized.
-  if (process.env['TRACEROOT_API_KEY']) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { TraceRoot } = require('./traceroot') as typeof import('./traceroot');
-    if (!TraceRoot.isInitialized()) {
-      TraceRoot.initialize();
-    }
-  }
-
   const name = options.name ?? (fn.name || 'anonymous');
   _tracer ??= trace.getTracer('traceroot-ts');
 
@@ -129,6 +109,10 @@ async function _observeRegular<A extends unknown[], T>(
   fn: (...args: A) => T | Promise<T>,
   args: A,
 ): Promise<T> {
+  if (process.env['TRACEROOT_API_KEY']) {
+    const { TraceRoot } = await import('./traceroot');
+    if (!TraceRoot.isInitialized()) TraceRoot.initialize();
+  }
   _tracer ??= trace.getTracer('traceroot-ts');
 
   return _tracer.startActiveSpan(name, async (span) => {
@@ -176,6 +160,10 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
   fn: (...args: A) => AsyncGenerator<T>,
   args: A,
 ): AsyncGenerator<T> {
+  if (process.env['TRACEROOT_API_KEY']) {
+    const { TraceRoot } = await import('./traceroot');
+    if (!TraceRoot.isInitialized()) TraceRoot.initialize();
+  }
   _tracer ??= trace.getTracer('traceroot-ts');
   const span = _tracer.startSpan(name);
 
