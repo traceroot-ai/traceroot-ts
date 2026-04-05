@@ -20,7 +20,9 @@ describe('TraceRoot.initialize()', () => {
   it('warns but does not throw when apiKey is missing', () => {
     const messages: string[] = [];
     const restore = console.warn;
-    console.warn = (...args: unknown[]) => { messages.push(args.join(' ')); };
+    console.warn = (...args: unknown[]) => {
+      messages.push(args.join(' '));
+    };
     try {
       assert.doesNotThrow(() => {
         TraceRoot.initialize({ disableBatch: true });
@@ -34,7 +36,9 @@ describe('TraceRoot.initialize()', () => {
   it('warns and skips on double initialize()', () => {
     const messages: string[] = [];
     const restore = console.warn;
-    console.warn = (...args: unknown[]) => { messages.push(args.join(' ')); };
+    console.warn = (...args: unknown[]) => {
+      messages.push(args.join(' '));
+    };
     try {
       TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
       TraceRoot.initialize({ apiKey: 'test-key-2', disableBatch: true });
@@ -91,8 +95,12 @@ describe('TraceRoot.initialize()', () => {
 function makeProcessorFixture() {
   const attributes: Record<string, unknown> = {};
   const span = {
-    setAttribute: (k: string, v: unknown) => { attributes[k] = v; },
-    setAttributes: (a: Record<string, unknown>) => { Object.assign(attributes, a); },
+    setAttribute: (k: string, v: unknown) => {
+      attributes[k] = v;
+    },
+    setAttributes: (a: Record<string, unknown>) => {
+      Object.assign(attributes, a);
+    },
   } as unknown as import('@opentelemetry/api').Span;
   const inner = {
     onStart: () => {},

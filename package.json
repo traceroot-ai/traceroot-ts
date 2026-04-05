@@ -7,9 +7,20 @@
     "test": "pnpm --filter @traceroot-ai/traceroot test",
     "lint": "pnpm --filter @traceroot-ai/traceroot lint",
     "typecheck": "pnpm --filter @traceroot-ai/traceroot typecheck",
-    "clean": "pnpm --filter @traceroot-ai/traceroot clean"
+    "clean": "pnpm --filter @traceroot-ai/traceroot clean",
+    "format": "prettier --write packages/traceroot/src packages/traceroot/tests",
+    "format:check": "prettier --check packages/traceroot/src packages/traceroot/tests",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "packages/traceroot/**/*.ts": [
+      "prettier --write"
+    ]
   },
   "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "prettier": "^3.8.1",
     "typescript": "^5.5.0"
   },
   "pnpm": {

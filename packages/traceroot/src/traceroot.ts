@@ -1,5 +1,12 @@
 // src/traceroot.ts
-import { context, diag, DiagConsoleLogger, DiagLogLevel, propagation, trace } from '@opentelemetry/api';
+import {
+  context,
+  diag,
+  DiagConsoleLogger,
+  DiagLogLevel,
+  propagation,
+  trace,
+} from '@opentelemetry/api';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import { BatchSpanProcessor, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
@@ -22,7 +29,7 @@ export class TraceRoot {
   }
 
   static initialize(options: InitializeOptions = {}): void {
-    const enabled = options.enabled ?? (process.env['TRACEROOT_ENABLED'] !== 'false');
+    const enabled = options.enabled ?? process.env['TRACEROOT_ENABLED'] !== 'false';
     if (!enabled) {
       return;
     }
@@ -36,7 +43,7 @@ export class TraceRoot {
     if (!apiKey) {
       console.warn(
         '[TraceRoot] No API key provided. Set TRACEROOT_API_KEY env var or pass apiKey to initialize(). ' +
-        'Spans will be emitted but export will fail.',
+          'Spans will be emitted but export will fail.',
       );
     }
 
@@ -51,7 +58,11 @@ export class TraceRoot {
       logLevelMap[options.logLevel ?? 'error'] ?? DiagLogLevel.ERROR,
     );
 
-    const baseUrl = (options.baseUrl ?? process.env['TRACEROOT_HOST_URL'] ?? DEFAULT_BASE_URL).replace(/\/$/, '');
+    const baseUrl = (
+      options.baseUrl ??
+      process.env['TRACEROOT_HOST_URL'] ??
+      DEFAULT_BASE_URL
+    ).replace(/\/$/, '');
     const headers: Record<string, string> = {
       'x-traceroot-sdk-name': SDK_NAME,
       'x-traceroot-sdk-version': SDK_VERSION,
@@ -80,12 +91,23 @@ export class TraceRoot {
       getGitRoot(); // warm git root cache for captureSourceLocation without shelling out for repo/ref
     }
 
+    // Flush/batch tuning — env vars take precedence over hardcoded defaults.
+    const flushIntervalSec = Number(process.env['TRACEROOT_FLUSH_INTERVAL'] || '5');
+    const flushAt = Number(process.env['TRACEROOT_FLUSH_AT'] || '100');
+    const timeoutSec = Number(process.env['TRACEROOT_TIMEOUT'] || '30');
+
     const innerProcessor = options.disableBatch
       ? new SimpleSpanProcessor(exporter)
-      : new BatchSpanProcessor(exporter);
+      : new BatchSpanProcessor(exporter, {
+          scheduledDelayMillis: flushIntervalSec * 1000,
+          maxExportBatchSize: flushAt,
+          exportTimeoutMillis: timeoutSec * 1000,
+        });
 
     _provider = new NodeTracerProvider();
-    _provider.addSpanProcessor(new TraceRootSpanProcessor(innerProcessor, { environment, gitRepo, gitRef }));
+    _provider.addSpanProcessor(
+      new TraceRootSpanProcessor(innerProcessor, { environment, gitRepo, gitRef }),
+    );
     _provider.register();
 
     wireInstrumentations(options.instrumentModules);
@@ -93,7 +115,9 @@ export class TraceRoot {
     _isInitialized = true;
     // forceFlush() is async and keeps the event loop alive via its HTTP export request,
     // so beforeExit + forceFlush() is sufficient — no keepAlive timer needed.
-    process.once('beforeExit', () => { void _provider?.forceFlush(); });
+    process.once('beforeExit', () => {
+      void _provider?.forceFlush();
+    });
   }
 
   static async flush(): Promise<void> {
