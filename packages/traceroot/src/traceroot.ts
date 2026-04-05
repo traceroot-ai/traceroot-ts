@@ -80,9 +80,18 @@ export class TraceRoot {
       getGitRoot(); // warm git root cache for captureSourceLocation without shelling out for repo/ref
     }
 
+    // Flush/batch tuning — env vars take precedence over hardcoded defaults.
+    const flushIntervalSec = Number(process.env['TRACEROOT_FLUSH_INTERVAL'] ?? '5');
+    const flushAt = Number(process.env['TRACEROOT_FLUSH_AT'] ?? '100');
+    const timeoutSec = Number(process.env['TRACEROOT_TIMEOUT'] ?? '30');
+
     const innerProcessor = options.disableBatch
       ? new SimpleSpanProcessor(exporter)
-      : new BatchSpanProcessor(exporter);
+      : new BatchSpanProcessor(exporter, {
+          scheduledDelayMillis: flushIntervalSec * 1000,
+          maxExportBatchSize: flushAt,
+          exportTimeoutMillis: timeoutSec * 1000,
+        });
 
     _provider = new NodeTracerProvider();
     _provider.addSpanProcessor(new TraceRootSpanProcessor(innerProcessor, { environment, gitRepo, gitRef }));

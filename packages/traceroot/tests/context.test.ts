@@ -55,6 +55,51 @@ describe('updateCurrentSpan()', () => {
       updateCurrentSpan({ input: 'test' });
     });
   });
+
+  // ── LLM-specific attributes ───────────────────────────────────────────────
+
+  it('renames the span when name is provided', async () => {
+    await observe({ name: 'original' }, async () => {
+      updateCurrentSpan({ name: 'renamed-span' });
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.name, 'renamed-span');
+  });
+
+  it('sets traceroot.llm.model on the active span', async () => {
+    await observe({ name: 'x' }, async () => {
+      updateCurrentSpan({ model: 'gpt-4o' });
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['traceroot.llm.model'], 'gpt-4o');
+  });
+
+  it('sets traceroot.llm.model_parameters as JSON on the active span', async () => {
+    const params = { temperature: 0.7, max_tokens: 1024 };
+    await observe({ name: 'x' }, async () => {
+      updateCurrentSpan({ modelParameters: params });
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['traceroot.llm.model_parameters'], JSON.stringify(params));
+  });
+
+  it('sets traceroot.llm.usage as JSON on the active span', async () => {
+    const usage = { inputTokens: 100, outputTokens: 50 };
+    await observe({ name: 'x' }, async () => {
+      updateCurrentSpan({ usage });
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['traceroot.llm.usage'], JSON.stringify(usage));
+  });
+
+  it('sets traceroot.llm.prompt as JSON on the active span', async () => {
+    const prompt = [{ role: 'user', content: 'hello' }];
+    await observe({ name: 'x' }, async () => {
+      updateCurrentSpan({ prompt });
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['traceroot.llm.prompt'], JSON.stringify(prompt));
+  });
 });
 
 describe('updateCurrentTrace()', () => {
@@ -102,6 +147,15 @@ describe('updateCurrentTrace()', () => {
     assert.doesNotThrow(() => {
       updateCurrentTrace({ userId: 'u1' });
     });
+  });
+
+  it('sets traceroot.trace.metadata as JSON on the active span', async () => {
+    const meta = { plan: 'pro', region: 'us-east-1' };
+    await observe({ name: 'x' }, async () => {
+      updateCurrentTrace({ metadata: meta });
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['traceroot.trace.metadata'], JSON.stringify(meta));
   });
 });
 

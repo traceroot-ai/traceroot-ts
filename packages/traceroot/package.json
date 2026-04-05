@@ -59,8 +59,11 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@langchain/core": "^1.1.39",
     "@types/node": "^20.0.0",
+    "anthropic": "^0.0.0",
     "eslint": "^9.0.0",
+    "openai": "^6.33.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.0.0"

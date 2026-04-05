@@ -75,10 +75,12 @@ describe('observe()', () => {
     assert.equal(span.attributes[SPAN_KIND_ATTR], 'LLM');
   });
 
-  it('records input.value when input is provided', async () => {
-    await observe({ name: 'x', input: { query: 'hello' } }, async () => null);
+  it('records input.value when args are provided', async () => {
+    const fn = async (query: string) => null;
+    await observe({ name: 'x' }, fn, 'hello');
     const [span] = exporter.getFinishedSpans();
-    assert.equal(span.attributes[INPUT_VALUE_ATTR], JSON.stringify({ query: 'hello' }));
+    // Single arg captured directly (not wrapped in array)
+    assert.equal(span.attributes[INPUT_VALUE_ATTR], JSON.stringify('hello'));
   });
 
   it('does not set input.value when input is not provided', async () => {
@@ -174,5 +176,101 @@ describe('observe()', () => {
     assert.equal(result, 'untraced');
     // No spans recorded
     assert.equal(exporter.getFinishedSpans().length, 0);
+  });
+
+  // ── New API: observe(options, fn, ...args) ────────────────────────────────
+
+  it('auto-captures multiple args as input.value JSON array', async () => {
+    const fn = async (x: string, y: number) => `${x}-${y}`;
+    const result = await observe({ name: 'x' }, fn, 'hello', 42);
+    assert.equal(result, 'hello-42');
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes[INPUT_VALUE_ATTR], JSON.stringify(['hello', 42]));
+  });
+
+  it('auto-captures a single arg as input.value directly (not wrapped in array)', async () => {
+    const fn = async (msg: string) => msg.toUpperCase();
+    const result = await observe({ name: 'x' }, fn, 'hello');
+    assert.equal(result, 'HELLO');
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes[INPUT_VALUE_ATTR], JSON.stringify('hello'));
+  });
+
+  it('does not set input.value when zero args are passed (thunk backward compat)', async () => {
+    await observe({ name: 'x' }, async () => 'result');
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes[INPUT_VALUE_ATTR], undefined);
+  });
+
+  it('does not set input.value when captureInput is false', async () => {
+    const fn = async (x: string) => x;
+    await observe({ name: 'x', captureInput: false }, fn, 'secret');
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes[INPUT_VALUE_ATTR], undefined);
+  });
+
+  it('does not set output.value when captureOutput is false', async () => {
+    const fn = async () => ({ sensitive: true });
+    await observe({ name: 'x', captureOutput: false }, fn);
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes[OUTPUT_VALUE_ATTR], undefined);
+  });
+
+  it('sets session.id when sessionId is provided in options', async () => {
+    await observe({ name: 'x', sessionId: 'sess-abc' }, async () => null);
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['session.id'], 'sess-abc');
+  });
+
+  it('sets user.id when userId is provided in options', async () => {
+    await observe({ name: 'x', userId: 'user-xyz' }, async () => null);
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['user.id'], 'user-xyz');
+  });
+
+  it('wraps async generator — yields all chunks back and records them as output', async () => {
+    async function* stream(prefix: string) {
+      yield `${prefix}-1`;
+      yield `${prefix}-2`;
+      yield `${prefix}-3`;
+    }
+
+    const gen = observe({ name: 'stream-span' }, stream, 'chunk') as AsyncIterable<string>;
+
+    const chunks: string[] = [];
+    for await (const item of gen) {
+      chunks.push(item);
+    }
+
+    assert.deepStrictEqual(chunks, ['chunk-1', 'chunk-2', 'chunk-3']);
+
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 1);
+    assert.equal(spans[0].name, 'stream-span');
+    assert.equal(
+      spans[0].attributes[OUTPUT_VALUE_ATTR],
+      JSON.stringify(['chunk-1', 'chunk-2', 'chunk-3']),
+    );
+  });
+
+  it('auto-initializes when TRACEROOT_API_KEY is set and SDK is not yet initialized', async () => {
+    // Remove the provider so the SDK is "not initialized"
+    await provider.shutdown();
+    exporter.reset();
+    _resetForTesting();
+
+    const prev = process.env['TRACEROOT_API_KEY'];
+    process.env['TRACEROOT_API_KEY'] = 'test-key-auto-init';
+    try {
+      // Should auto-initialize and not warn, and the fn result should be returned
+      const result = await observe({ name: 'x' }, async () => 'auto-init-result');
+      assert.equal(result, 'auto-init-result');
+      // SDK should now be initialized
+      const { TraceRoot } = await import('../src/traceroot');
+      assert.equal(TraceRoot.isInitialized(), true);
+    } finally {
+      process.env['TRACEROOT_API_KEY'] = prev;
+      _resetForTesting();
+    }
   });
 });
