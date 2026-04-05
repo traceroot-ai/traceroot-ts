@@ -274,7 +274,7 @@ describe('observe()', () => {
     }
 
     const gen = observe({ name: 'gen-span' }, streamWithUpdate) as AsyncIterable<string>;
-    for await (const _ of gen) {
+    for await (const _item of gen) {
       // consume
     }
 
@@ -291,7 +291,7 @@ describe('observe()', () => {
     }
 
     const gen = observe({ name: 'gen-parent' }, streamWithChild) as AsyncIterable<string>;
-    for await (const _ of gen) {
+    for await (const _item of gen) {
       // consume
     }
 
