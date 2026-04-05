@@ -4,6 +4,7 @@ import { SpanStatusCode } from '@opentelemetry/api';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { observe } from '../src/observe';
+import { updateCurrentSpan } from '../src/context';
 import { _resetForTesting } from '../src/traceroot';
 
 // Attribute keys
@@ -260,6 +261,48 @@ describe('observe()', () => {
       spans[0].attributes[OUTPUT_VALUE_ATTR],
       JSON.stringify(['chunk-1', 'chunk-2', 'chunk-3']),
     );
+  });
+
+  // ── Async generator context propagation ──────────────────────────────────────
+
+  it('async generator — updateCurrentSpan() inside body updates the generator span, not the parent', async () => {
+    // If the generator span is not activated in the OTel context, updateCurrentSpan()
+    // will update the parent span (or nothing). This test catches that bug.
+    async function* streamWithUpdate() {
+      updateCurrentSpan({ name: 'renamed-by-generator' });
+      yield 'item';
+    }
+
+    const gen = observe({ name: 'gen-span' }, streamWithUpdate) as AsyncIterable<string>;
+    for await (const _ of gen) {
+      // consume
+    }
+
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 1);
+    // The generator span itself should have been renamed
+    assert.equal(spans[0].name, 'renamed-by-generator');
+  });
+
+  it('async generator — nested observe() inside body becomes a child of the generator span', async () => {
+    async function* streamWithChild() {
+      await observe({ name: 'child-in-gen' }, async () => null);
+      yield 'item';
+    }
+
+    const gen = observe({ name: 'gen-parent' }, streamWithChild) as AsyncIterable<string>;
+    for await (const _ of gen) {
+      // consume
+    }
+
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 2);
+    const parent = spans.find((s) => s.name === 'gen-parent')!;
+    const child = spans.find((s) => s.name === 'child-in-gen')!;
+    assert.ok(parent, 'gen-parent span should exist');
+    assert.ok(child, 'child-in-gen span should exist');
+    // The child must be parented under the generator span
+    assert.equal(child.parentSpanId, parent.spanContext().spanId);
   });
 
   it('auto-initializes when TRACEROOT_API_KEY is set and SDK is not yet initialized', async () => {

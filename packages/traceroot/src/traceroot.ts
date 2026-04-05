@@ -92,9 +92,9 @@ export class TraceRoot {
     }
 
     // Flush/batch tuning — env vars take precedence over hardcoded defaults.
-    const flushIntervalSec = Number(process.env['TRACEROOT_FLUSH_INTERVAL'] ?? '5');
-    const flushAt = Number(process.env['TRACEROOT_FLUSH_AT'] ?? '100');
-    const timeoutSec = Number(process.env['TRACEROOT_TIMEOUT'] ?? '30');
+    const flushIntervalSec = Number(process.env['TRACEROOT_FLUSH_INTERVAL'] || '5');
+    const flushAt = Number(process.env['TRACEROOT_FLUSH_AT'] || '100');
+    const timeoutSec = Number(process.env['TRACEROOT_TIMEOUT'] || '30');
 
     const innerProcessor = options.disableBatch
       ? new SimpleSpanProcessor(exporter)

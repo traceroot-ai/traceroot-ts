@@ -176,11 +176,21 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
 
   _applyCommonAttributes(span, options, args);
 
+  // Activate the span in the OTel context so that updateCurrentSpan() and
+  // nested observe() calls inside the generator body target the correct span.
+  // We must wrap each .next() call in context.with() because AsyncLocalStorage
+  // does not preserve context across generator yield boundaries when resumed
+  // from outside the original run scope.
+  const spanCtx = trace.setSpan(context.active(), span);
+  const innerGen = fn(...args);
+
   const collected: T[] = [];
   try {
-    for await (const item of fn(...args)) {
-      collected.push(item);
-      yield item;
+    while (true) {
+      const { value, done } = await context.with(spanCtx, () => innerGen.next());
+      if (done) break;
+      collected.push(value as T);
+      yield value as T;
     }
     if (options.captureOutput !== false && collected.length > 0) {
       const serialized = trySerialize(collected);
