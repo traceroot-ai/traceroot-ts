@@ -199,7 +199,7 @@ export class TraceRootExporter extends BaseExporter {
         await this.processor.forceFlush();
       }
     } catch (error) {
-      this.logger.error('[TraceRootExporter] Failed to export span', {
+      console.error('[TraceRootExporter] Failed to export span', {
         error,
         spanId: span.id,
         traceId: span.traceId,
@@ -310,7 +310,7 @@ export class TraceRootExporter extends BaseExporter {
     try {
       await this.processor.forceFlush();
     } catch (error) {
-      this.logger.error('[TraceRootExporter] Error flushing spans', { error });
+      console.error('[TraceRootExporter] Error flushing spans', { error });
     }
   }
 
