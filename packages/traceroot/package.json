@@ -49,6 +49,7 @@
     "@arizeai/openinference-instrumentation-langchain": "^4.0.6",
     "@arizeai/openinference-instrumentation-openai": "^4.0.5",
     "@arizeai/openinference-semantic-conventions": "^2.1.7",
+    "@arizeai/openinference-vercel": "^2.7.2",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.57.2",
     "@opentelemetry/instrumentation": "^0.46.0",
