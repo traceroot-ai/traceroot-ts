@@ -8,8 +8,11 @@ import {
   trace,
 } from '@opentelemetry/api';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
-import { BatchSpanProcessor, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import {
+  OpenInferenceBatchSpanProcessor,
+  OpenInferenceSimpleSpanProcessor,
+} from '@arizeai/openinference-vercel';
 import { InitializeOptions } from './types';
 import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
 import { wireInstrumentations } from './instrumentation';
@@ -63,6 +66,7 @@ export class TraceRoot {
       process.env['TRACEROOT_HOST_URL'] ??
       DEFAULT_BASE_URL
     ).replace(/\/$/, '');
+
     const headers: Record<string, string> = {
       'x-traceroot-sdk-name': SDK_NAME,
       'x-traceroot-sdk-version': SDK_VERSION,
@@ -72,7 +76,6 @@ export class TraceRoot {
     const exporter = new OTLPTraceExporter({
       url: `${baseUrl}/api/v1/public/traces`,
       headers,
-      // CompressionAlgorithm.GZIP = "gzip"; using string literal to avoid importing transitive dep
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       compression: 'gzip' as any,
     });
@@ -84,24 +87,30 @@ export class TraceRoot {
     let gitRepo = gitRepoOverride;
     let gitRef = gitRefOverride;
     if (gitRepo === undefined || gitRef === undefined) {
-      const autoGit = autoDetectGitContext(); // also warms the git root cache
+      const autoGit = autoDetectGitContext();
       gitRepo ??= autoGit.gitRepo;
       gitRef ??= autoGit.gitRef;
     } else {
-      getGitRoot(); // warm git root cache for captureSourceLocation without shelling out for repo/ref
+      getGitRoot();
     }
 
-    // Flush/batch tuning — env vars take precedence over hardcoded defaults.
     const flushIntervalSec = Number(process.env['TRACEROOT_FLUSH_INTERVAL'] || '5');
     const flushAt = Number(process.env['TRACEROOT_FLUSH_AT'] || '100');
     const timeoutSec = Number(process.env['TRACEROOT_TIMEOUT'] || '30');
 
+    // ── Vercel AI SDK: wrap the exporter in OpenInference span processors ──────
+    // These processors enrich spans emitted by Vercel AI SDK's experimental_telemetry
+    // with OpenInference semantic conventions (model name, token counts, IO, etc.)
+    // before they reach the OTLP exporter. All other SDK spans pass through unchanged.
     const innerProcessor = options.disableBatch
-      ? new SimpleSpanProcessor(exporter)
-      : new BatchSpanProcessor(exporter, {
-          scheduledDelayMillis: flushIntervalSec * 1000,
-          maxExportBatchSize: flushAt,
-          exportTimeoutMillis: timeoutSec * 1000,
+      ? new OpenInferenceSimpleSpanProcessor({ exporter })
+      : new OpenInferenceBatchSpanProcessor({
+          exporter,
+          config: {
+            scheduledDelayMillis: flushIntervalSec * 1000,
+            maxExportBatchSize: flushAt,
+            exportTimeoutMillis: timeoutSec * 1000,
+          },
         });
 
     _provider = new NodeTracerProvider();
@@ -113,8 +122,6 @@ export class TraceRoot {
     wireInstrumentations(options.instrumentModules);
 
     _isInitialized = true;
-    // forceFlush() is async and keeps the event loop alive via its HTTP export request,
-    // so beforeExit + forceFlush() is sufficient — no keepAlive timer needed.
     process.once('beforeExit', () => {
       void _provider?.forceFlush();
     });
