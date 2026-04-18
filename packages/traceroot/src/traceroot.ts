@@ -13,6 +13,7 @@ import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { InitializeOptions } from './types';
 import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
 import { wireInstrumentations } from './instrumentation';
+import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
 import { autoDetectGitContext, getGitRoot, _resetGitContextCache } from './git_context';
 
@@ -91,10 +92,12 @@ export class TraceRoot {
       getGitRoot(); // warm git root cache for captureSourceLocation without shelling out for repo/ref
     }
 
-    // Flush/batch tuning — env vars take precedence over hardcoded defaults.
-    const flushIntervalSec = Number(process.env['TRACEROOT_FLUSH_INTERVAL'] || '5');
-    const flushAt = Number(process.env['TRACEROOT_FLUSH_AT'] || '100');
-    const timeoutSec = Number(process.env['TRACEROOT_TIMEOUT'] || '30');
+    // Flush/batch tuning — env vars take precedence over SDK defaults.
+    const flushIntervalSec = Number(
+      process.env['TRACEROOT_FLUSH_INTERVAL'] || DEFAULT_FLUSH_INTERVAL_SEC,
+    );
+    const flushAt = Number(process.env['TRACEROOT_FLUSH_AT'] || DEFAULT_FLUSH_AT);
+    const timeoutSec = Number(process.env['TRACEROOT_TIMEOUT'] || DEFAULT_TIMEOUT_SEC);
 
     const innerProcessor = options.disableBatch
       ? new SimpleSpanProcessor(exporter)
