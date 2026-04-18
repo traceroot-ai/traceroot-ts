@@ -1,9 +1,9 @@
 // src/constants.ts — TraceRoot-specific span attribute keys and SDK defaults
 
 // Flush/batch defaults — mirror traceroot-py/traceroot/constants.py
-export const DEFAULT_FLUSH_INTERVAL_SEC = 5; // BatchSpanProcessor scheduledDelayMillis
+export const DEFAULT_FLUSH_INTERVAL_SEC = 5; // seconds → BatchSpanProcessor scheduledDelayMillis (×1000)
 export const DEFAULT_FLUSH_AT = 100; // BatchSpanProcessor maxExportBatchSize
-export const DEFAULT_TIMEOUT_SEC = 30; // BatchSpanProcessor exportTimeoutMillis
+export const DEFAULT_TIMEOUT_SEC = 30; // seconds → BatchSpanProcessor exportTimeoutMillis (×1000)
 
 // Span-level
 export const SPAN_METADATA = 'traceroot.span.metadata';
