@@ -63,8 +63,13 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     // Enrich every span with its full name path from root to current span.
     // path[0] is always the root span name, so the backend can recover the
     // correct trace name even when child spans arrive before the root span.
+    // Guard: a bare `{}` context (used in unit tests) has no getValue — skip gracefully.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const parentSpan = otelTrace.getSpan(parentContext) as any;
+    const parentSpan = (
+      typeof (parentContext as any)?.getValue === 'function'
+        ? otelTrace.getSpan(parentContext)
+        : undefined
+    ) as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const spanName = ((span as any).name as string) ?? '';
 
@@ -98,9 +103,13 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     span.setAttribute('traceroot.span.ids_path', spanIdsPath);
 
     // Store paths so descendant spans can inherit them via map lookup.
-    const spanId = span.spanContext().spanId;
-    this._namePathBySpanId.set(spanId, spanPath);
-    this._idsPathBySpanId.set(spanId, spanIdsPath);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const spanId =
+      typeof (span as any).spanContext === 'function' ? span.spanContext().spanId : undefined;
+    if (spanId) {
+      this._namePathBySpanId.set(spanId, spanPath);
+      this._idsPathBySpanId.set(spanId, spanIdsPath);
+    }
 
     // Cast required: inner processor expects the internal sdk-trace-base Span,
     // but the SpanProcessor interface uses the public @opentelemetry/api Span.
