@@ -73,9 +73,8 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const spanName = ((span as any).name as string) ?? '';
 
-    // ReadableSpan.parentSpanId is set by the SDK from the parent context at
-    // span creation time, even when the parent is a remote span context and
-    // getSpan() returns undefined. This is the reliable way to get the parent ID.
+    // `span.name` and `span.parentSpanId` are not on the public @opentelemetry/api
+    // Span interface but are stable internal fields on the SDK implementation.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parentSpanId: string | undefined =
       ((span as any).parentSpanId as string | undefined) ||
@@ -93,11 +92,15 @@ export class TraceRootSpanProcessor implements SpanProcessor {
       (parentSpan?.attributes?.['traceroot.span.ids_path'] as string[] | undefined);
 
     const spanPath: string[] = parentPath ? [...parentPath, spanName] : [spanName];
-    const spanIdsPath: string[] = parentSpanId
-      ? parentIdsPath
-        ? [...parentIdsPath, parentSpanId]
-        : [parentSpanId]
-      : [];
+    // Gate on parentPath (not just parentSpanId) so path and ids_path stay in sync:
+    // if path resolution failed (map miss + NonRecordingSpan), treat this span as a
+    // root rather than emitting an inconsistent single-element path with a non-empty ids_path.
+    const spanIdsPath: string[] =
+      parentPath && parentSpanId
+        ? parentIdsPath
+          ? [...parentIdsPath, parentSpanId]
+          : [parentSpanId]
+        : [];
 
     span.setAttribute('traceroot.span.path', spanPath);
     span.setAttribute('traceroot.span.ids_path', spanIdsPath);
@@ -118,6 +121,9 @@ export class TraceRootSpanProcessor implements SpanProcessor {
   }
 
   onEnd(span: ReadableSpan): void {
+    // Invariant: children must be started before their parent ends. A child span
+    // started after onEnd runs here loses the map-based ancestry lookup for
+    // NonRecordingSpan parents (no attribute fallback exists for those).
     const spanId = span.spanContext().spanId;
     this._idsPathBySpanId.delete(spanId);
     this._namePathBySpanId.delete(spanId);
