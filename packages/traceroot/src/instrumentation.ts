@@ -6,6 +6,7 @@ import { ClaudeAgentSDKInstrumentation } from '@arizeai/openinference-instrument
 import { LangChainInstrumentation } from '@arizeai/openinference-instrumentation-langchain';
 import { OpenAIInstrumentation } from '@arizeai/openinference-instrumentation-openai';
 import { InitializeOptions } from './types';
+import { wireOpenAIAgentsProcessor } from './openai-agents';
 
 /**
  * Wires OpenInference instrumentations based on the instrumentModules option:
@@ -67,6 +68,9 @@ export function wireInstrumentations(
     const instr = new BedrockInstrumentation();
     instrs.push(instr);
     instr.manuallyInstrument(instrumentModules.bedrock as any);
+  }
+  if (instrumentModules.openaiAgents) {
+    wireOpenAIAgentsProcessor(instrumentModules.openaiAgents);
   }
 
   if (instrs.length > 0) {
