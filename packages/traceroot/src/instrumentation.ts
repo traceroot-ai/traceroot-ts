@@ -70,7 +70,11 @@ export function wireInstrumentations(
     instr.manuallyInstrument(instrumentModules.bedrock as any);
   }
   if (instrumentModules.openaiAgents) {
-    wireOpenAIAgentsProcessor(instrumentModules.openaiAgents);
+    try {
+      wireOpenAIAgentsProcessor(instrumentModules.openaiAgents);
+    } catch (e) {
+      console.warn('[TraceRoot] Failed to wire @openai/agents processor:', (e as Error).message);
+    }
   }
 
   if (instrs.length > 0) {
