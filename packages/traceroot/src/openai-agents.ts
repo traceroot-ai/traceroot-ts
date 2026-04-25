@@ -173,7 +173,11 @@ export class TraceRootTracingProcessor {
       (s.parentId != null && this.ctxMap.get(s.parentId)) ||
       this.ctxMap.get(s.traceId) ||
       context.active();
-    const otelSpan = this.tracer.startSpan(getSpanName(s.spanData), {}, parentCtx);
+    const otelSpan = this.tracer.startSpan(
+      getSpanName(s.spanData),
+      { startTime: s.startedAt ? new Date(s.startedAt) : undefined },
+      parentCtx,
+    );
     this.spanMap.set(s.spanId, otelSpan);
     this.ctxMap.set(s.spanId, trace.setSpan(parentCtx, otelSpan));
   }
