@@ -54,6 +54,7 @@ export interface InitializeOptions {
     langchain?: unknown;
     claudeAgentSDK?: unknown;
     bedrock?: unknown;
+    openaiAgents?: unknown; // @openai/agents module ref (ESM — pass `import * as x from '@openai/agents'`)
   };
   /** Use SimpleSpanProcessor instead of BatchSpanProcessor. Useful for scripts/tests. */
   disableBatch?: boolean;
