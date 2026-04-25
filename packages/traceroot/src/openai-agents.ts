@@ -90,8 +90,8 @@ export function getSpanAttributes(data: OASpanData): Record<string, string | num
       break;
     case 'function':
       attrs['tool.name'] = data.name;
-      if (data.input) attrs['input.value'] = data.input;
-      if (data.output) attrs['output.value'] = data.output;
+      if (data.input != null) attrs['input.value'] = data.input;
+      if (data.output != null) attrs['output.value'] = data.output;
       break;
     case 'generation':
       if (data.model) attrs['llm.model_name'] = data.model;
