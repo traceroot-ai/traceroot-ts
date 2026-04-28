@@ -19,7 +19,7 @@ type GroqModuleLike = {
 
 type ChatRequestBody = {
   model?: string;
-  messages?: Array<Record<string, unknown>>;
+  messages?: unknown;
 };
 
 type CompletionUsage = {
@@ -70,9 +70,14 @@ function toStringContent(content: unknown): string | undefined {
 }
 
 function extractInputValue(body: ChatRequestBody | undefined): string | undefined {
-  if (!body?.messages || body.messages.length === 0) return undefined;
+  if (!body?.messages || !Array.isArray(body.messages) || body.messages.length === 0)
+    return undefined;
 
   const userMessages = body.messages
+    .filter(
+      (m): m is { role?: unknown; content?: unknown } =>
+        Boolean(m) && typeof m === 'object' && 'role' in m,
+    )
     .filter((m) => m.role === 'user')
     .map((m) => toStringContent(m.content))
     .filter((v): v is string => Boolean(v));

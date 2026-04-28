@@ -80,4 +80,37 @@ describe('GroqInstrumentation', () => {
     const spans = exporter.getFinishedSpans();
     assert.equal(spans.length, 0);
   });
+
+  it('does not throw on malformed messages payloads', async () => {
+    class FakeGroqClient {
+      async post(path: string, opts?: { body?: Record<string, unknown> }) {
+        if (path !== '/openai/v1/chat/completions') {
+          return { ok: true };
+        }
+        return {
+          model: String(opts?.body?.model ?? 'llama-3.3-70b-versatile'),
+          usage: { prompt_tokens: 7, completion_tokens: 3 },
+          choices: [{ message: { content: 'Handled malformed input' } }],
+        };
+      }
+    }
+
+    const instr = new GroqInstrumentation();
+    instr.manuallyInstrument({
+      Groq: FakeGroqClient as unknown as { prototype: Record<string, unknown> },
+    });
+
+    const client = new FakeGroqClient();
+    await client.post('/openai/v1/chat/completions', {
+      body: {
+        model: 'llama-3.3-70b-versatile',
+        messages: [null, 42, 'bad', { nope: true }, { role: 'user', content: 'hello' }],
+      },
+    });
+
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 1);
+    const span = spans[0];
+    assert.equal(span.attributes['input.value'], 'hello');
+  });
 });
