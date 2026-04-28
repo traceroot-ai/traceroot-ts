@@ -70,10 +70,14 @@
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": ">=0.20.0",
+    "groq-sdk": ">=1.0.0",
     "openai": ">=6.0.0"
   },
   "peerDependenciesMeta": {
     "openai": {
+      "optional": true
+    },
+    "groq-sdk": {
       "optional": true
     },
     "@anthropic-ai/sdk": {

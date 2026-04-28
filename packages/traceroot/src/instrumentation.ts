@@ -6,6 +6,7 @@ import { ClaudeAgentSDKInstrumentation } from '@arizeai/openinference-instrument
 import { LangChainInstrumentation } from '@arizeai/openinference-instrumentation-langchain';
 import { OpenAIInstrumentation } from '@arizeai/openinference-instrumentation-openai';
 import { InitializeOptions } from './types';
+import { GroqInstrumentation } from './groq_instrumentation';
 
 /**
  * Wires OpenInference instrumentations based on the instrumentModules option:
@@ -29,6 +30,7 @@ export function wireInstrumentations(
         new LangChainInstrumentation(),
         new ClaudeAgentSDKInstrumentation(),
         new BedrockInstrumentation(),
+        new GroqInstrumentation(),
       ],
     });
     return;
@@ -40,6 +42,7 @@ export function wireInstrumentations(
     | typeof LangChainInstrumentation
     | typeof ClaudeAgentSDKInstrumentation
     | typeof BedrockInstrumentation
+    | typeof GroqInstrumentation
   >[] = [];
 
   if (instrumentModules.openAI) {
@@ -67,6 +70,11 @@ export function wireInstrumentations(
     const instr = new BedrockInstrumentation();
     instrs.push(instr);
     instr.manuallyInstrument(instrumentModules.bedrock as any);
+  }
+  if (instrumentModules.groq) {
+    const instr = new GroqInstrumentation();
+    instrs.push(instr);
+    instr.manuallyInstrument(instrumentModules.groq as any);
   }
 
   if (instrs.length > 0) {
