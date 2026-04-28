@@ -54,6 +54,7 @@ export interface InitializeOptions {
     langchain?: unknown;
     claudeAgentSDK?: unknown;
     bedrock?: unknown;
+    groq?: unknown;
   };
   /** Use SimpleSpanProcessor instead of BatchSpanProcessor. Useful for scripts/tests. */
   disableBatch?: boolean;
