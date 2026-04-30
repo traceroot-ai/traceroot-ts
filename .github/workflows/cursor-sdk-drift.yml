@@ -1,0 +1,77 @@
+name: Cursor SDK drift check
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      cursor_sdk_version:
+        description: "Override @cursor/sdk version (default: latest)"
+        required: false
+        default: "latest"
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install latest @cursor/sdk in capture/
+        working-directory: packages/cursor/capture
+        run: |
+          version="${{ github.event.inputs.cursor_sdk_version || 'latest' }}"
+          echo "Installing @cursor/sdk@$version"
+          npm install
+          npm install --no-save "@cursor/sdk@$version"
+          echo "INSTALLED_VERSION=$(node -p "require('@cursor/sdk/package.json').version")" >> "$GITHUB_ENV"
+
+      - name: Capture local-quickstart fixture against latest SDK
+        working-directory: packages/cursor/capture
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          npm run capture:quickstart
+          mv ../fixtures/local-quickstart.json /tmp/local-quickstart-fresh.json
+
+      - name: Compare fresh fixture against locked baseline
+        id: drift
+        run: |
+          node scripts/check-drift.mjs \
+            packages/cursor/fixtures/local-quickstart.json \
+            /tmp/local-quickstart-fresh.json \
+            > /tmp/drift-report.md
+          if grep -q '^DRIFT_DETECTED=true' /tmp/drift-report.md; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Replay fresh fixture through mappers
+        run: |
+          cp /tmp/local-quickstart-fresh.json packages/cursor/fixtures/local-quickstart.json
+          pnpm -F @traceroot-ai/cursor test || echo "MAPPER_TESTS_FAILED=true" >> "$GITHUB_ENV"
+
+      - name: Open issue on drift
+        if: steps.drift.outputs.drift == 'true' || env.MAPPER_TESTS_FAILED == 'true'
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "[cursor-sdk] drift detected against @cursor/sdk@${{ env.INSTALLED_VERSION }}"
+          content-filepath: /tmp/drift-report.md
+          labels: |
+            cursor-sdk-drift
+            needs-triage

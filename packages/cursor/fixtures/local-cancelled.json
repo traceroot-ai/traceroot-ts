@@ -1,0 +1,380 @@
+[
+  {
+    "source": "stream",
+    "ts_ms": 1777538476213,
+    "ordinal": 0,
+    "payload": {
+      "type": "status",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "status": "RUNNING"
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477445,
+    "ordinal": 1,
+    "payload": {
+      "type": "text-delta",
+      "text": "Expl"
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538477445,
+    "ordinal": 2,
+    "payload": {
+      "type": "assistant",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Expl"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477447,
+    "ordinal": 3,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 1
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477447,
+    "ordinal": 4,
+    "payload": {
+      "type": "text-delta",
+      "text": "oring"
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538477447,
+    "ordinal": 5,
+    "payload": {
+      "type": "assistant",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "oring"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477447,
+    "ordinal": 6,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 1
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477447,
+    "ordinal": 7,
+    "payload": {
+      "type": "text-delta",
+      "text": " the capture"
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538477447,
+    "ordinal": 8,
+    "payload": {
+      "type": "assistant",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": " the capture"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477447,
+    "ordinal": 9,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 3
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477447,
+    "ordinal": 10,
+    "payload": {
+      "type": "text-delta",
+      "text": " directory and refactoring"
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538477447,
+    "ordinal": 11,
+    "payload": {
+      "type": "assistant",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": " directory and refactoring"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477447,
+    "ordinal": 12,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 6
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477448,
+    "ordinal": 13,
+    "payload": {
+      "type": "text-delta",
+      "text": " files"
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538477448,
+    "ordinal": 14,
+    "payload": {
+      "type": "assistant",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": " files"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477448,
+    "ordinal": 15,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 2
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477448,
+    "ordinal": 16,
+    "payload": {
+      "type": "text-delta",
+      "text": " to use async/"
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538477448,
+    "ordinal": 17,
+    "payload": {
+      "type": "assistant",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": " to use async/"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477448,
+    "ordinal": 18,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 3
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477448,
+    "ordinal": 19,
+    "payload": {
+      "type": "text-delta",
+      "text": "await.\n\n"
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538477448,
+    "ordinal": 20,
+    "payload": {
+      "type": "assistant",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "await.\n\n"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477448,
+    "ordinal": 21,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 2
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477461,
+    "ordinal": 22,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 6
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477481,
+    "ordinal": 23,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 13
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477481,
+    "ordinal": 24,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 5
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477481,
+    "ordinal": 25,
+    "payload": {
+      "type": "token-delta",
+      "tokens": 1
+    }
+  },
+  {
+    "source": "onStep",
+    "ts_ms": 1777538477500,
+    "ordinal": 26,
+    "payload": {
+      "type": "assistantMessage",
+      "message": {
+        "text": "Exploring the capture directory and refactoring files to use async/await.\n\n"
+      }
+    }
+  },
+  {
+    "source": "onDelta",
+    "ts_ms": 1777538477500,
+    "ordinal": 27,
+    "payload": {
+      "type": "tool-call-started",
+      "callId": "tool_2e3e86d3-ec0a-41aa-82f1-40db410987a",
+      "toolCall": {
+        "type": "glob",
+        "args": {
+          "globPattern": "**/*",
+          "targetDirectory": "/Users/lucasqiu/Desktop/traceroot/cursor-sdk/capture"
+        }
+      },
+      "modelCallId": "8246e367-7baf-4d59-a9bc-cc85f39f63de-0-mzi2"
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538477500,
+    "ordinal": 28,
+    "payload": {
+      "type": "tool_call",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "call_id": "tool_2e3e86d3-ec0a-41aa-82f1-40db410987a",
+      "name": "glob",
+      "status": "running",
+      "args": {
+        "globPattern": "**/*",
+        "targetDirectory": "/Users/lucasqiu/Desktop/traceroot/cursor-sdk/capture"
+      }
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538481213,
+    "ordinal": 29,
+    "payload": {
+      "__injected": "cancel-call-issued"
+    }
+  },
+  {
+    "source": "onDidChangeStatus",
+    "ts_ms": 1777538481213,
+    "ordinal": 30,
+    "payload": {
+      "status": "cancelled"
+    }
+  },
+  {
+    "source": "stream",
+    "ts_ms": 1777538481213,
+    "ordinal": 31,
+    "payload": {
+      "type": "status",
+      "agent_id": "agent-a247b211-148b-4d35-a6e6-83afe68204ce",
+      "run_id": "run-4cb8237b-1f75-4d50-9045-3257054a2bbb",
+      "status": "FINISHED"
+    }
+  }
+]
