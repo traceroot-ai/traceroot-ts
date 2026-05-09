@@ -6,6 +6,7 @@ import { ClaudeAgentSDKInstrumentation } from '@arizeai/openinference-instrument
 import { LangChainInstrumentation } from '@arizeai/openinference-instrumentation-langchain';
 import { OpenAIInstrumentation } from '@arizeai/openinference-instrumentation-openai';
 import { InitializeOptions } from './types';
+import { MistralInstrumentation } from './mistral';
 import { wireOpenAIAgentsProcessor } from './openai-agents';
 
 /**
@@ -30,6 +31,7 @@ export function wireInstrumentations(
         new LangChainInstrumentation(),
         new ClaudeAgentSDKInstrumentation(),
         new BedrockInstrumentation(),
+        new MistralInstrumentation(),
       ],
     });
     return;
@@ -41,6 +43,7 @@ export function wireInstrumentations(
     | typeof LangChainInstrumentation
     | typeof ClaudeAgentSDKInstrumentation
     | typeof BedrockInstrumentation
+    | typeof MistralInstrumentation
   >[] = [];
 
   if (instrumentModules.openAI) {
@@ -68,6 +71,11 @@ export function wireInstrumentations(
     const instr = new BedrockInstrumentation();
     instrs.push(instr);
     instr.manuallyInstrument(instrumentModules.bedrock as any);
+  }
+  if (instrumentModules.mistral) {
+    const instr = new MistralInstrumentation();
+    instrs.push(instr);
+    instr.manuallyInstrument(instrumentModules.mistral);
   }
   if (instrumentModules.openaiAgents) {
     wireOpenAIAgentsProcessor(instrumentModules.openaiAgents);

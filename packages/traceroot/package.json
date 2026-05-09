@@ -72,6 +72,7 @@
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": ">=0.20.0",
+    "@mistralai/mistralai": ">=2.0.0",
     "openai": ">=6.0.0",
     "@openai/agents": ">=0.0.1"
   },
@@ -80,6 +81,9 @@
       "optional": true
     },
     "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@mistralai/mistralai": {
       "optional": true
     },
     "@openai/agents": {

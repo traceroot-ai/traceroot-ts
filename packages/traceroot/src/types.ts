@@ -55,6 +55,13 @@ export interface InitializeOptions {
     claudeAgentSDK?: unknown;
     bedrock?: unknown;
     /**
+     * `@mistralai/mistralai` module namespace. Pass
+     * `import * as mistralSdk from '@mistralai/mistralai'` (the namespace, not
+     * the `Mistral` class). The Mistral SDK is ESM-only, so RITM
+     * auto-instrumentation does not apply — pass the module ref explicitly.
+     */
+    mistral?: unknown;
+    /**
      * @openai/agents module ref. Pass `import * as agents from '@openai/agents'`.
      *
      * Replaces the SDK's default OpenAI tracing processor with TraceRoot's —
