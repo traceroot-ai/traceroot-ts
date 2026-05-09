@@ -208,6 +208,115 @@ describe('MistralInstrumentation', () => {
     assert.equal(spans[0].attributes['output.value'], 'Handled malformed input');
   });
 
+  it('manuallyUninstrument() restores the original chat getter when lazy patching has not fired yet', async () => {
+    let callCount = 0;
+    const fakeModule = buildFakeMistralModule(async () => {
+      callCount++;
+      return {
+        model: 'mistral-large-latest',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        choices: [{ message: { content: 'ok' }, finishReason: 'stop' }],
+      };
+    });
+
+    // Capture the original getter BEFORE we patch so we can compare identity later.
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      fakeModule.Mistral.prototype,
+      'chat',
+    );
+    assert.equal(typeof originalDescriptor?.get, 'function');
+
+    const instr = new MistralInstrumentation();
+    instr.manuallyInstrument(fakeModule);
+
+    // Sanity: patching swapped the descriptor.
+    const patchedDescriptor = Object.getOwnPropertyDescriptor(fakeModule.Mistral.prototype, 'chat');
+    assert.notEqual(patchedDescriptor?.get, originalDescriptor?.get);
+
+    // Immediately uninstrument WITHOUT ever touching `mistral.chat`. This is
+    // the regression case: pre-lazy unpatch must still restore the original
+    // getter, otherwise instrumentation silently re-arms on the next access.
+    instr.manuallyUninstrument(fakeModule);
+
+    const restoredDescriptor = Object.getOwnPropertyDescriptor(
+      fakeModule.Mistral.prototype,
+      'chat',
+    );
+    assert.equal(
+      restoredDescriptor?.get,
+      originalDescriptor?.get,
+      'unpatch() must restore the original chat getter even before lazy patching fires',
+    );
+
+    // And no spans should be emitted for subsequent calls.
+    const client = new fakeModule.Mistral();
+    await client.chat.complete({
+      model: 'mistral-large-latest',
+      messages: [{ role: 'user', content: 'after unpatch' }],
+    });
+    assert.equal(callCount, 1, 'underlying call should still happen');
+    assert.equal(exporter.getFinishedSpans().length, 0, 'no spans should be emitted after unpatch');
+  });
+
+  it('manuallyUninstrument() also unwraps Chat.prototype.complete after lazy patching has fired', async () => {
+    const fakeModule = buildFakeMistralModule(async () => ({
+      model: 'mistral-large-latest',
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      choices: [{ message: { content: 'ok' }, finishReason: 'stop' }],
+    }));
+
+    const instr = new MistralInstrumentation();
+    instr.manuallyInstrument(fakeModule);
+
+    const c1 = new fakeModule.Mistral();
+    await c1.chat.complete({
+      model: 'mistral-large-latest',
+      messages: [{ role: 'user', content: 'pre-unpatch' }],
+    });
+    assert.equal(exporter.getFinishedSpans().length, 1);
+
+    instr.manuallyUninstrument(fakeModule);
+    exporter.reset();
+
+    const c2 = new fakeModule.Mistral();
+    await c2.chat.complete({
+      model: 'mistral-large-latest',
+      messages: [{ role: 'user', content: 'post-unpatch' }],
+    });
+    assert.equal(
+      exporter.getFinishedSpans().length,
+      0,
+      'no spans should be emitted after unpatch, even on a fresh client',
+    );
+  });
+
+  it('patch() is idempotent — re-patching the same module does not break unpatch', async () => {
+    const fakeModule = buildFakeMistralModule(async () => ({
+      model: 'mistral-large-latest',
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      choices: [{ message: { content: 'ok' }, finishReason: 'stop' }],
+    }));
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      fakeModule.Mistral.prototype,
+      'chat',
+    );
+
+    const instr = new MistralInstrumentation();
+    instr.manuallyInstrument(fakeModule);
+    instr.manuallyInstrument(fakeModule); // second call is a no-op
+    instr.manuallyUninstrument(fakeModule);
+
+    const restoredDescriptor = Object.getOwnPropertyDescriptor(
+      fakeModule.Mistral.prototype,
+      'chat',
+    );
+    assert.equal(
+      restoredDescriptor?.get,
+      originalDescriptor?.get,
+      'double-patch then unpatch must still cleanly restore the original getter',
+    );
+  });
+
   it('only patches the Chat prototype once across multiple Mistral instances', async () => {
     let callCount = 0;
     const fakeModule = buildFakeMistralModule(async () => {

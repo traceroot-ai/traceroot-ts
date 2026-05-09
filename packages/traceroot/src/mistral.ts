@@ -65,9 +65,13 @@ type ChatLike = {
 };
 
 const PATCH_MARKER = Symbol.for('@traceroot-ai/mistral-instrumentation/patched');
+const MISTRAL_PROTO_PATCH_MARKER = Symbol.for(
+  '@traceroot-ai/mistral-instrumentation/mistral-proto-patched',
+);
 
 interface PrototypeWithMarker extends Record<string, unknown> {
   [PATCH_MARKER]?: boolean;
+  [MISTRAL_PROTO_PATCH_MARKER]?: boolean;
 }
 
 function safeJson(value: unknown): string {
@@ -172,6 +176,8 @@ function extractOutputValue(response: ChatCompletionResponse | undefined): strin
  */
 export class MistralInstrumentation extends InstrumentationBase {
   private patchedChatPrototype: PrototypeWithMarker | null = null;
+  private patchedMistralPrototype: PrototypeWithMarker | null = null;
+  private originalChatDescriptor: PropertyDescriptor | null = null;
 
   constructor() {
     super('@traceroot-ai/traceroot-mistral-instrumentation', '0.1.0');
@@ -192,10 +198,28 @@ export class MistralInstrumentation extends InstrumentationBase {
     this.patch(moduleExports as MistralModuleLike);
   }
 
+  /**
+   * Symmetric counterpart to {@link manuallyInstrument} — restores the
+   * original `Mistral.prototype.chat` getter and unwraps `Chat.prototype.complete`
+   * if the lazy patching had already fired. Safe to call even if the lazy
+   * Chat-prototype wrap has not yet happened (e.g., the user patched and then
+   * immediately decided to disable instrumentation without touching `mistral.chat`).
+   */
+  manuallyUninstrument(moduleExports: unknown): void {
+    this.unpatch(moduleExports as MistralModuleLike);
+  }
+
   private patch(moduleExports: MistralModuleLike): MistralModuleLike {
     const MistralCtor = moduleExports?.Mistral ?? moduleExports?.default;
-    const proto = MistralCtor?.prototype as Record<string, unknown> | undefined;
+    const proto = MistralCtor?.prototype as PrototypeWithMarker | undefined;
     if (!proto) {
+      return moduleExports;
+    }
+
+    // Idempotency: if we already installed our getter on this prototype,
+    // bail out. Re-running patch() would otherwise re-read our own getter as
+    // the "original" and corrupt the unpatch path.
+    if (proto[MISTRAL_PROTO_PATCH_MARKER]) {
       return moduleExports;
     }
 
@@ -204,6 +228,12 @@ export class MistralInstrumentation extends InstrumentationBase {
       return moduleExports;
     }
     const originalGetter = chatDescriptor.get;
+
+    // Remember what we replaced *before* installing our getter so unpatch()
+    // can always restore the original, regardless of whether the lazy
+    // Chat.prototype.complete wrap has fired yet.
+    this.patchedMistralPrototype = proto;
+    this.originalChatDescriptor = chatDescriptor;
 
     // Capture instance methods in a closure so the property getter below
     // doesn't need to alias `this` (its `this` is the Mistral instance).
@@ -235,15 +265,33 @@ export class MistralInstrumentation extends InstrumentationBase {
       },
     });
 
+    proto[MISTRAL_PROTO_PATCH_MARKER] = true;
     return moduleExports;
   }
 
   private unpatch(moduleExports: MistralModuleLike): MistralModuleLike {
+    // Step 1: restore Mistral.prototype.chat to the original descriptor.
+    //
+    // This must happen unconditionally — even if the lazy Chat.prototype.complete
+    // wrap has not fired yet. Otherwise our overridden getter remains installed
+    // and the next `mistral.chat` access after unpatch() would silently re-arm
+    // the wrap. If lazy patching *did* fire, patch()'s inner getter already
+    // restored the original descriptor inline; redefining it here is a safe
+    // no-op in that case.
+    if (this.patchedMistralPrototype && this.originalChatDescriptor) {
+      Object.defineProperty(this.patchedMistralPrototype, 'chat', this.originalChatDescriptor);
+      delete this.patchedMistralPrototype[MISTRAL_PROTO_PATCH_MARKER];
+      this.patchedMistralPrototype = null;
+      this.originalChatDescriptor = null;
+    }
+
+    // Step 2: unwrap Chat.prototype.complete if lazy patching had fired.
     if (this.patchedChatPrototype) {
       this._unwrap(this.patchedChatPrototype, 'complete');
       delete this.patchedChatPrototype[PATCH_MARKER];
       this.patchedChatPrototype = null;
     }
+
     return moduleExports;
   }
 
