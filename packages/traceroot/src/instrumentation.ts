@@ -2,11 +2,11 @@
 import { registerInstrumentations } from '@opentelemetry/instrumentation';
 import { AnthropicInstrumentation } from '@arizeai/openinference-instrumentation-anthropic';
 import { BedrockInstrumentation } from '@arizeai/openinference-instrumentation-bedrock';
-import { ClaudeAgentSDKInstrumentation } from '@arizeai/openinference-instrumentation-claude-agent-sdk';
 import { LangChainInstrumentation } from '@arizeai/openinference-instrumentation-langchain';
 import { OpenAIInstrumentation } from '@arizeai/openinference-instrumentation-openai';
 import { InitializeOptions } from './types';
 import { wireOpenAIAgentsProcessor } from './openai-agents';
+import { wireClaudeAgentSDKInstrumentation } from './claude-agent-sdk';
 
 /**
  * Wires OpenInference instrumentations based on the instrumentModules option:
@@ -28,7 +28,6 @@ export function wireInstrumentations(
         new OpenAIInstrumentation(),
         new AnthropicInstrumentation(),
         new LangChainInstrumentation(),
-        new ClaudeAgentSDKInstrumentation(),
         new BedrockInstrumentation(),
       ],
     });
@@ -39,7 +38,6 @@ export function wireInstrumentations(
     | typeof OpenAIInstrumentation
     | typeof AnthropicInstrumentation
     | typeof LangChainInstrumentation
-    | typeof ClaudeAgentSDKInstrumentation
     | typeof BedrockInstrumentation
   >[] = [];
 
@@ -60,9 +58,9 @@ export function wireInstrumentations(
     instr.manuallyInstrument(instrumentModules.langchain as any);
   }
   if (instrumentModules.claudeAgentSDK) {
-    const instr = new ClaudeAgentSDKInstrumentation();
-    instrs.push(instr);
-    instr.manuallyInstrument(instrumentModules.claudeAgentSDK as any);
+    // Claude Agent SDK uses TraceRoot's in-house wrapper for stable agent/tool/LLM structure.
+    // Auto RITM is intentionally not enabled for it until this wrapper has its own loader hook.
+    wireClaudeAgentSDKInstrumentation(instrumentModules.claudeAgentSDK);
   }
   if (instrumentModules.bedrock) {
     const instr = new BedrockInstrumentation();
