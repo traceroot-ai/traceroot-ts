@@ -688,9 +688,8 @@ describe('Claude Agent SDK instrumentation', () => {
 
     wireClaudeAgentSDKInstrumentation(sdk);
 
-    const iterator = sdk
-      .query({ prompt: 'test prompt', options: { model: 'claude-opus-4-7' } })
-      [Symbol.asyncIterator]();
+    const iterable = sdk.query({ prompt: 'test prompt', options: { model: 'claude-opus-4-7' } });
+    const iterator = iterable[Symbol.asyncIterator]();
     await iterator.next();
     await iterator.return?.();
     await iterator.return?.();
