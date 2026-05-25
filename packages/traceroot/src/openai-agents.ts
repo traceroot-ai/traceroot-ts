@@ -1,6 +1,17 @@
 import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import type { Context, Span as OTelSpan } from '@opentelemetry/api';
 import type { SpanData } from '@openai/agents';
+import {
+  AGENT_NAME,
+  OI_INPUT_VALUE,
+  OI_LLM_MODEL_NAME,
+  OI_LLM_TOKEN_COUNT_COMPLETION,
+  OI_LLM_TOKEN_COUNT_PROMPT,
+  OI_OUTPUT_VALUE,
+  OI_SPAN_KIND,
+  SPAN_METADATA,
+  TOOL_NAME,
+} from './constants';
 
 // Structural mirrors of the public read-surface of @openai/agents `Span` and `Trace`.
 // We can't use the SDK class types directly because they hold their state in
@@ -67,64 +78,63 @@ export function getSpanName(data: SpanData): string {
 
 export function getSpanAttributes(data: SpanData): Record<string, string | number | boolean> {
   const attrs: Record<string, string | number | boolean> = {
-    'openinference.span.kind': SPAN_KIND[data.type],
+    [OI_SPAN_KIND]: SPAN_KIND[data.type],
   };
   switch (data.type) {
     case 'agent':
-      attrs['agent.name'] = data.name;
-      if (data.tools?.length) attrs['input.value'] = JSON.stringify({ tools: data.tools });
+      attrs[AGENT_NAME] = data.name;
+      if (data.tools?.length) attrs[OI_INPUT_VALUE] = JSON.stringify({ tools: data.tools });
       break;
     case 'function':
-      attrs['tool.name'] = data.name;
-      if (data.input != null) attrs['input.value'] = data.input;
-      if (data.output != null) attrs['output.value'] = data.output;
+      attrs[TOOL_NAME] = data.name;
+      if (data.input != null) attrs[OI_INPUT_VALUE] = data.input;
+      if (data.output != null) attrs[OI_OUTPUT_VALUE] = data.output;
       break;
     case 'generation':
-      if (data.model) attrs['llm.model_name'] = data.model;
-      if (data.input != null) attrs['input.value'] = JSON.stringify(data.input);
-      if (data.output != null) attrs['output.value'] = JSON.stringify(data.output);
+      if (data.model) attrs[OI_LLM_MODEL_NAME] = data.model;
+      if (data.input != null) attrs[OI_INPUT_VALUE] = JSON.stringify(data.input);
+      if (data.output != null) attrs[OI_OUTPUT_VALUE] = JSON.stringify(data.output);
       if (data.usage?.input_tokens != null)
-        attrs['llm.token_count.prompt'] = data.usage.input_tokens;
+        attrs[OI_LLM_TOKEN_COUNT_PROMPT] = data.usage.input_tokens;
       if (data.usage?.output_tokens != null)
-        attrs['llm.token_count.completion'] = data.usage.output_tokens;
+        attrs[OI_LLM_TOKEN_COUNT_COMPLETION] = data.usage.output_tokens;
       break;
     case 'response': {
       const r = data._response as Record<string, unknown> | undefined;
-      if (r?.model) attrs['llm.model_name'] = r.model as string;
+      if (r?.model) attrs[OI_LLM_MODEL_NAME] = r.model as string;
       const usage = r?.usage as Record<string, number> | undefined;
-      if (usage?.input_tokens != null) attrs['llm.token_count.prompt'] = usage.input_tokens;
-      if (usage?.output_tokens != null) attrs['llm.token_count.completion'] = usage.output_tokens;
+      if (usage?.input_tokens != null) attrs[OI_LLM_TOKEN_COUNT_PROMPT] = usage.input_tokens;
+      if (usage?.output_tokens != null) attrs[OI_LLM_TOKEN_COUNT_COMPLETION] = usage.output_tokens;
       if (data._input != null)
-        attrs['input.value'] =
+        attrs[OI_INPUT_VALUE] =
           typeof data._input === 'string' ? data._input : JSON.stringify(data._input);
-      if (r?.output != null) attrs['output.value'] = JSON.stringify(r.output);
+      if (r?.output != null) attrs[OI_OUTPUT_VALUE] = JSON.stringify(r.output);
       break;
     }
     case 'handoff':
-      if (data.from_agent) attrs['agent.name'] = data.from_agent;
-      if (data.to_agent)
-        attrs['traceroot.span.metadata'] = JSON.stringify({ to_agent: data.to_agent });
+      if (data.from_agent) attrs[AGENT_NAME] = data.from_agent;
+      if (data.to_agent) attrs[SPAN_METADATA] = JSON.stringify({ to_agent: data.to_agent });
       break;
     case 'custom':
-      if (data.data) attrs['input.value'] = JSON.stringify(data.data);
+      if (data.data) attrs[OI_INPUT_VALUE] = JSON.stringify(data.data);
       break;
     case 'guardrail':
-      attrs['traceroot.span.metadata'] = JSON.stringify({ triggered: data.triggered });
+      attrs[SPAN_METADATA] = JSON.stringify({ triggered: data.triggered });
       break;
     case 'transcription':
-      if (data.model) attrs['llm.model_name'] = data.model;
-      if (data.output) attrs['output.value'] = data.output;
+      if (data.model) attrs[OI_LLM_MODEL_NAME] = data.model;
+      if (data.output) attrs[OI_OUTPUT_VALUE] = data.output;
       break;
     case 'speech':
-      if (data.model) attrs['llm.model_name'] = data.model;
-      if (data.input) attrs['input.value'] = data.input;
+      if (data.model) attrs[OI_LLM_MODEL_NAME] = data.model;
+      if (data.input) attrs[OI_INPUT_VALUE] = data.input;
       break;
     case 'speech_group':
-      if (data.input) attrs['input.value'] = data.input;
+      if (data.input) attrs[OI_INPUT_VALUE] = data.input;
       break;
     case 'mcp_tools':
-      if (data.server) attrs['tool.name'] = data.server;
-      if (data.result) attrs['output.value'] = JSON.stringify(data.result);
+      if (data.server) attrs[TOOL_NAME] = data.server;
+      if (data.result) attrs[OI_OUTPUT_VALUE] = JSON.stringify(data.result);
       break;
   }
   return attrs;
@@ -137,7 +147,7 @@ export class OpenAIAgentsProcessor {
 
   async onTraceStart(t: OpenAIAgentsTrace): Promise<void> {
     const span = this.tracer.startSpan(t.name ?? 'Agent workflow', {
-      attributes: { 'openinference.span.kind': 'CHAIN' },
+      attributes: { [OI_SPAN_KIND]: 'CHAIN' },
     });
     this.spanMap.set(t.traceId, span);
     this.ctxMap.set(t.traceId, trace.setSpan(context.active(), span));

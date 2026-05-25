@@ -6,16 +6,26 @@ export const DEFAULT_FLUSH_AT = 100; // BatchSpanProcessor maxExportBatchSize
 export const DEFAULT_TIMEOUT_SEC = 30; // seconds → BatchSpanProcessor exportTimeoutMillis (×1000)
 
 // Span-level
+export const OI_SPAN_KIND = 'openinference.span.kind';
+export const OI_INPUT_VALUE = 'input.value';
+export const OI_OUTPUT_VALUE = 'output.value';
 export const SPAN_METADATA = 'traceroot.span.metadata';
 export const SPAN_TAGS = 'traceroot.span.tags';
+export const AGENT_NAME = 'agent.name';
+export const TOOL_NAME = 'tool.name';
 
 // LLM-specific
+export const OI_LLM_MODEL_NAME = 'llm.model_name';
+export const OI_LLM_TOKEN_COUNT_PROMPT = 'llm.token_count.prompt';
+export const OI_LLM_TOKEN_COUNT_COMPLETION = 'llm.token_count.completion';
 export const LLM_MODEL = 'traceroot.llm.model';
 export const LLM_MODEL_PARAMETERS = 'traceroot.llm.model_parameters';
 export const LLM_USAGE = 'traceroot.llm.usage';
 export const LLM_PROMPT = 'traceroot.llm.prompt';
 
 // Trace-level
+export const OI_TRACE_USER_ID = 'user.id';
+export const OI_TRACE_SESSION_ID = 'session.id';
 export const TRACE_METADATA = 'traceroot.trace.metadata';
 export const TRACE_TAGS = 'traceroot.trace.tags';
 
@@ -30,8 +40,8 @@ export const TRACE_TAGS = 'traceroot.trace.tags';
 export const SpanAttributes = {
   // Span-level
   SPAN_TYPE: 'traceroot.span.type',
-  SPAN_INPUT: 'input.value', // OpenInference
-  SPAN_OUTPUT: 'output.value', // OpenInference
+  SPAN_INPUT: OI_INPUT_VALUE, // OpenInference
+  SPAN_OUTPUT: OI_OUTPUT_VALUE, // OpenInference
   SPAN_METADATA,
   SPAN_TAGS,
 
@@ -42,8 +52,8 @@ export const SpanAttributes = {
   LLM_PROMPT,
 
   // Trace-level
-  TRACE_USER_ID: 'user.id', // OpenInference
-  TRACE_SESSION_ID: 'session.id', // OpenInference
+  TRACE_USER_ID: OI_TRACE_USER_ID, // OpenInference
+  TRACE_SESSION_ID: OI_TRACE_SESSION_ID, // OpenInference
   TRACE_METADATA,
   TRACE_TAGS,
 

@@ -31,39 +31,43 @@ import {
   ATTR_TELEMETRY_SDK_VERSION,
 } from '@opentelemetry/semantic-conventions';
 
-// Span path attribute keys — must match TraceRootSpanProcessor (packages/traceroot/src/processor.ts)
-const TR_SPAN_PATH = 'traceroot.span.path';
-const TR_SPAN_IDS_PATH = 'traceroot.span.ids_path';
-
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version: SDK_VERSION } = require('../package.json') as { version: string };
 const SDK_NAME = 'traceroot-mastra';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
+const TR_ATTRIBUTES = {
+  // Span path keys must match TraceRootSpanProcessor (packages/traceroot/src/processor.ts).
+  SPAN_PATH: 'traceroot.span.path',
+  SPAN_IDS_PATH: 'traceroot.span.ids_path',
+  SDK_NAME: 'traceroot.sdk.name',
+  SDK_VERSION: 'traceroot.sdk.version',
+  METADATA_PREFIX: 'traceroot.metadata',
+} as const;
+
 // OpenInference semconv keys — internal only, not exposed in public API.
-const OI_SPAN_KIND = 'openinference.span.kind';
-const OI_INPUT_VALUE = 'input.value';
-const OI_OUTPUT_VALUE = 'output.value';
-const OI_SESSION_ID = 'session.id';
-const OI_USER_ID = 'user.id';
+const OI_ATTRIBUTES = {
+  SPAN_KIND: 'openinference.span.kind',
+  INPUT_VALUE: 'input.value',
+  OUTPUT_VALUE: 'output.value',
+  SESSION_ID: 'session.id',
+  USER_ID: 'user.id',
+} as const;
 
 // OpenInference span kind values
 type OISpanKind = 'AGENT' | 'LLM' | 'TOOL' | 'CHAIN';
 
 // gen_ai semconv (standard, used by multiple platforms)
-const GEN_AI_SYSTEM = 'gen_ai.system';
-const GEN_AI_REQUEST_MODEL = 'gen_ai.request.model';
-const GEN_AI_RESPONSE_MODEL = 'gen_ai.response.model';
-const GEN_AI_USAGE_INPUT_TOKENS = 'gen_ai.usage.input_tokens';
-const GEN_AI_USAGE_OUTPUT_TOKENS = 'gen_ai.usage.output_tokens';
-const GEN_AI_CACHE_WRITE_INPUT_TOKENS = 'gen_ai.usage.cache_creation_input_tokens';
-const GEN_AI_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read_input_tokens';
-
-// TraceRoot-specific keys
-const TR_SDK_NAME = 'traceroot.sdk.name';
-const TR_SDK_VERSION = 'traceroot.sdk.version';
-const TR_METADATA_PREFIX = 'traceroot.metadata';
+const GEN_AI_ATTRIBUTES = {
+  SYSTEM: 'gen_ai.system',
+  REQUEST_MODEL: 'gen_ai.request.model',
+  RESPONSE_MODEL: 'gen_ai.response.model',
+  USAGE_INPUT_TOKENS: 'gen_ai.usage.input_tokens',
+  USAGE_OUTPUT_TOKENS: 'gen_ai.usage.output_tokens',
+  CACHE_WRITE_INPUT_TOKENS: 'gen_ai.usage.cache_creation_input_tokens',
+  CACHE_READ_INPUT_TOKENS: 'gen_ai.usage.cache_read_input_tokens',
+} as const;
 
 type TraceState = {
   activeSpanIds: Set<string>;
@@ -433,29 +437,29 @@ function buildTraceRootAttributes(
   const attrs: Attributes = {};
 
   // SDK identity (always present)
-  attrs[TR_SDK_NAME] = SDK_NAME;
-  attrs[TR_SDK_VERSION] = SDK_VERSION;
+  attrs[TR_ATTRIBUTES.SDK_NAME] = SDK_NAME;
+  attrs[TR_ATTRIBUTES.SDK_VERSION] = SDK_VERSION;
 
   // Span kind → openinference.span.kind (drives icons in TraceRoot UI)
-  attrs[OI_SPAN_KIND] = mapToOISpanKind(span.type);
+  attrs[OI_ATTRIBUTES.SPAN_KIND] = mapToOISpanKind(span.type);
 
   // Input / output
   if (span.input !== undefined) {
-    attrs[OI_INPUT_VALUE] = serialize(extractInput(span));
+    attrs[OI_ATTRIBUTES.INPUT_VALUE] = serialize(extractInput(span));
   }
   if (span.output !== undefined) {
-    attrs[OI_OUTPUT_VALUE] = serialize(span.output);
+    attrs[OI_ATTRIBUTES.OUTPUT_VALUE] = serialize(span.output);
   }
 
   // Session / user identity
   const sessionId = span.metadata?.sessionId;
   if (typeof sessionId === 'string' && sessionId) {
-    attrs[OI_SESSION_ID] = sessionId;
+    attrs[OI_ATTRIBUTES.SESSION_ID] = sessionId;
   }
 
   const userId = span.metadata?.userId;
   if (typeof userId === 'string' && userId) {
-    attrs[OI_USER_ID] = userId;
+    attrs[OI_ATTRIBUTES.USER_ID] = userId;
   }
 
   // Remaining metadata as traceroot.metadata.* (excludes sessionId/userId)
@@ -463,23 +467,25 @@ function buildTraceRootAttributes(
     for (const [key, value] of Object.entries(span.metadata)) {
       if (key === 'sessionId' || key === 'userId' || value == null) continue;
       const v = toAttributeValue(value);
-      if (v !== undefined) attrs[`${TR_METADATA_PREFIX}.${key}`] = v;
+      if (v !== undefined) attrs[`${TR_ATTRIBUTES.METADATA_PREFIX}.${key}`] = v;
     }
   }
 
   // LLM-specific attributes (only for MODEL_GENERATION spans)
   if (span.type === SpanType.MODEL_GENERATION) {
     const modelAttrs = (span.attributes ?? {}) as ModelGenerationAttributes;
-    if (modelAttrs.provider) attrs[GEN_AI_SYSTEM] = normalizeProvider(modelAttrs.provider);
-    if (modelAttrs.model) attrs[GEN_AI_REQUEST_MODEL] = modelAttrs.model;
-    if (modelAttrs.responseModel) attrs[GEN_AI_RESPONSE_MODEL] = modelAttrs.responseModel;
+    if (modelAttrs.provider)
+      attrs[GEN_AI_ATTRIBUTES.SYSTEM] = normalizeProvider(modelAttrs.provider);
+    if (modelAttrs.model) attrs[GEN_AI_ATTRIBUTES.REQUEST_MODEL] = modelAttrs.model;
+    if (modelAttrs.responseModel)
+      attrs[GEN_AI_ATTRIBUTES.RESPONSE_MODEL] = modelAttrs.responseModel;
     Object.assign(attrs, buildUsageAttributes(modelAttrs.usage));
   }
 
   // Live tracing — span ancestry for real-time UI streaming.
   // Mirrors the Map-based path propagation in TraceRootSpanProcessor (PR #71).
-  if (namePath !== undefined) attrs[TR_SPAN_PATH] = namePath;
-  if (idsPath !== undefined) attrs[TR_SPAN_IDS_PATH] = idsPath;
+  if (namePath !== undefined) attrs[TR_ATTRIBUTES.SPAN_PATH] = namePath;
+  if (idsPath !== undefined) attrs[TR_ATTRIBUTES.SPAN_IDS_PATH] = idsPath;
 
   return attrs;
 }
@@ -522,13 +528,15 @@ function extractInput(span: AnyExportedSpan): unknown {
 function buildUsageAttributes(usage?: UsageStats): Attributes {
   if (!usage) return {};
   const out: Attributes = {};
-  if (usage.inputTokens !== undefined) out[GEN_AI_USAGE_INPUT_TOKENS] = usage.inputTokens;
-  if (usage.outputTokens !== undefined) out[GEN_AI_USAGE_OUTPUT_TOKENS] = usage.outputTokens;
+  if (usage.inputTokens !== undefined)
+    out[GEN_AI_ATTRIBUTES.USAGE_INPUT_TOKENS] = usage.inputTokens;
+  if (usage.outputTokens !== undefined)
+    out[GEN_AI_ATTRIBUTES.USAGE_OUTPUT_TOKENS] = usage.outputTokens;
   if (usage.inputDetails?.cacheWrite !== undefined) {
-    out[GEN_AI_CACHE_WRITE_INPUT_TOKENS] = usage.inputDetails.cacheWrite;
+    out[GEN_AI_ATTRIBUTES.CACHE_WRITE_INPUT_TOKENS] = usage.inputDetails.cacheWrite;
   }
   if (usage.inputDetails?.cacheRead !== undefined) {
-    out[GEN_AI_CACHE_READ_INPUT_TOKENS] = usage.inputDetails.cacheRead;
+    out[GEN_AI_ATTRIBUTES.CACHE_READ_INPUT_TOKENS] = usage.inputDetails.cacheRead;
   }
   return out;
 }
