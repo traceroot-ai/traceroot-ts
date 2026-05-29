@@ -1,21 +1,45 @@
 // src/instrumentation.ts
-import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { AnthropicInstrumentation } from '@arizeai/openinference-instrumentation-anthropic';
-import { BedrockInstrumentation } from '@arizeai/openinference-instrumentation-bedrock';
-import { LangChainInstrumentation } from '@arizeai/openinference-instrumentation-langchain';
-import { OpenAIInstrumentation } from '@arizeai/openinference-instrumentation-openai';
-import { InitializeOptions } from './types';
+import { registerInstrumentations, type Instrumentation } from '@opentelemetry/instrumentation';
+import type { InitializeOptions } from './types';
 import { wireOpenAIAgentsProcessor } from './openai-agents';
 import { wireClaudeAgentSDKInstrumentation } from './claude-agent-sdk';
+
+type InstrumentationWithManualPatch = Instrumentation & {
+  manuallyInstrument(moduleRef: unknown): void;
+};
+
+type InstrumentationCtor = new () => InstrumentationWithManualPatch;
+
+const OPENINFERENCE_PACKAGES = {
+  openAI: ['@arizeai/openinference-instrumentation-openai', 'OpenAIInstrumentation'],
+  anthropic: ['@arizeai/openinference-instrumentation-anthropic', 'AnthropicInstrumentation'],
+  langchain: ['@arizeai/openinference-instrumentation-langchain', 'LangChainInstrumentation'],
+  bedrock: ['@arizeai/openinference-instrumentation-bedrock', 'BedrockInstrumentation'],
+} as const;
+
+function loadInstrumentation(pkg: string, exportName: string): InstrumentationCtor | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require(pkg) as Record<string, unknown>;
+    const ctor = mod[exportName];
+    if (typeof ctor !== 'function') return null;
+    return ctor as InstrumentationCtor;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Wires OpenInference instrumentations based on the instrumentModules option:
  *
- * - undefined  → RITM auto-instrumentation for all supported modules (CJS only)
- * - {}         → no instrumentation
- * - { openAI } → manual patch only the provided module refs
+ * - undefined  -> RITM auto-instrumentation for all supported modules (CJS only)
+ * - {}         -> no instrumentation
+ * - { openAI } -> manual patch only the provided module refs
  *
  * Called once by TraceRoot.initialize().
+ *
+ * All OpenInference instrumentations are lazy-loaded via require() so that
+ * missing peer dependencies don't crash initialization.
  */
 export function wireInstrumentations(
   instrumentModules: InitializeOptions['instrumentModules'],
@@ -23,49 +47,33 @@ export function wireInstrumentations(
   if (instrumentModules === undefined) {
     // Auto-instrumentation via require-in-the-middle (CJS only).
     // ESM users must pass explicit module refs.
-    registerInstrumentations({
-      instrumentations: [
-        new OpenAIInstrumentation(),
-        new AnthropicInstrumentation(),
-        new LangChainInstrumentation(),
-        new BedrockInstrumentation(),
-      ],
-    });
+    const instrs: Instrumentation[] = [];
+    for (const [pkg, exportName] of Object.values(OPENINFERENCE_PACKAGES)) {
+      const Ctor = loadInstrumentation(pkg, exportName);
+      if (Ctor) instrs.push(new Ctor());
+    }
+    if (instrs.length > 0) {
+      registerInstrumentations({ instrumentations: instrs });
+    }
     return;
   }
 
-  const instrs: InstanceType<
-    | typeof OpenAIInstrumentation
-    | typeof AnthropicInstrumentation
-    | typeof LangChainInstrumentation
-    | typeof BedrockInstrumentation
-  >[] = [];
+  const instrs: Instrumentation[] = [];
 
-  if (instrumentModules.openAI) {
-    const instr = new OpenAIInstrumentation();
+  for (const [key, [pkg, exportName]] of Object.entries(OPENINFERENCE_PACKAGES)) {
+    const moduleRef = instrumentModules[key as keyof typeof OPENINFERENCE_PACKAGES];
+    if (!moduleRef) continue;
+    const Ctor = loadInstrumentation(pkg, exportName);
+    if (!Ctor) {
+      throw new Error(`[TraceRoot] Failed to load ${pkg}. Install it: npm install ${pkg}`);
+    }
+    const instr = new Ctor();
     instrs.push(instr);
-    instr.manuallyInstrument(instrumentModules.openAI as any);
+    instr.manuallyInstrument(moduleRef);
   }
-  if (instrumentModules.anthropic) {
-    const instr = new AnthropicInstrumentation();
-    instrs.push(instr);
-    instr.manuallyInstrument(instrumentModules.anthropic as any);
-  }
-  if (instrumentModules.langchain) {
-    // langchain must be: import * as lcCallbackManager from '@langchain/core/callbacks/manager'
-    const instr = new LangChainInstrumentation();
-    instrs.push(instr);
-    instr.manuallyInstrument(instrumentModules.langchain as any);
-  }
+
   if (instrumentModules.claudeAgentSDK) {
-    // Claude Agent SDK uses TraceRoot's in-house wrapper for stable agent/tool/LLM structure.
-    // Auto RITM is intentionally not enabled for it until this wrapper has its own loader hook.
     wireClaudeAgentSDKInstrumentation(instrumentModules.claudeAgentSDK);
-  }
-  if (instrumentModules.bedrock) {
-    const instr = new BedrockInstrumentation();
-    instrs.push(instr);
-    instr.manuallyInstrument(instrumentModules.bedrock as any);
   }
   if (instrumentModules.openaiAgents) {
     wireOpenAIAgentsProcessor(instrumentModules.openaiAgents);
