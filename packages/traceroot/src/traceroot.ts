@@ -18,12 +18,29 @@ import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
-import { autoDetectGitContext, getGitRoot, _resetGitContextCache } from './git_context';
+import {
+  autoDetectGitContext,
+  getGitRoot,
+  harvestCiGitContext,
+  _resetGitContextCache,
+} from './git_context';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
 let _isInitialized = false;
 let _provider: NodeTracerProvider | undefined;
+let _warnedMissingGitContext = false;
+
+// Avoid noisy logs when initialize() is retried without deploy-time git metadata.
+function warnMissingGitContextOnce(): void {
+  if (_warnedMissingGitContext) return;
+  _warnedMissingGitContext = true;
+  console.warn(
+    '[TraceRoot] Git context could not be resolved. Set TRACEROOT_GIT_REPO and ' +
+      'TRACEROOT_GIT_REF in production so traces can be correlated to source code. ' +
+      'See https://docs.traceroot.ai/tracing/git-context',
+  );
+}
 
 export class TraceRoot {
   private constructor() {}
@@ -87,12 +104,26 @@ export class TraceRoot {
     const gitRefOverride = options.gitRef ?? process.env['TRACEROOT_GIT_REF'];
     let gitRepo = gitRepoOverride;
     let gitRef = gitRefOverride;
+
+    // Production containers usually lack .git, so prefer CI/deploy metadata before local git.
+    if (gitRepo === undefined || gitRef === undefined) {
+      const ciGit = harvestCiGitContext();
+      gitRepo ??= ciGit.gitRepo;
+      gitRef ??= ciGit.gitRef;
+    }
+
+    // Local git detection remains the development fallback after explicit and env sources.
     if (gitRepo === undefined || gitRef === undefined) {
       const autoGit = autoDetectGitContext();
       gitRepo ??= autoGit.gitRepo;
       gitRef ??= autoGit.gitRef;
     } else {
       getGitRoot();
+    }
+
+    // Do not fabricate partial defaults; missing git context is omitted from spans.
+    if (gitRepo === undefined && gitRef === undefined) {
+      warnMissingGitContextOnce();
     }
 
     // Flush/batch tuning — env vars take precedence over SDK defaults.
@@ -147,6 +178,7 @@ export class TraceRoot {
 export function _resetForTesting(): void {
   _isInitialized = false;
   _provider = undefined;
+  _warnedMissingGitContext = false;
   _resetObserveState();
   _resetGitContextCache();
   trace.disable();

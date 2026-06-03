@@ -3,6 +3,49 @@ import assert from 'node:assert/strict';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
 import { TraceRootSpanProcessor } from '../src/processor';
 
+const GIT_ENV_KEYS = [
+  'TRACEROOT_GIT_REPO',
+  'TRACEROOT_GIT_REF',
+  'GITHUB_REPOSITORY',
+  'GITHUB_SHA',
+  'VERCEL_GIT_REPO_OWNER',
+  'VERCEL_GIT_REPO_SLUG',
+  'VERCEL_GIT_COMMIT_SHA',
+  'CI_PROJECT_PATH',
+  'CI_COMMIT_SHA',
+  'CIRCLE_PROJECT_USERNAME',
+  'CIRCLE_PROJECT_REPONAME',
+  'CIRCLE_SHA1',
+  'BITBUCKET_REPO_FULL_NAME',
+  'BITBUCKET_COMMIT',
+  'RENDER_GIT_COMMIT',
+  'PATH',
+] as const;
+
+// Force the unresolved-git path by clearing both deploy metadata and local git access.
+function withGitEnvCleared(fn: () => void): void {
+  const previous = new Map<string, string | undefined>();
+  for (const key of GIT_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  // Prevent autoDetectGitContext() from finding a git binary on the developer machine.
+  process.env['PATH'] = '';
+
+  try {
+    fn();
+  } finally {
+    for (const key of GIT_ENV_KEYS) {
+      const value = previous.get(key);
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 describe('TraceRoot.initialize()', () => {
   afterEach(() => {
     _resetForTesting();
@@ -88,6 +131,26 @@ describe('TraceRoot.initialize()', () => {
   it('completes initialization without error when environment is provided', () => {
     TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true, environment: 'prod' });
     assert.equal(TraceRoot.isInitialized(), true);
+  });
+
+  it('warns once when git context cannot be resolved', () => {
+    const messages: string[] = [];
+    const restore = console.warn;
+    console.warn = (...args: unknown[]) => {
+      messages.push(args.join(' '));
+    };
+    try {
+      withGitEnvCleared(() => {
+        assert.doesNotThrow(() => {
+          TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+        });
+      });
+      const gitWarnings = messages.filter((m) => m.includes('Git context could not be resolved'));
+      assert.equal(gitWarnings.length, 1);
+      assert.ok(gitWarnings[0].includes('https://docs.traceroot.ai/tracing/git-context'));
+    } finally {
+      console.warn = restore;
+    }
   });
 });
 

@@ -1,7 +1,127 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { autoDetectGitContext, captureSourceLocation } from '../src/git_context';
+import {
+  autoDetectGitContext,
+  captureSourceLocation,
+  harvestCiGitContext,
+} from '../src/git_context';
+
+describe('harvestCiGitContext()', () => {
+  it('resolves GitHub Actions env vars', () => {
+    assert.deepEqual(
+      harvestCiGitContext({
+        GITHUB_REPOSITORY: 'acme/api',
+        GITHUB_SHA: '1111111111111111111111111111111111111111',
+      }),
+      {
+        gitRepo: 'acme/api',
+        gitRef: '1111111111111111111111111111111111111111',
+      },
+    );
+  });
+
+  it('resolves Vercel env vars', () => {
+    assert.deepEqual(
+      harvestCiGitContext({
+        VERCEL_GIT_REPO_OWNER: 'acme',
+        VERCEL_GIT_REPO_SLUG: 'web',
+        VERCEL_GIT_COMMIT_SHA: '2222222222222222222222222222222222222222',
+      }),
+      {
+        gitRepo: 'acme/web',
+        gitRef: '2222222222222222222222222222222222222222',
+      },
+    );
+  });
+
+  it('resolves GitLab CI env vars', () => {
+    assert.deepEqual(
+      harvestCiGitContext({
+        CI_PROJECT_PATH: 'acme/worker',
+        CI_COMMIT_SHA: '3333333333333333333333333333333333333333',
+      }),
+      {
+        gitRepo: 'acme/worker',
+        gitRef: '3333333333333333333333333333333333333333',
+      },
+    );
+  });
+
+  it('resolves CircleCI env vars', () => {
+    assert.deepEqual(
+      harvestCiGitContext({
+        CIRCLE_PROJECT_USERNAME: 'acme',
+        CIRCLE_PROJECT_REPONAME: 'jobs',
+        CIRCLE_SHA1: '4444444444444444444444444444444444444444',
+      }),
+      {
+        gitRepo: 'acme/jobs',
+        gitRef: '4444444444444444444444444444444444444444',
+      },
+    );
+  });
+
+  it('resolves Bitbucket env vars', () => {
+    assert.deepEqual(
+      harvestCiGitContext({
+        BITBUCKET_REPO_FULL_NAME: 'acme/data',
+        BITBUCKET_COMMIT: '5555555555555555555555555555555555555555',
+      }),
+      {
+        gitRepo: 'acme/data',
+        gitRef: '5555555555555555555555555555555555555555',
+      },
+    );
+  });
+
+  it('resolves Render commit env var independently', () => {
+    // Render exposes the commit SHA but not a standard owner/repo variable.
+    assert.deepEqual(
+      harvestCiGitContext({
+        RENDER_GIT_COMMIT: '6666666666666666666666666666666666666666',
+      }),
+      {
+        gitRef: '6666666666666666666666666666666666666666',
+      },
+    );
+  });
+
+  it('returns empty context for empty env', () => {
+    assert.deepEqual(harvestCiGitContext({}), {});
+  });
+
+  it('uses first-platform-wins precedence per field', () => {
+    // GitHub Actions appears before Vercel in the resolver ladder.
+    assert.deepEqual(
+      harvestCiGitContext({
+        GITHUB_REPOSITORY: 'acme/github',
+        GITHUB_SHA: '7777777777777777777777777777777777777777',
+        VERCEL_GIT_REPO_OWNER: 'acme',
+        VERCEL_GIT_REPO_SLUG: 'vercel',
+        VERCEL_GIT_COMMIT_SHA: '8888888888888888888888888888888888888888',
+      }),
+      {
+        gitRepo: 'acme/github',
+        gitRef: '7777777777777777777777777777777777777777',
+      },
+    );
+  });
+
+  it('resolves repo and ref independently', () => {
+    // Mixed env sources are valid when the first platform only provides one field.
+    assert.deepEqual(
+      harvestCiGitContext({
+        GITHUB_REPOSITORY: 'acme/github',
+        VERCEL_GIT_COMMIT_SHA: '9999999999999999999999999999999999999999',
+      }),
+      {
+        gitRepo: 'acme/github',
+        gitRef: '9999999999999999999999999999999999999999',
+      },
+    );
+  });
+});
 
 describe('autoDetectGitContext()', () => {
   it('returns an object (possibly empty)', () => {
