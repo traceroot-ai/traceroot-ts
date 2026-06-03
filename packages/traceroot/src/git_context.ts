@@ -52,13 +52,20 @@ function stackPathToFilePath(filepath: string): string {
   }
 }
 
-function pathStartsWithRoot(filepath: string, gitRoot: string): boolean {
+function isCaseInsensitivePlatform(platform = process.platform): boolean {
+  return platform === 'win32' || platform === 'darwin';
+}
+
+function pathStartsWithRoot(
+  filepath: string,
+  gitRoot: string,
+  platform = process.platform,
+): boolean {
   const normalizedFilepath = filepath.replaceAll('\\', '/');
   const normalizedGitRoot = gitRoot.replaceAll('\\', '/').replace(/\/+$/, '');
-  const compareFilepath =
-    process.platform === 'win32' ? normalizedFilepath.toLowerCase() : normalizedFilepath;
-  const compareGitRoot =
-    process.platform === 'win32' ? normalizedGitRoot.toLowerCase() : normalizedGitRoot;
+  const caseInsensitive = isCaseInsensitivePlatform(platform);
+  const compareFilepath = caseInsensitive ? normalizedFilepath.toLowerCase() : normalizedFilepath;
+  const compareGitRoot = caseInsensitive ? normalizedGitRoot.toLowerCase() : normalizedGitRoot;
 
   if (!compareFilepath.startsWith(compareGitRoot)) return false;
   const nextChar = compareFilepath[compareGitRoot.length];
@@ -125,11 +132,15 @@ export function getGitRoot(): string | undefined {
   return _gitRootCache || undefined;
 }
 
-function relativePath(filepath: string, gitRoot = getGitRoot()): string | undefined {
+function relativePath(
+  filepath: string,
+  gitRoot = getGitRoot(),
+  platform = process.platform,
+): string | undefined {
   const normalizedFilepath = stackPathToFilePath(filepath).replaceAll('\\', '/');
   // Git and Node can disagree on slash style on Windows.
   const normalizedGitRoot = gitRoot?.replaceAll('\\', '/').replace(/\/+$/, '');
-  if (normalizedGitRoot && pathStartsWithRoot(normalizedFilepath, normalizedGitRoot)) {
+  if (normalizedGitRoot && pathStartsWithRoot(normalizedFilepath, normalizedGitRoot, platform)) {
     return normalizedFilepath.slice(normalizedGitRoot.length).replace(/^[/\\]/, '');
   }
   // If we can't make the path relative, don't stamp it — avoid leaking absolute paths.
@@ -178,8 +189,12 @@ export function _resetGitContextCache(): void {
 }
 
 /** @internal — expose path handling without shelling out to git */
-export function _relativePathForTesting(filepath: string, gitRoot: string): string | undefined {
-  return relativePath(filepath, gitRoot);
+export function _relativePathForTesting(
+  filepath: string,
+  gitRoot: string,
+  platform = process.platform,
+): string | undefined {
+  return relativePath(filepath, gitRoot, platform);
 }
 
 /** @internal — expose remote parsing without shelling out to git */

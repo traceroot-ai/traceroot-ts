@@ -267,4 +267,18 @@ describe('relative path handling', () => {
       'src/app.ts',
     );
   });
+
+  it('matches macOS repo paths case-insensitively', () => {
+    assert.equal(
+      _relativePathForTesting('/Users/Gabe/Repo/src/app.ts', '/users/gabe/repo', 'darwin'),
+      'src/app.ts',
+    );
+  });
+
+  it('keeps Linux repo path matching case-sensitive', () => {
+    assert.equal(
+      _relativePathForTesting('/Users/Gabe/Repo/src/app.ts', '/users/gabe/repo', 'linux'),
+      undefined,
+    );
+  });
 });
