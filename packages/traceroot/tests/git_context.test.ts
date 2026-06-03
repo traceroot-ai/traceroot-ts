@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {
+  _normalizeRemoteRepoForTesting,
+  _relativePathForTesting,
   autoDetectGitContext,
   captureSourceLocation,
   harvestCiGitContext,
@@ -167,6 +169,28 @@ describe('autoDetectGitContext()', () => {
   });
 });
 
+describe('git remote normalization', () => {
+  it('normalizes HTTPS git remotes', () => {
+    assert.equal(_normalizeRemoteRepoForTesting('https://github.com/acme/api.git'), 'acme/api');
+  });
+
+  it('normalizes SSH git remotes', () => {
+    assert.equal(_normalizeRemoteRepoForTesting('git@github.com:acme/api.git'), 'acme/api');
+  });
+
+  it('normalizes ssh:// git remotes', () => {
+    assert.equal(_normalizeRemoteRepoForTesting('ssh://git@github.com/acme/api.git'), 'acme/api');
+  });
+
+  it('rejects local filesystem git remotes', () => {
+    assert.equal(_normalizeRemoteRepoForTesting('/tmp/acme/api.git'), undefined);
+  });
+
+  it('rejects non-URL remote names', () => {
+    assert.equal(_normalizeRemoteRepoForTesting('acme/api'), undefined);
+  });
+});
+
 describe('captureSourceLocation()', () => {
   it('returns an object with file and line when called from user code', () => {
     const result = captureSourceLocation();
@@ -218,5 +242,29 @@ describe('captureSourceLocation()', () => {
         `functionName should include "myTestFn", got: ${result.functionName}`,
       );
     }
+  });
+});
+
+describe('relative path handling', () => {
+  it('does not treat a sibling path with the same prefix as inside the repo', () => {
+    assert.equal(_relativePathForTesting('/tmp/repo-other/src/app.ts', '/tmp/repo'), undefined);
+  });
+
+  it('returns a relative path when the file is inside the repo', () => {
+    assert.equal(_relativePathForTesting('/tmp/repo/src/app.ts', '/tmp/repo'), 'src/app.ts');
+  });
+
+  it('does not treat a Windows sibling path with the same prefix as inside the repo', () => {
+    assert.equal(
+      _relativePathForTesting('C:\\work\\repo-other\\src\\app.ts', 'C:\\work\\repo'),
+      undefined,
+    );
+  });
+
+  it('returns a slash-normalized relative path for Windows repo files', () => {
+    assert.equal(
+      _relativePathForTesting('C:\\work\\repo\\src\\app.ts', 'C:\\work\\repo'),
+      'src/app.ts',
+    );
   });
 });

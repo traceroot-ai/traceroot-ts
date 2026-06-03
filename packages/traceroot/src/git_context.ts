@@ -22,6 +22,18 @@ function normalizeRepo(value: string | undefined): string | undefined {
   return (match ? match[1] : repo).replace(/\.git$/, '').replace(/^\/+|\/+$/g, '') || undefined;
 }
 
+// Local git remotes should only stamp recognized URL forms, never raw filesystem paths.
+function normalizeRemoteRepo(value: string | undefined): string | undefined {
+  const remote = nonEmpty(value);
+  if (!remote) return undefined;
+
+  const match = remote.match(
+    /^(?:https?:\/\/[^/]+\/|ssh:\/\/git@[^/]+\/|git@[^:]+:)(.+?)(?:\.git)?$/,
+  );
+  if (!match) return undefined;
+  return match[1].replace(/\.git$/, '').replace(/^\/+|\/+$/g, '') || undefined;
+}
+
 // Some platforms split owner and repo name into separate env vars.
 function joinRepo(owner: string | undefined, repo: string | undefined): string | undefined {
   const normalizedOwner = nonEmpty(owner)?.replace(/^\/+|\/+$/g, '');
@@ -38,6 +50,19 @@ function stackPathToFilePath(filepath: string): string {
   } catch {
     return filepath;
   }
+}
+
+function pathStartsWithRoot(filepath: string, gitRoot: string): boolean {
+  const normalizedFilepath = filepath.replaceAll('\\', '/');
+  const normalizedGitRoot = gitRoot.replaceAll('\\', '/').replace(/\/+$/, '');
+  const compareFilepath =
+    process.platform === 'win32' ? normalizedFilepath.toLowerCase() : normalizedFilepath;
+  const compareGitRoot =
+    process.platform === 'win32' ? normalizedGitRoot.toLowerCase() : normalizedGitRoot;
+
+  if (!compareFilepath.startsWith(compareGitRoot)) return false;
+  const nextChar = compareFilepath[compareGitRoot.length];
+  return nextChar === undefined || nextChar === '/';
 }
 
 /**
@@ -100,15 +125,11 @@ export function getGitRoot(): string | undefined {
   return _gitRootCache || undefined;
 }
 
-function relativePath(filepath: string): string | undefined {
+function relativePath(filepath: string, gitRoot = getGitRoot()): string | undefined {
   const normalizedFilepath = stackPathToFilePath(filepath).replaceAll('\\', '/');
-  const gitRoot = getGitRoot();
   // Git and Node can disagree on slash style on Windows.
-  const normalizedGitRoot = gitRoot?.replaceAll('\\', '/');
-  if (
-    normalizedGitRoot &&
-    normalizedFilepath.toLowerCase().startsWith(normalizedGitRoot.toLowerCase())
-  ) {
+  const normalizedGitRoot = gitRoot?.replaceAll('\\', '/').replace(/\/+$/, '');
+  if (normalizedGitRoot && pathStartsWithRoot(normalizedFilepath, normalizedGitRoot)) {
     return normalizedFilepath.slice(normalizedGitRoot.length).replace(/^[/\\]/, '');
   }
   // If we can't make the path relative, don't stamp it — avoid leaking absolute paths.
@@ -130,7 +151,7 @@ export function autoDetectGitContext(): { gitRepo?: string; gitRef?: string } {
     }).trim();
 
     // Normalize to "owner/repo" — handles https, git@, ssh:// formats
-    gitRepo = normalizeRepo(remote);
+    gitRepo = normalizeRemoteRepo(remote);
   } catch {
     /* git unavailable */
   }
@@ -154,6 +175,16 @@ export function autoDetectGitContext(): { gitRepo?: string; gitRef?: string } {
 /** @internal — reset cached git root between tests */
 export function _resetGitContextCache(): void {
   _gitRootCache = null;
+}
+
+/** @internal — expose path handling without shelling out to git */
+export function _relativePathForTesting(filepath: string, gitRoot: string): string | undefined {
+  return relativePath(filepath, gitRoot);
+}
+
+/** @internal — expose remote parsing without shelling out to git */
+export function _normalizeRemoteRepoForTesting(remote: string): string | undefined {
+  return normalizeRemoteRepo(remote);
 }
 
 /**
