@@ -81,12 +81,12 @@ export interface InitializeOptions {
   environment?: string;
   /**
    * Git repository in normalized 'owner/repo' form (e.g. 'acme/my-service').
-   * Falls back to TRACEROOT_GIT_REPO env var, then auto-detected via `git remote get-url origin`.
+   * Falls back to TRACEROOT_GIT_REPO env var, CI/platform env vars, then local git detection.
    */
   gitRepo?: string;
   /**
    * Git commit SHA (typically a 40-character hash). Falls back to TRACEROOT_GIT_REF env var,
-   * then auto-detected via `git rev-parse HEAD`.
+   * CI/platform env vars, then local git detection.
    */
   gitRef?: string;
 }
