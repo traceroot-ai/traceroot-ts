@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
-import { autoDetectGitContext, captureSourceLocation, harvestCiGitContext, gitContextFromFiles } from '../src/git_context';
+import {
+  autoDetectGitContext,
+  captureSourceLocation,
+  harvestCiGitContext,
+  gitContextFromFiles,
+} from '../src/git_context';
 
 describe('autoDetectGitContext()', () => {
   it('returns an object (possibly empty)', () => {
@@ -94,6 +99,19 @@ describe('gitContextFromFiles()', () => {
     writeFileSync(path.join(gitDir, 'refs', 'heads', 'main'), '1'.repeat(40) + '\n');
     const r = gitContextFromFiles(dir);
     assert.equal(r.gitRef, '1'.repeat(40));
+  });
+
+  it('resolves ref-based HEAD from packed-refs when the loose ref is absent', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'tr-git-'));
+    const gitDir = path.join(dir, '.git');
+    mkdirSync(gitDir, { recursive: true });
+    writeFileSync(path.join(gitDir, 'HEAD'), 'ref: refs/heads/main\n');
+    writeFileSync(
+      path.join(gitDir, 'packed-refs'),
+      '# pack-refs with: peeled fully-peeled sorted\n' + '2'.repeat(40) + ' refs/heads/main\n',
+    );
+    const r = gitContextFromFiles(dir);
+    assert.equal(r.gitRef, '2'.repeat(40));
   });
 
   it('parses https remote url form', () => {

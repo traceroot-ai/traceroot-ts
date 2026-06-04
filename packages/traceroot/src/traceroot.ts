@@ -18,7 +18,13 @@ import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
-import { autoDetectGitContext, getGitRoot, harvestCiGitContext, gitContextFromFiles, _resetGitContextCache } from './git_context';
+import {
+  autoDetectGitContext,
+  getGitRoot,
+  harvestCiGitContext,
+  gitContextFromFiles,
+  _resetGitContextCache,
+} from './git_context';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 

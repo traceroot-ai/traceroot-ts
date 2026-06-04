@@ -73,8 +73,29 @@ export function gitContextFromFiles(cwd: string = process.cwd()): {
     } else {
       const rm = head.match(/ref:\s+(\S+)/);
       if (rm) {
-        const refContent = readFileSync(join(gitDir, rm[1]), 'utf8').trim();
-        if (SHA_RE.test(refContent)) gitRef = refContent;
+        const refPath = rm[1]; // e.g. refs/heads/main
+        try {
+          const loose = readFileSync(join(gitDir, refPath), 'utf8').trim();
+          if (SHA_RE.test(loose)) gitRef = loose;
+        } catch {
+          /* loose ref missing — the ref may be packed */
+        }
+        if (gitRef === undefined) {
+          try {
+            // Packed refs (after `git gc`/fresh clone): `<sha> refs/heads/main`.
+            const packed = readFileSync(join(gitDir, 'packed-refs'), 'utf8');
+            for (const line of packed.split(/\r?\n/)) {
+              if (!line || line[0] === '#' || line[0] === '^') continue;
+              const m = line.match(/^([0-9a-f]{40,64})\s+(.+)$/);
+              if (m && m[2] === refPath) {
+                gitRef = m[1];
+                break;
+              }
+            }
+          } catch {
+            /* no packed-refs */
+          }
+        }
       }
     }
   } catch {
@@ -129,9 +150,10 @@ export function autoDetectGitContext(): { gitRepo?: string; gitRef?: string } {
  *
  * repo and ref are resolved independently (a build may provide one, not both).
  */
-export function harvestCiGitContext(
-  env: NodeJS.ProcessEnv = process.env,
-): { gitRepo?: string; gitRef?: string } {
+export function harvestCiGitContext(env: NodeJS.ProcessEnv = process.env): {
+  gitRepo?: string;
+  gitRef?: string;
+} {
   return {
     gitRepo: env[GITHUB_REPOSITORY] || undefined,
     gitRef: env[GITHUB_SHA] || undefined,
