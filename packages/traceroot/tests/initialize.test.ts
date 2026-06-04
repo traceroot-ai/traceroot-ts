@@ -155,6 +155,46 @@ describe('TraceRoot.initialize()', () => {
       'git-context warning should fire exactly once per initialize()',
     );
   });
+
+  it('treats empty-string TRACEROOT_GIT_* env vars as unset (warns)', () => {
+    const saved = {
+      GITHUB_REPOSITORY: process.env['GITHUB_REPOSITORY'],
+      GITHUB_SHA: process.env['GITHUB_SHA'],
+      TRACEROOT_GIT_REPO: process.env['TRACEROOT_GIT_REPO'],
+      TRACEROOT_GIT_REF: process.env['TRACEROOT_GIT_REF'],
+    };
+    const origCwd = process.cwd();
+    const messages: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      messages.push(args.map(String).join(' '));
+    };
+    try {
+      delete process.env['GITHUB_REPOSITORY'];
+      delete process.env['GITHUB_SHA'];
+      // Empty strings must be treated as unset, not as resolved values.
+      process.env['TRACEROOT_GIT_REPO'] = '';
+      process.env['TRACEROOT_GIT_REF'] = '';
+      process.chdir(mkdtempSync(path.join(os.tmpdir(), 'tr-nogit-')));
+      TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    } finally {
+      process.chdir(origCwd);
+      console.warn = origWarn;
+      for (const k of [
+        'GITHUB_REPOSITORY',
+        'GITHUB_SHA',
+        'TRACEROOT_GIT_REPO',
+        'TRACEROOT_GIT_REF',
+      ] as const) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+    assert.ok(
+      messages.some((m) => m.includes('git context incomplete')),
+      `Expected a warn for empty git env vars, got: ${JSON.stringify(messages)}`,
+    );
+  });
 });
 
 // Shared fixture for TraceRootSpanProcessor unit tests

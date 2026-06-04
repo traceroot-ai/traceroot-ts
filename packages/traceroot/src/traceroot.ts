@@ -89,10 +89,10 @@ export class TraceRoot {
 
     const environment = options.environment ?? process.env['TRACEROOT_ENVIRONMENT'];
 
-    const gitRepoOverride = options.gitRepo ?? process.env['TRACEROOT_GIT_REPO'];
-    const gitRefOverride = options.gitRef ?? process.env['TRACEROOT_GIT_REF'];
-    let gitRepo = gitRepoOverride;
-    let gitRef = gitRefOverride;
+    // `|| undefined` so an empty option/env var ('') is treated as unset —
+    // otherwise it would block fallback detection and suppress the warning.
+    let gitRepo = options.gitRepo || process.env['TRACEROOT_GIT_REPO'] || undefined;
+    let gitRef = options.gitRef || process.env['TRACEROOT_GIT_REF'] || undefined;
 
     // CI/platform env vars — production path (no .git needed).
     if (gitRepo === undefined || gitRef === undefined) {
