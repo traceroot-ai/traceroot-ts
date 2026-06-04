@@ -86,7 +86,8 @@ export function gitContextFromFiles(cwd: string = process.cwd()): {
             const packed = readFileSync(join(gitDir, 'packed-refs'), 'utf8');
             for (const line of packed.split(/\r?\n/)) {
               if (!line || line[0] === '#' || line[0] === '^') continue;
-              const m = line.match(/^([0-9a-f]{40,64})\s+(.+)$/);
+              // Object IDs are exactly 40 (SHA-1) or 64 (SHA-256) hex chars.
+              const m = line.match(/^([0-9a-f]{40}|[0-9a-f]{64})\s+(.+)$/);
               if (m && m[2] === refPath) {
                 gitRef = m[1];
                 break;
