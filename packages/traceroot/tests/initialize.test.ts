@@ -1,5 +1,8 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
 import { TraceRootSpanProcessor } from '../src/processor';
 
@@ -88,6 +91,69 @@ describe('TraceRoot.initialize()', () => {
   it('completes initialization without error when environment is provided', () => {
     TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true, environment: 'prod' });
     assert.equal(TraceRoot.isInitialized(), true);
+  });
+
+  it('warns with "git context incomplete" when no git context is resolvable', () => {
+    // Save and clear only the env vars the harvester actually reads.
+    const saved = {
+      GITHUB_REPOSITORY: process.env['GITHUB_REPOSITORY'],
+      GITHUB_SHA: process.env['GITHUB_SHA'],
+      TRACEROOT_GIT_REPO: process.env['TRACEROOT_GIT_REPO'],
+      TRACEROOT_GIT_REF: process.env['TRACEROOT_GIT_REF'],
+    };
+    const origCwd = process.cwd();
+    const messages: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      messages.push(args.map(String).join(' '));
+    };
+
+    try {
+      delete process.env['GITHUB_REPOSITORY'];
+      delete process.env['GITHUB_SHA'];
+      delete process.env['TRACEROOT_GIT_REPO'];
+      delete process.env['TRACEROOT_GIT_REF'];
+      // chdir to a fresh empty temp dir so both gitContextFromFiles() (reads
+      // <cwd>/.git) and the git subprocess (rev-parse from a non-repo dir) find
+      // nothing — regardless of whether this checkout is a worktree, a normal
+      // clone, or a CI environment.
+      process.chdir(mkdtempSync(path.join(os.tmpdir(), 'tr-nogit-')));
+      TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    } finally {
+      process.chdir(origCwd);
+      console.warn = origWarn;
+      // Restore only what was set; leave unset vars deleted.
+      if (saved.GITHUB_REPOSITORY === undefined) {
+        delete process.env['GITHUB_REPOSITORY'];
+      } else {
+        process.env['GITHUB_REPOSITORY'] = saved.GITHUB_REPOSITORY;
+      }
+      if (saved.GITHUB_SHA === undefined) {
+        delete process.env['GITHUB_SHA'];
+      } else {
+        process.env['GITHUB_SHA'] = saved.GITHUB_SHA;
+      }
+      if (saved.TRACEROOT_GIT_REPO === undefined) {
+        delete process.env['TRACEROOT_GIT_REPO'];
+      } else {
+        process.env['TRACEROOT_GIT_REPO'] = saved.TRACEROOT_GIT_REPO;
+      }
+      if (saved.TRACEROOT_GIT_REF === undefined) {
+        delete process.env['TRACEROOT_GIT_REF'];
+      } else {
+        process.env['TRACEROOT_GIT_REF'] = saved.TRACEROOT_GIT_REF;
+      }
+    }
+
+    assert.ok(
+      messages.some((m) => m.includes('git context incomplete')),
+      `Expected a warn containing "git context incomplete", got: ${JSON.stringify(messages)}`,
+    );
+    assert.equal(
+      messages.filter((m) => m.includes('git context incomplete')).length,
+      1,
+      'git-context warning should fire exactly once per initialize()',
+    );
   });
 });
 
