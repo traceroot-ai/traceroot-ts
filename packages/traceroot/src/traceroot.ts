@@ -18,7 +18,13 @@ import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
-import { autoDetectGitContext, getGitRoot, _resetGitContextCache } from './git_context';
+import {
+  autoDetectGitContext,
+  getGitRoot,
+  harvestCiGitContext,
+  gitContextFromFiles,
+  _resetGitContextCache,
+} from './git_context';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
@@ -83,16 +89,46 @@ export class TraceRoot {
 
     const environment = options.environment ?? process.env['TRACEROOT_ENVIRONMENT'];
 
-    const gitRepoOverride = options.gitRepo ?? process.env['TRACEROOT_GIT_REPO'];
-    const gitRefOverride = options.gitRef ?? process.env['TRACEROOT_GIT_REF'];
-    let gitRepo = gitRepoOverride;
-    let gitRef = gitRefOverride;
+    // `|| undefined` so an empty option/env var ('') is treated as unset —
+    // otherwise it would block fallback detection and suppress the warning.
+    let gitRepo = options.gitRepo || process.env['TRACEROOT_GIT_REPO'] || undefined;
+    let gitRef = options.gitRef || process.env['TRACEROOT_GIT_REF'] || undefined;
+
+    // CI/platform env vars — production path (no .git needed).
+    if (gitRepo === undefined || gitRef === undefined) {
+      const ci = harvestCiGitContext();
+      gitRepo ??= ci.gitRepo;
+      gitRef ??= ci.gitRef;
+    }
+
+    // .git read as files — dev fallback, no git binary required.
+    if (gitRepo === undefined || gitRef === undefined) {
+      const fromFiles = gitContextFromFiles();
+      gitRepo ??= fromFiles.gitRepo;
+      gitRef ??= fromFiles.gitRef;
+    }
+
+    // git subprocess — last resort (handles run-from-subdirectory).
     if (gitRepo === undefined || gitRef === undefined) {
       const autoGit = autoDetectGitContext();
       gitRepo ??= autoGit.gitRepo;
       gitRef ??= autoGit.gitRef;
-    } else {
-      getGitRoot();
+    }
+
+    // Warm git-root cache for per-span source paths (cached/idempotent).
+    getGitRoot();
+
+    // Honest absence: warn once, never fabricate.
+    if (gitRepo === undefined || gitRef === undefined) {
+      console.warn(
+        '[TraceRoot] git context incomplete (repo=' +
+          (gitRepo ?? 'unset') +
+          ', ref=' +
+          (gitRef ?? 'unset') +
+          '). The AI agent needs both to correlate traces to source. ' +
+          'Set TRACEROOT_GIT_REPO / TRACEROOT_GIT_REF (see ' +
+          'https://docs.traceroot.ai/tracing/git-context).',
+      );
     }
 
     // Flush/batch tuning — env vars take precedence over SDK defaults.

@@ -1,5 +1,11 @@
 // src/git_context.ts
 import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { GITHUB_REPOSITORY, GITHUB_SHA } from './constants';
+
+const REPO_URL_RE = /(?:https?:\/\/|ssh:\/\/git@|git@)github\.com[:/](.+?)(?:\.git)?$/;
+const SHA_RE = /^[0-9a-f]{40}$/;
 
 let _gitRootCache: string | null = null; // null = not yet detected, '' = failed
 
@@ -26,6 +32,81 @@ function relativePath(filepath: string): string | undefined {
 }
 
 /**
+ * Read git context directly from `.git` files (no `git` subprocess).
+ * Works in containers that ship a `.git` dir but no `git` binary.
+ * Only inspects `<cwd>/.git` (does not walk parent directories).
+ */
+export function gitContextFromFiles(cwd: string = process.cwd()): {
+  gitRepo?: string;
+  gitRef?: string;
+} {
+  const gitDir = join(cwd, '.git');
+  let gitRepo: string | undefined;
+  let gitRef: string | undefined;
+
+  try {
+    const config = readFileSync(join(gitDir, 'config'), 'utf8');
+    let seenOrigin = false;
+    for (const line of config.split(/\r?\n/)) {
+      if (/^\[remote "origin"\]/.test(line)) {
+        seenOrigin = true;
+        continue;
+      }
+      if (seenOrigin && line.startsWith('[')) break; // left the origin section
+      if (seenOrigin) {
+        const m = line.match(/\burl\s*=\s*(.+)$/);
+        if (m) {
+          const rm = m[1].trim().match(REPO_URL_RE);
+          if (rm) gitRepo = rm[1].replace(/\/$/, '');
+          break;
+        }
+      }
+    }
+  } catch {
+    /* no .git/config */
+  }
+
+  try {
+    const head = readFileSync(join(gitDir, 'HEAD'), 'utf8').trim();
+    if (SHA_RE.test(head)) {
+      gitRef = head;
+    } else {
+      const rm = head.match(/ref:\s+(\S+)/);
+      if (rm) {
+        const refPath = rm[1]; // e.g. refs/heads/main
+        try {
+          const loose = readFileSync(join(gitDir, refPath), 'utf8').trim();
+          if (SHA_RE.test(loose)) gitRef = loose;
+        } catch {
+          /* loose ref missing — the ref may be packed */
+        }
+        if (gitRef === undefined) {
+          try {
+            // Packed refs (after `git gc`/fresh clone): `<sha> refs/heads/main`.
+            const packed = readFileSync(join(gitDir, 'packed-refs'), 'utf8');
+            for (const line of packed.split(/\r?\n/)) {
+              if (!line || line[0] === '#' || line[0] === '^') continue;
+              // Object IDs are exactly 40 (SHA-1) or 64 (SHA-256) hex chars.
+              const m = line.match(/^([0-9a-f]{40}|[0-9a-f]{64})\s+(.+)$/);
+              if (m && m[2] === refPath) {
+                gitRef = m[1];
+                break;
+              }
+            }
+          } catch {
+            /* no packed-refs */
+          }
+        }
+      }
+    }
+  } catch {
+    /* no .git/HEAD */
+  }
+
+  return { gitRepo, gitRef };
+}
+
+/**
  * Auto-detects git repo (as "owner/repo") and current commit ref.
  * Returns an empty object if git is unavailable or any command fails.
  */
@@ -40,7 +121,7 @@ export function autoDetectGitContext(): { gitRepo?: string; gitRef?: string } {
     }).trim();
 
     // Normalize to "owner/repo" — handles https, git@, ssh:// formats
-    const match = remote.match(/(?:https?:\/\/|ssh:\/\/git@|git@)github\.com[:/](.+?)(?:\.git)?$/);
+    const match = remote.match(REPO_URL_RE);
     if (match) {
       gitRepo = match[1].replace(/\/$/, '');
     }
@@ -62,6 +143,22 @@ export function autoDetectGitContext(): { gitRepo?: string; gitRef?: string } {
   getGitRoot();
 
   return { gitRepo, gitRef };
+}
+
+/**
+ * Resolve git context from GitHub Actions environment variables —
+ * `GITHUB_REPOSITORY` (owner/repo) and `GITHUB_SHA`.
+ *
+ * repo and ref are resolved independently (a build may provide one, not both).
+ */
+export function harvestCiGitContext(env: NodeJS.ProcessEnv = process.env): {
+  gitRepo?: string;
+  gitRef?: string;
+} {
+  return {
+    gitRepo: env[GITHUB_REPOSITORY] || undefined,
+    gitRef: env[GITHUB_SHA] || undefined,
+  };
 }
 
 /** @internal — reset cached git root between tests */

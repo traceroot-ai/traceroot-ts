@@ -1,5 +1,9 @@
 // src/constants.ts — TraceRoot-specific span attribute keys and SDK defaults
 
+// GitHub Actions environment variable names used for git-context harvesting.
+export const GITHUB_REPOSITORY = 'GITHUB_REPOSITORY';
+export const GITHUB_SHA = 'GITHUB_SHA';
+
 // Flush/batch defaults — mirror traceroot-py/traceroot/constants.py
 export const DEFAULT_FLUSH_INTERVAL_SEC = 5; // seconds → BatchSpanProcessor scheduledDelayMillis (×1000)
 export const DEFAULT_FLUSH_AT = 100; // BatchSpanProcessor maxExportBatchSize
