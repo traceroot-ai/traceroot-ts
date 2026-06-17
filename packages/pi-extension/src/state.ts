@@ -1,0 +1,158 @@
+// Explicit span state. All mutable span bookkeeping lives here in one object —
+// no module-level mutable state — so lifecycle and concurrency are auditable in
+// one place. OTel context is threaded explicitly (never via AsyncLocalStorage),
+// because pi events arrive sequentially from an event loop, not as nested calls.
+import type { Context, Span } from "@opentelemetry/api";
+import { setAttr } from "./attributes.ts";
+
+export interface LlmEntry {
+  span: Span;
+  ctx: Context; // parent context for this turn's tool spans
+  startTime: number;
+  turnIndex: number;
+}
+
+export interface ToolEntry {
+  span: Span;
+  startTime: number;
+  toolName: string;
+}
+
+export interface SpanState {
+  sessionSpan: Span | null;
+  sessionCtx: Context | null;
+  sessionTraceId: string | null;
+  sessionFile: string | null;
+  sessionStartReason: string | null;
+
+  turnSpan: Span | null;
+  turnCtx: Context | null;
+  promptIndex: number;
+  pendingPrompt: string | null;
+
+  // LLM spans keyed by turnIndex (one open per turn; map tolerates more).
+  llmSpans: Map<number, LlmEntry>;
+  currentLlmTurnIndex: number | null;
+
+  // Tool spans keyed by toolCallId — parallel-safe, never a single "current tool".
+  toolSpans: Map<string, ToolEntry>;
+
+  currentModel: { provider: string; id: string } | null;
+  thinkingLevel: string | null;
+  lastAssistantText: string | null;
+
+  // Fork linking (P2-F): SpanContext of the session this one forked from.
+  forkLink: { traceId: string; spanId: string } | null;
+  forkedFromSessionFile: string | null;
+
+  projectFinalized: boolean;
+  sessionDisabled: boolean;
+}
+
+export function createSpanState(): SpanState {
+  return {
+    sessionSpan: null,
+    sessionCtx: null,
+    sessionTraceId: null,
+    sessionFile: null,
+    sessionStartReason: null,
+    turnSpan: null,
+    turnCtx: null,
+    promptIndex: 0,
+    pendingPrompt: null,
+    llmSpans: new Map(),
+    currentLlmTurnIndex: null,
+    toolSpans: new Map(),
+    currentModel: null,
+    thinkingLevel: null,
+    lastAssistantText: null,
+    forkLink: null,
+    forkedFromSessionFile: null,
+    projectFinalized: false,
+    sessionDisabled: false,
+  };
+}
+
+// Parent context for a tool span: the active LLM span, falling back to the turn,
+// then the session. Returns undefined when nothing is open (caller skips the span).
+export function activeParentCtx(state: SpanState): Context | undefined {
+  if (state.currentLlmTurnIndex !== null) {
+    const llm = state.llmSpans.get(state.currentLlmTurnIndex);
+    if (llm) return llm.ctx;
+  }
+  return state.turnCtx ?? state.sessionCtx ?? undefined;
+}
+
+function endToolSpans(state: SpanState): void {
+  for (const entry of state.toolSpans.values()) {
+    try {
+      setAttr(entry.span, "traceroot.pi.tool_incomplete", true);
+      entry.span.end();
+    } catch {
+      /* best-effort */
+    }
+  }
+  state.toolSpans.clear();
+}
+
+function endLlmSpans(state: SpanState): void {
+  for (const entry of state.llmSpans.values()) {
+    try {
+      entry.span.end();
+    } catch {
+      /* best-effort */
+    }
+  }
+  state.llmSpans.clear();
+  state.currentLlmTurnIndex = null;
+}
+
+// Close turn-scoped spans (tools then LLM) left open at the end of an agent loop.
+// In the happy path the maps are already empty (each turn_end / tool end closed
+// its own span); this only matters when a turn or tool was aborted before its end
+// event fired, so no entry ever leaks past agent_end.
+export function sweepTurnScoped(state: SpanState): void {
+  endToolSpans(state);
+  endLlmSpans(state);
+}
+
+// Close every open span in reverse nesting order: tools -> LLM -> turn -> session.
+// Used on session_shutdown so a hard exit (even mid-tool) never leaks an open span.
+export function closeAllOpenSpans(state: SpanState, reason: string): void {
+  sweepTurnScoped(state);
+
+  if (state.turnSpan) {
+    try {
+      state.turnSpan.end();
+    } catch {
+      /* best-effort */
+    }
+    state.turnSpan = null;
+    state.turnCtx = null;
+  }
+
+  if (state.sessionSpan) {
+    try {
+      setAttr(state.sessionSpan, "traceroot.pi.shutdown_reason", reason);
+      state.sessionSpan.end();
+    } catch {
+      /* best-effort */
+    }
+    state.sessionSpan = null;
+    state.sessionCtx = null;
+  }
+}
+
+// Reset session-identity state so the next agent_start opens a fresh session span
+// (after a /traceroot disable, or a session replacement that reuses this instance).
+export function resetForNewSession(state: SpanState): void {
+  state.sessionTraceId = null;
+  state.sessionFile = null;
+  state.sessionStartReason = null;
+  state.forkLink = null;
+  state.forkedFromSessionFile = null;
+  state.promptIndex = 0;
+  state.pendingPrompt = null;
+  state.lastAssistantText = null;
+  state.projectFinalized = false;
+}
