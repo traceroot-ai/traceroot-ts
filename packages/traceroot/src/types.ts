@@ -2,6 +2,13 @@
 
 export type SpanType = 'span' | 'agent' | 'tool' | 'llm';
 
+export interface SpanUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  [key: string]: number | undefined;
+}
+
 export interface ObserveOptions {
   /** Span name. Defaults to fn.name, then 'anonymous'. */
   name?: string;
