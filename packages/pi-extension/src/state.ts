@@ -182,4 +182,8 @@ export function resetForNewSession(state: SpanState): void {
   state.pendingInput = null;
   state.compactionSpan = null;
   state.projectFinalized = false;
+  // Model + thinking level are session-scoped: a fresh session re-derives them
+  // from its own ctx.model / model_select, so a stale cache must not carry over.
+  state.currentModel = null;
+  state.thinkingLevel = null;
 }

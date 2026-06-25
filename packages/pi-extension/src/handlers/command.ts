@@ -7,23 +7,39 @@ import { setStatus, STATUS_ACTIVE, STATUS_INACTIVE } from "../ui.ts";
 import type { Runtime } from "../runtime.ts";
 import type { CommandContext } from "../types.ts";
 
-function openCommand(): string | null {
-  if (process.platform === "darwin") return "open";
-  if (process.platform === "win32") return "start";
-  if (process.platform === "linux") return "xdg-open";
+// The launcher command + args for opening a URL on the given platform. Windows
+// must go through cmd.exe because `start` is a cmd builtin, not an executable on
+// PATH; the empty "" is start's title argument so the URL is not swallowed as a
+// window title. Returns null on unsupported platforms.
+export function browserLaunch(
+  osPlatform: string,
+  url: string,
+): { command: string; args: string[] } | null {
+  if (osPlatform === "darwin") return { command: "open", args: [url] };
+  if (osPlatform === "win32") return { command: "cmd", args: ["/c", "start", "", url] };
+  if (osPlatform === "linux") return { command: "xdg-open", args: [url] };
   return null;
 }
 
-function openInBrowser(url: string): boolean {
-  const cmd = openCommand();
-  if (!cmd) return false;
-  try {
-    const child = spawn(cmd, [url], { stdio: "ignore", detached: true });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+// Resolves true only once the child actually spawns. A missing launcher reports
+// ENOENT asynchronously via the child's 'error' event (spawn does not throw for
+// it), so we listen for it and degrade to false instead of letting it surface as
+// an uncaught exception that would crash the host.
+function openInBrowser(url: string): Promise<boolean> {
+  const launch = browserLaunch(process.platform, url);
+  if (!launch) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(launch.command, launch.args, { stdio: "ignore", detached: true });
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 export function registerCommand(rt: Runtime): void {
@@ -57,7 +73,7 @@ export function registerCommand(rt: Runtime): void {
             ctx.ui.notify(`Traceroot trace: ${url}`, "info");
             return;
           }
-          ctx.ui.notify(openInBrowser(url) ? `Opening ${url}` : `Traceroot trace: ${url}`, "info");
+          ctx.ui.notify((await openInBrowser(url)) ? `Opening ${url}` : `Traceroot trace: ${url}`, "info");
           return;
         }
         case "flush": {

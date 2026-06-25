@@ -29,8 +29,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/*.test.ts",
-    "check": "tsc --noEmit && node --test src/*.test.ts"
+    "test": "node --test src/*.test.ts src/handlers/*.test.ts",
+    "check": "tsc --noEmit && node --test src/*.test.ts src/handlers/*.test.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",

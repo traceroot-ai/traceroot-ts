@@ -1,6 +1,7 @@
 // LLM spans: one per turn_start -> turn_end. Token usage attaches from the
-// assistant message_end. Model name comes from ctx.model (model_select only fires
-// on interactive model changes, not on a CLI --model flag — verified empirically).
+// assistant message_end. Model name comes from the live per-turn ctx.model,
+// falling back to the last model_select only when the context omits it (model_select
+// fires on interactive model changes, not on a CLI --model flag — verified empirically).
 import { context, SpanKind, trace } from "@opentelemetry/api";
 import { addEvent, setAttr } from "../attributes.ts";
 import { IO_LIMITS, renderMessageContent } from "../content.ts";
@@ -27,10 +28,16 @@ function requestMessages(payload: unknown): unknown[] | undefined {
   return undefined;
 }
 
-function resolveModel(rt: Runtime, ctx: ExtensionContext | undefined): { provider: string; id: string } | null {
-  if (rt.state.currentModel) return rt.state.currentModel;
+// Prefer the live per-turn context; fall back to the last model_select only when
+// the context omits the model (some run modes don't populate ctx.model). Reading
+// the cache first would let a stale interactive selection shadow a later model.
+export function resolveModel(
+  rt: Runtime,
+  ctx: ExtensionContext | undefined,
+): { provider: string; id: string } | null {
   const m = ctx?.model;
   if (m?.provider && m?.id) return { provider: m.provider, id: m.id };
+  if (rt.state.currentModel) return rt.state.currentModel;
   return null;
 }
 
@@ -88,6 +95,19 @@ export function registerLlm(rt: Runtime): void {
     }
 
     const llmCtx = trace.setSpan(context.active(), span);
+    // Defensive: if a prior turn_start used this index without a turn_end, end that
+    // span before replacing it — otherwise overwriting the map entry evicts it and
+    // its span leaks (sweepTurnScoped can no longer reach it). Mirrors tool.ts's
+    // double-open guard, but ends-then-replaces rather than skipping.
+    const stale = state.llmSpans.get(turnIndex);
+    if (stale) {
+      try {
+        setAttr(stale.span, "traceroot.pi.turn_incomplete", true);
+        stale.span.end();
+      } catch {
+        /* best-effort */
+      }
+    }
     state.llmSpans.set(turnIndex, { span, ctx: llmCtx, startTime: Date.now(), turnIndex });
     state.currentLlmTurnIndex = turnIndex;
     rt.debug("opened LLM span turnIndex=", turnIndex, "model=", label);

@@ -76,6 +76,8 @@ test("resetForNewSession clears session identity so a fresh session span opens",
   state.promptIndex = 3;
   state.pendingPrompt = "hi";
   state.projectFinalized = true;
+  state.currentModel = { provider: "openai", id: "gpt-4o" };
+  state.thinkingLevel = "high";
 
   resetForNewSession(state);
 
@@ -87,6 +89,9 @@ test("resetForNewSession clears session identity so a fresh session span opens",
   assert.equal(state.promptIndex, 0);
   assert.equal(state.pendingPrompt, null);
   assert.equal(state.projectFinalized, false);
+  // Model + thinking level are session-scoped and must not survive into a new session.
+  assert.equal(state.currentModel, null);
+  assert.equal(state.thinkingLevel, null);
 });
 
 test("activeParentCtx prefers the open LLM span", () => {

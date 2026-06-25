@@ -30,6 +30,13 @@ export function registerSession(rt: Runtime): void {
     state.sessionStartReason = reason ?? null;
     debug("session_start reason=", reason);
 
+    // New session in a reused instance: clear any linkage captured by a prior
+    // fork/resume so it cannot leak into this session's root span. The branches
+    // below re-populate these for the current session's reason.
+    state.forkLink = null;
+    state.forkedFromSessionFile = null;
+    state.resumeFrom = null;
+
     // Fork: link the new session's trace back to the parent it branched from.
     if (reason === "fork" && event?.previousSessionFile) {
       state.forkedFromSessionFile = event.previousSessionFile;
