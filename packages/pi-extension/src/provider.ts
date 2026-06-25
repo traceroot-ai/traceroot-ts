@@ -14,7 +14,7 @@ export interface Tracing {
   provider: NodeTracerProvider;
 }
 
-const TRACER_NAME = "traceroot-pi-extension";
+const TRACER_NAME = "@traceroot-ai/pi-extension";
 
 export function initTracing(config: TracerootPiConfig): Tracing {
   const exporter = new OTLPTraceExporter({

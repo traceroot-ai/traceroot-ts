@@ -1,4 +1,4 @@
-// traceroot-pi-extension entry point.
+// @traceroot-ai/pi-extension entry point.
 //
 // pi loads this default-exported factory and passes the ExtensionAPI. We load
 // config, gate on the opt-in flag, wire the tracing provider, and register one
@@ -19,7 +19,7 @@ import type { ExtensionAPI } from "./types.ts";
 
 function warn(message: string, err?: unknown): void {
   const detail = err instanceof Error ? `: ${err.message}` : "";
-  console.error(`[traceroot-pi-extension] ${message}${detail}`);
+  console.error(`[@traceroot-ai/pi-extension] ${message}${detail}`);
 }
 
 export default async function (pi: ExtensionAPI): Promise<void> {

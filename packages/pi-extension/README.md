@@ -1,4 +1,4 @@
-# traceroot-pi-extension
+# @traceroot-ai/pi-extension
 
 Automatic [OpenTelemetry](https://opentelemetry.io/) tracing for [pi](https://pi.dev)
 coding-agent sessions, exported to [Traceroot](https://traceroot.ai).
@@ -23,7 +23,7 @@ pi.session
 ## Install
 
 ```bash
-pi install npm:traceroot-pi-extension
+pi install npm:@traceroot-ai/pi-extension
 ```
 
 The extension is **opt-in**: it registers no listeners and emits no spans unless

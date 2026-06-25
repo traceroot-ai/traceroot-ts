@@ -1,5 +1,5 @@
 {
-  "name": "traceroot-pi-extension",
+  "name": "@traceroot-ai/pi-extension",
   "version": "0.1.0",
   "description": "Traceroot extension for pi. Automatic OpenTelemetry tracing of pi sessions, turns, LLM calls, and tool executions to Traceroot.",
   "keywords": [
