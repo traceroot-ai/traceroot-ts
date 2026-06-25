@@ -5,6 +5,7 @@ import { SpanKind } from "@opentelemetry/api";
 import { setAttr } from "../attributes.ts";
 import { safeJsonTruncate } from "../json.ts";
 import { IO_LIMITS, renderToolResult } from "../content.ts";
+import { formatToolSpanName } from "../span-name.ts";
 import { activeParentCtx } from "../state.ts";
 import type { Runtime } from "../runtime.ts";
 import type { ToolExecutionEndEvent, ToolExecutionStartEvent } from "../types.ts";
@@ -20,7 +21,11 @@ export function registerTool(rt: Runtime): void {
     if (state.toolSpans.has(toolCallId)) return; // never double-open the same call
 
     const toolName = event?.toolName ?? "unknown";
-    const span = rt.tracer.startSpan(`pi.tool.${toolName}`, { kind: SpanKind.INTERNAL }, activeParentCtx(state));
+    const span = rt.tracer.startSpan(
+      formatToolSpanName(toolName, event?.args),
+      { kind: SpanKind.INTERNAL },
+      activeParentCtx(state),
+    );
     setAttr(span, "gen_ai.tool.name", toolName);
     setAttr(span, "gen_ai.tool.call.id", toolCallId);
     // gen_ai.tool.call.arguments populates the span's Input panel.

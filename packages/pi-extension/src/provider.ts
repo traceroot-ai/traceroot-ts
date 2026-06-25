@@ -1,14 +1,12 @@
 // Tracing provider wiring.
 //
-// The OTLP/proto exporter + BatchSpanProcessor are the source of truth for export.
-// We additionally call the Traceroot SDK's init() best-effort for cloud-side
-// attribution/config; if it throws it is swallowed — export does not depend on it.
+// The OTLP/proto exporter + BatchSpanProcessor are the single source of truth for
+// export. Spans are sent directly over OTLP; there is no separate SDK dependency.
 import { type Tracer } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
 import { Resource } from "@opentelemetry/resources";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
-import * as traceroot from "traceroot-sdk-ts";
 import type { TracerootPiConfig } from "./config.ts";
 
 export interface Tracing {
@@ -18,32 +16,7 @@ export interface Tracing {
 
 const TRACER_NAME = "traceroot-pi-extension";
 
-function bestEffortSdkInit(config: TracerootPiConfig): void {
-  try {
-    const mod = traceroot as unknown as {
-      init?: (cfg: Record<string, unknown>) => void;
-      default?: { init?: (cfg: Record<string, unknown>) => void };
-    };
-    const init = mod.init ?? mod.default?.init;
-    init?.({
-      token: config.token,
-      service_name: config.serviceName,
-      environment: config.environment,
-      local_mode: config.localMode,
-      enable_span_cloud_export: true,
-      otlp_endpoint: config.otlpEndpoint,
-      ...(config.githubOwner ? { github_owner: config.githubOwner } : {}),
-      ...(config.githubRepo ? { github_repo_name: config.githubRepo } : {}),
-      ...(config.githubCommit ? { github_commit_hash: config.githubCommit } : {}),
-    });
-  } catch {
-    // Attribution/config only; the proto provider below is authoritative.
-  }
-}
-
 export function initTracing(config: TracerootPiConfig): Tracing {
-  bestEffortSdkInit(config);
-
   const exporter = new OTLPTraceExporter({
     url: config.otlpEndpoint,
     headers: { Authorization: `Bearer ${config.token}` },

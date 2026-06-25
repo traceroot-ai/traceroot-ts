@@ -40,3 +40,24 @@ export function clearWidget(ctx: ExtensionContext | undefined): void {
     /* ui unavailable in this mode */
   }
 }
+
+const ISSUE_KEY = "traceroot-config";
+
+// Surface a configuration problem in the TUI so a silent misconfig is visible.
+export function setConfigIssue(
+  ctx: ExtensionContext | undefined,
+  issue: { message: string; severity: "error" | "warning" } | undefined,
+): void {
+  try {
+    if (!ctx?.hasUI) return;
+    if (!issue) {
+      ctx.ui.setWidget(ISSUE_KEY, undefined);
+      return;
+    }
+    ctx.ui.setWidget(ISSUE_KEY, [`Traceroot config ${issue.severity}: ${issue.message}`], {
+      placement: "belowEditor",
+    });
+  } catch {
+    /* ui unavailable in this mode */
+  }
+}

@@ -4,7 +4,9 @@
 // config, gate on the opt-in flag, wire the tracing provider, and register one
 // handler module per concern. Any failure during setup is caught and the
 // extension returns quietly — pi must never crash because tracing failed.
+import { join } from "node:path";
 import { loadConfig } from "./config.ts";
+import { createFileLogger } from "./logger.ts";
 import { initTracing } from "./provider.ts";
 import { createSpanState } from "./state.ts";
 import { registerSession } from "./handlers/session.ts";
@@ -24,17 +26,22 @@ function warn(message: string, err?: unknown): void {
 export default async function (pi: ExtensionAPI): Promise<void> {
   let bundle;
   try {
-    bundle = await loadConfig();
+    bundle = loadConfig();
   } catch (err) {
     warn("failed to load config; tracing disabled", err);
     return;
   }
 
-  const { config, envProvided } = bundle;
+  const { config, envProvided, configIssues } = bundle;
   if (!config.enabled) return; // opt-in: no listeners registered when disabled
 
-  if (!config.token) {
-    warn("TRACEROOT_PI_ENABLED is true but no token is set; spans will be rejected. Set TRACEROOT_TOKEN.");
+  const logFile = config.logFile ?? (config.debug ? join(config.stateDir, "traceroot-pi-extension.log") : undefined);
+  const fileLogger = createFileLogger(logFile);
+
+  for (const issue of configIssues) {
+    const text = `config ${issue.path}: ${issue.message}`;
+    warn(text);
+    fileLogger.log(issue.severity, text);
   }
 
   let tracing;
@@ -50,11 +57,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     pi,
     config,
     envProvided,
+    configIssues,
     tracer: tracing.tracer,
     provider: tracing.provider,
     state,
     debug: (...args: unknown[]) => {
       if (config.debug) console.error("[traceroot]", ...args);
+      fileLogger.log("debug", args.map((a) => (typeof a === "string" ? a : String(a))).join(" "));
     },
   };
 

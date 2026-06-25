@@ -3,6 +3,7 @@
 // All operations are best-effort; failure degrades to "no link", never an error.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { isSpanId, isTraceId } from "./hex.ts";
 
 export interface PersistedTrace {
   traceId: string;
@@ -33,7 +34,9 @@ export function readSessionTrace(stateDir: string, sessionFile: string | null): 
     const file = fileFor(stateDir, sessionFile);
     if (!existsSync(file)) return null;
     const parsed = JSON.parse(readFileSync(file, "utf8"));
-    if (parsed && typeof parsed.traceId === "string" && typeof parsed.spanId === "string") {
+    // The file is untrusted on read-back: only accept well-formed OTel ids,
+    // else a corrupt id would yield an invalid Link/parent SpanContext.
+    if (parsed && isTraceId(parsed.traceId) && isSpanId(parsed.spanId)) {
       return { traceId: parsed.traceId, spanId: parsed.spanId };
     }
     return null;

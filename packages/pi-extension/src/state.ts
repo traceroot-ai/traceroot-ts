@@ -45,6 +45,20 @@ export interface SpanState {
   forkLink: { traceId: string; spanId: string } | null;
   forkedFromSessionFile: string | null;
 
+  // Continuation parent for reload/resume: parent new spans under the persisted
+  // root so the trace survives a reload (OTel cannot reopen the original span).
+  resumeParent: Context | undefined;
+
+  // The root {traceId, spanId} a reload/resume continues. Re-persisted unchanged
+  // so repeated reloads stay siblings under the original root, not a deep chain.
+  resumeFrom: { traceId: string; spanId: string } | null;
+
+  // Buffered pi "input" event metadata, applied to the next turn span.
+  pendingInput: { source?: string; streamingBehavior?: string; imageCount?: number; raw?: string } | null;
+
+  // Open compaction span (session_before_compact -> session_compact).
+  compactionSpan: Span | null;
+
   projectFinalized: boolean;
   sessionDisabled: boolean;
 }
@@ -68,6 +82,10 @@ export function createSpanState(): SpanState {
     lastAssistantText: null,
     forkLink: null,
     forkedFromSessionFile: null,
+    resumeParent: undefined,
+    resumeFrom: null,
+    pendingInput: null,
+    compactionSpan: null,
     projectFinalized: false,
     sessionDisabled: false,
   };
@@ -121,6 +139,15 @@ export function sweepTurnScoped(state: SpanState): void {
 export function closeAllOpenSpans(state: SpanState, reason: string): void {
   sweepTurnScoped(state);
 
+  if (state.compactionSpan) {
+    try {
+      state.compactionSpan.end();
+    } catch {
+      /* best-effort */
+    }
+    state.compactionSpan = null;
+  }
+
   if (state.turnSpan) {
     try {
       state.turnSpan.end();
@@ -154,5 +181,9 @@ export function resetForNewSession(state: SpanState): void {
   state.promptIndex = 0;
   state.pendingPrompt = null;
   state.lastAssistantText = null;
+  state.resumeParent = undefined;
+  state.resumeFrom = null;
+  state.pendingInput = null;
+  state.compactionSpan = null;
   state.projectFinalized = false;
 }

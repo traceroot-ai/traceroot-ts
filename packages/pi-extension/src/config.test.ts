@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { envRaw, resolve } from "./config.ts";
+import { envRaw, resolve, validateConfig } from "./config.ts";
 
 test("resolve applies cloud defaults", () => {
   const c = resolve({});
   assert.equal(c.enabled, false);
-  assert.equal(c.apiUrl, "https://api.traceroot.ai");
+  assert.equal(c.apiUrl, "https://app.traceroot.ai");
   assert.equal(c.uiUrl, "https://app.traceroot.ai");
-  assert.equal(c.otlpEndpoint, "https://api.traceroot.ai/api/v1/public/traces");
+  assert.equal(c.otlpEndpoint, "https://app.traceroot.ai/api/v1/public/traces");
   assert.equal(c.project, "pi");
   assert.equal(c.serviceName, "pi-agent");
   assert.equal(c.showUiIndicator, true);
@@ -83,5 +83,34 @@ test("enabled is false unless env is exactly 'true'", () => {
     assert.equal(resolve(envRaw()).enabled, false);
   } finally {
     process.env = saved;
+  }
+});
+
+test("resolve keeps only primitive additionalMetadata values", () => {
+  const c = resolve({ additionalMetadata: { a: "x", n: 1, b: true, obj: { k: 1 }, arr: [1] } });
+  assert.deepEqual(c.additionalMetadata, { a: "x", n: 1, b: true });
+});
+
+test("validateConfig is clean for a well-formed enabled cloud config", () => {
+  assert.equal(validateConfig(resolve({ enabled: true, token: "t" })).length, 0);
+});
+
+test("validateConfig warns when enabled without a token", () => {
+  const issues = validateConfig(resolve({ enabled: true }));
+  assert.ok(issues.some((i) => i.path === "token" && i.severity === "warning"));
+});
+
+test("validateConfig warns on a non-https cloud endpoint", () => {
+  const issues = validateConfig(resolve({ enabled: true, token: "t", apiUrl: "http://example.com" }));
+  assert.ok(issues.some((i) => i.path === "otlpEndpoint" && i.severity === "warning"));
+});
+
+test("validateConfig errors on a malformed url", () => {
+  for (const apiUrl of ["not-a-url", "http://", "https:// space", "ftp://host"]) {
+    const issues = validateConfig(resolve({ apiUrl }));
+    assert.ok(
+      issues.some((i) => i.severity === "error"),
+      `expected an error for apiUrl=${JSON.stringify(apiUrl)}`,
+    );
   }
 });

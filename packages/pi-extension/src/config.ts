@@ -3,16 +3,22 @@
 // Precedence (later overrides earlier):
 //   1. Hardcoded defaults
 //   2. ~/.pi/agent/traceroot.json            (global, user home)
-//   3. traceroot.config.{ts,js,mjs} in cwd   (project file, P2-H)
-//   4. Environment variables                  (highest)
+//   3. Environment variables                  (highest)
 //
 // Project-local .pi/traceroot.json is applied separately and only when the
-// project is trusted (see project-config.ts), so an untrusted repo cannot inject
-// configuration. It is never allowed to set the token.
+// project is trusted (see project-config.ts), and only for presentation fields —
+// so an untrusted repo can never inject configuration or set the token/endpoint.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+
+export interface ConfigIssue {
+  path: string;
+  message: string;
+  severity: "error" | "warning";
+}
+
+export type MetadataValue = string | number | boolean;
 
 export interface TracerootPiConfig {
   enabled: boolean;
@@ -29,11 +35,13 @@ export interface TracerootPiConfig {
   githubRepo?: string;
   githubCommit?: string;
   debug: boolean;
+  logFile?: string;
   captureFullPayload: boolean;
   showUiIndicator: boolean;
   stateDir: string;
   parentSpanId?: string;
   rootSpanId?: string;
+  additionalMetadata?: Record<string, MetadataValue>;
 }
 
 export type RawConfig = Partial<{
@@ -51,17 +59,21 @@ export type RawConfig = Partial<{
   githubRepo: string;
   githubCommit: string;
   debug: boolean;
+  logFile: string;
   captureFullPayload: boolean;
   showUiIndicator: boolean;
   stateDir: string;
   parentSpanId: string;
   rootSpanId: string;
+  additionalMetadata: Record<string, unknown>;
 }>;
 
 export interface ConfigBundle {
   config: TracerootPiConfig;
   /** Config keys whose value came from an environment variable (env wins over project-local). */
   envProvided: Set<keyof TracerootPiConfig>;
+  /** Validation problems to surface (UI + log). Empty when config is clean. */
+  configIssues: ConfigIssue[];
 }
 
 function mergeRaw(...layers: Array<RawConfig | null | undefined>): RawConfig {
@@ -85,6 +97,19 @@ function boolEnv(name: string): boolean | undefined {
 function strEnv(name: string): string | undefined {
   const v = process.env[name];
   return v === undefined || v === "" ? undefined : v;
+}
+
+function jsonObjectEnv(name: string): Record<string, unknown> | undefined {
+  const v = strEnv(name);
+  if (v === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(v);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // First defined value across alias names (SDK-standard name first, legacy fallback).
@@ -122,11 +147,13 @@ export function envRaw(): RawConfig {
     githubRepo: strEnv("TRACEROOT_GITHUB_REPO_NAME"),
     githubCommit: strEnv("TRACEROOT_GITHUB_COMMIT_HASH"),
     debug: boolEnv("TRACEROOT_PI_DEBUG"),
+    logFile: strEnv("TRACEROOT_LOG_FILE"),
     captureFullPayload: boolEnv("TRACEROOT_CAPTURE_FULL_PAYLOAD"),
     showUiIndicator: boolEnv("TRACEROOT_SHOW_UI"),
     stateDir: strEnv("TRACEROOT_STATE_DIR"),
     parentSpanId: strEnv("PI_PARENT_SPAN_ID"),
     rootSpanId: strEnv("PI_ROOT_SPAN_ID"),
+    additionalMetadata: jsonObjectEnv("TRACEROOT_ADDITIONAL_METADATA"),
   });
 }
 
@@ -140,25 +167,21 @@ export function readJsonConfig(file: string): RawConfig | null {
   }
 }
 
-async function readTsConfig(cwd: string): Promise<RawConfig | null> {
-  for (const name of ["traceroot.config.ts", "traceroot.config.mjs", "traceroot.config.js"]) {
-    const file = join(cwd, name);
-    if (!existsSync(file)) continue;
-    try {
-      const mod = (await import(pathToFileURL(file).href)) as { default?: RawConfig } & RawConfig;
-      const value = mod.default ?? mod;
-      if (value && typeof value === "object") return value;
-    } catch {
-      // Runtime may not transpile .ts here, or the file may throw — degrade silently.
-      return null;
-    }
+// Keep only primitive values; arbitrary metadata is emitted as span attributes,
+// which OpenTelemetry restricts to string/number/boolean.
+function primitiveMetadata(value: Record<string, unknown> | undefined): Record<string, MetadataValue> | undefined {
+  if (!value) return undefined;
+  const out: Record<string, MetadataValue> = {};
+  for (const key of Object.keys(value)) {
+    const v = value[key];
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[key] = v;
   }
-  return null;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export function resolve(raw: RawConfig): TracerootPiConfig {
   const localMode = raw.localMode ?? false;
-  const apiUrl = raw.apiUrl ?? (localMode ? "http://localhost:8000" : "https://api.traceroot.ai");
+  const apiUrl = raw.apiUrl ?? (localMode ? "http://localhost:8000" : "https://app.traceroot.ai");
   const uiUrl = raw.uiUrl ?? (localMode ? "http://localhost:3000" : "https://app.traceroot.ai");
   const otlpEndpoint = raw.otlpEndpoint ?? `${apiUrl.replace(/\/+$/, "")}/api/v1/public/traces`;
   return {
@@ -176,21 +199,63 @@ export function resolve(raw: RawConfig): TracerootPiConfig {
     githubRepo: raw.githubRepo,
     githubCommit: raw.githubCommit,
     debug: raw.debug ?? false,
+    logFile: raw.logFile,
     captureFullPayload: raw.captureFullPayload ?? false,
     showUiIndicator: raw.showUiIndicator ?? true,
     stateDir: raw.stateDir ?? join(homedir(), ".pi", "agent", "state", "traceroot-pi-extension"),
     parentSpanId: raw.parentSpanId,
     rootSpanId: raw.rootSpanId,
+    additionalMetadata: primitiveMetadata(raw.additionalMetadata),
   };
 }
 
-export async function loadConfig(cwd: string = process.cwd()): Promise<ConfigBundle> {
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// Surface the misconfigurations that actually break or weaken tracing.
+export function validateConfig(config: TracerootPiConfig): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  for (const name of ["apiUrl", "uiUrl", "otlpEndpoint"] as const) {
+    if (!isHttpUrl(config[name])) {
+      issues.push({ path: name, message: `${name} must be an http(s) URL`, severity: "error" });
+    }
+  }
+  if (config.enabled && !config.token) {
+    issues.push({
+      path: "token",
+      message: "tracing is enabled but no token is set (TRACEROOT_API_KEY); spans will be rejected",
+      severity: "warning",
+    });
+  }
+  if (config.enabled && !config.localMode && config.otlpEndpoint.startsWith("http://")) {
+    issues.push({
+      path: "otlpEndpoint",
+      message: "endpoint is not https; the token will be sent in cleartext",
+      severity: "warning",
+    });
+  }
+  return issues;
+}
+
+export function loadConfig(): ConfigBundle {
   const globalFile = join(homedir(), ".pi", "agent", "traceroot.json");
   const globalLayer = readJsonConfig(globalFile);
-  const tsLayer = await readTsConfig(cwd);
   const env = envRaw();
-  const merged = mergeRaw(globalLayer, tsLayer, env);
+  const merged = mergeRaw(globalLayer, env);
   const config = resolve(merged);
   const envProvided = new Set(Object.keys(env) as Array<keyof TracerootPiConfig>);
-  return { config, envProvided };
+
+  const configIssues: ConfigIssue[] = [];
+  if (globalLayer === null && existsSync(globalFile)) {
+    configIssues.push({ path: globalFile, message: "config file is not valid JSON; ignored", severity: "warning" });
+  }
+  configIssues.push(...validateConfig(config));
+
+  return { config, envProvided, configIssues };
 }

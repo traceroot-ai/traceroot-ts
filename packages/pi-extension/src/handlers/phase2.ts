@@ -1,5 +1,7 @@
-// Phase 2 enrichments attached to the live LLM/session spans. Additive only —
-// they never open or close spans, so they cannot affect the Phase 1 span tree.
+// Phase 2 enrichments. The LLM/response handlers attach attributes to the live
+// LLM span; the compaction handlers open a short child span on the session for
+// each context compaction.
+import { SpanKind } from "@opentelemetry/api";
 import { addEvent, setAttr } from "../attributes.ts";
 import { safeJsonTruncate } from "../json.ts";
 import { IO_LIMITS } from "../content.ts";
@@ -45,7 +47,7 @@ export function registerPhase2(rt: Runtime): void {
     }
   });
 
-  // P2-B — HTTP status signal as span events (timestamped), not attributes.
+  // P2-B — HTTP status + rate-limit headers, plus error events.
   pi.on("after_provider_response", async (raw) => {
     const entry = currentLlm(state);
     if (!entry) return;
@@ -53,6 +55,17 @@ export function registerPhase2(rt: Runtime): void {
     const status = event?.status;
     if (typeof status !== "number") return;
     setAttr(entry.span, "http.status_code", status);
+    // Record rate-limit / retry-after headers as queryable attributes on every
+    // response (not only at 429), so throttling is debuggable over time.
+    const headers = event?.headers;
+    if (headers) {
+      for (const key of Object.keys(headers)) {
+        const lower = key.toLowerCase();
+        if (lower.startsWith("x-ratelimit-") || lower === "retry-after") {
+          setAttr(entry.span, `traceroot.pi.${lower.replace(/-/g, "_")}`, headers[key]);
+        }
+      }
+    }
     if (status === 429) {
       addEvent(entry.span, "rate_limited", { "http.retry_after": event?.headers?.["retry-after"] });
     } else if (status >= 500) {
@@ -60,12 +73,27 @@ export function registerPhase2(rt: Runtime): void {
     }
   });
 
-  // P2-D — compaction marker on the session span.
+  // P2-C — compaction as a timed child span on the session.
+  pi.on("session_before_compact", async () => {
+    if (state.sessionDisabled || !state.sessionSpan || state.compactionSpan) return;
+    state.compactionSpan = rt.tracer.startSpan(
+      "pi.compaction",
+      { kind: SpanKind.INTERNAL },
+      state.sessionCtx ?? undefined,
+    );
+  });
+
   pi.on("session_compact", async (raw) => {
-    if (!state.sessionSpan) return;
     const event = raw as SessionCompactEvent;
-    addEvent(state.sessionSpan, "session_compacted", {
-      "traceroot.pi.tokens_before": event?.compactionEntry?.tokensBefore ?? 0,
-    });
+    const tokensBefore = event?.compactionEntry?.tokensBefore ?? 0;
+    // Open lazily if before_compact never fired, so the compaction still records.
+    let span = state.compactionSpan;
+    if (!span) {
+      if (!state.sessionSpan) return;
+      span = rt.tracer.startSpan("pi.compaction", { kind: SpanKind.INTERNAL }, state.sessionCtx ?? undefined);
+    }
+    setAttr(span, "traceroot.pi.tokens_before", tokensBefore);
+    span.end();
+    state.compactionSpan = null;
   });
 }

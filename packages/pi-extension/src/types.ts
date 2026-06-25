@@ -111,6 +111,12 @@ export interface AfterProviderResponseEvent {
 export interface SessionCompactEvent {
   compactionEntry?: { tokensBefore?: number };
 }
+export interface InputEvent {
+  text?: string;
+  source?: string;
+  streamingBehavior?: string;
+  images?: unknown[];
+}
 
 export type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 
