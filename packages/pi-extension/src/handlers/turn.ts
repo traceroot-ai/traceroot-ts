@@ -8,8 +8,7 @@ import { sweepTurnScoped } from "../state.ts";
 import { applyProjectLocal, readProjectLocalConfig } from "../project-config.ts";
 import { persistSessionTrace } from "../fork-link.ts";
 import { remoteParentContext } from "../remote-parent.ts";
-import { hostName, repoSlug, userName, workspaceName } from "../attribution.ts";
-import { EXTENSION_VERSION } from "../version.ts";
+import { sessionAttributes } from "../attribution.ts";
 import { buildTraceUrl } from "../url.ts";
 import { setConfigIssue, setStatus, setTraceWidget, STATUS_ACTIVE } from "../ui.ts";
 import type { MetadataValue, TracerootPiConfig } from "../config.ts";
@@ -79,7 +78,8 @@ function openSessionSpan(rt: Runtime, ctx: ExtensionContext | undefined, firstPr
   // remote parent (subagent nesting). Either keeps this session in an existing
   // trace; otherwise startSpan with no parent begins a fresh root.
   const parentCtx: Context | undefined =
-    state.resumeParent ?? remoteParentContext(config.rootSpanId, config.parentSpanId);
+    (state.resumeFrom && remoteParentContext(state.resumeFrom.traceId, state.resumeFrom.spanId)) ??
+    remoteParentContext(config.rootSpanId, config.parentSpanId);
   const sessionSpan = tracer.startSpan(
     "pi.session",
     { kind: SpanKind.INTERNAL, links: sessionLinks(rt) },
@@ -89,12 +89,10 @@ function openSessionSpan(rt: Runtime, ctx: ExtensionContext | undefined, firstPr
   setAttr(sessionSpan, "traceroot.pi.start_reason", state.sessionStartReason ?? "startup");
   if (firstPrompt) setAttr(sessionSpan, "traceroot.span.input", firstPrompt);
   setAttr(sessionSpan, "traceroot.pi.cwd", cwd);
-  setAttr(sessionSpan, "traceroot.pi.workspace", workspaceName(cwd));
-  setAttr(sessionSpan, "traceroot.pi.repo", repoSlug(cwd) ?? null);
-  setAttr(sessionSpan, "traceroot.pi.hostname", hostName() ?? null);
-  setAttr(sessionSpan, "traceroot.pi.username", userName() ?? null);
-  setAttr(sessionSpan, "traceroot.pi.os", process.platform);
-  setAttr(sessionSpan, "traceroot.pi.extension_version", EXTENSION_VERSION);
+  const attributes = sessionAttributes(cwd);
+  for (const key of Object.keys(attributes)) {
+    setAttr(sessionSpan, key, attributes[key]);
+  }
   if (state.forkedFromSessionFile) {
     setAttr(sessionSpan, "traceroot.pi.forked_from_session", state.forkedFromSessionFile);
   }

@@ -4,6 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { hostname, userInfo } from "node:os";
 import { basename } from "node:path";
+import { EXTENSION_VERSION } from "./version.ts";
 
 const GIT_TIMEOUT_MS = 500;
 const repoSlugCache = new Map<string, string | undefined>();
@@ -71,4 +72,17 @@ export function repoSlug(cwd: string): string | undefined {
   }
   repoSlugCache.set(key, slug);
   return slug;
+}
+
+// The session span's source-attribution attributes, keyed exactly as emitted on
+// the span. Best-effort values may be undefined, leaving the attribute omitted.
+export function sessionAttributes(cwd: string): Record<string, string | undefined> {
+  return {
+    "traceroot.pi.workspace": workspaceName(cwd),
+    "traceroot.pi.repo": repoSlug(cwd),
+    "traceroot.pi.hostname": hostName(),
+    "traceroot.pi.username": userName(),
+    "traceroot.pi.os": process.platform,
+    "traceroot.pi.extension_version": EXTENSION_VERSION,
+  };
 }

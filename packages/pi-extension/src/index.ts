@@ -13,7 +13,6 @@ import { registerSession } from "./handlers/session.ts";
 import { registerTurn } from "./handlers/turn.ts";
 import { registerLlm } from "./handlers/llm.ts";
 import { registerTool } from "./handlers/tool.ts";
-import { registerPhase2 } from "./handlers/phase2.ts";
 import { registerCommand } from "./handlers/command.ts";
 import type { Runtime } from "./runtime.ts";
 import type { ExtensionAPI } from "./types.ts";
@@ -72,7 +71,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     registerTurn(rt);
     registerLlm(rt);
     registerTool(rt);
-    registerPhase2(rt);
     registerCommand(rt);
   } catch (err) {
     warn("failed to register handlers", err);

@@ -45,12 +45,10 @@ export interface SpanState {
   forkLink: { traceId: string; spanId: string } | null;
   forkedFromSessionFile: string | null;
 
-  // Continuation parent for reload/resume: parent new spans under the persisted
-  // root so the trace survives a reload (OTel cannot reopen the original span).
-  resumeParent: Context | undefined;
-
-  // The root {traceId, spanId} a reload/resume continues. Re-persisted unchanged
-  // so repeated reloads stay siblings under the original root, not a deep chain.
+  // The root {traceId, spanId} a reload/resume continues. New spans are parented
+  // under it (the remote-parent Context is built on demand) so the trace survives
+  // a reload — OTel cannot reopen the original span. Re-persisted unchanged so
+  // repeated reloads stay siblings under the original root, not a deep chain.
   resumeFrom: { traceId: string; spanId: string } | null;
 
   // Buffered pi "input" event metadata, applied to the next turn span.
@@ -82,7 +80,6 @@ export function createSpanState(): SpanState {
     lastAssistantText: null,
     forkLink: null,
     forkedFromSessionFile: null,
-    resumeParent: undefined,
     resumeFrom: null,
     pendingInput: null,
     compactionSpan: null,
@@ -181,7 +178,6 @@ export function resetForNewSession(state: SpanState): void {
   state.promptIndex = 0;
   state.pendingPrompt = null;
   state.lastAssistantText = null;
-  state.resumeParent = undefined;
   state.resumeFrom = null;
   state.pendingInput = null;
   state.compactionSpan = null;

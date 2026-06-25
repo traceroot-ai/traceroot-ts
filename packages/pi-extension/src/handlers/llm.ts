@@ -2,16 +2,30 @@
 // assistant message_end. Model name comes from ctx.model (model_select only fires
 // on interactive model changes, not on a CLI --model flag — verified empirically).
 import { context, SpanKind, trace } from "@opentelemetry/api";
-import { setAttr } from "../attributes.ts";
+import { addEvent, setAttr } from "../attributes.ts";
 import { IO_LIMITS, renderMessageContent } from "../content.ts";
+import { safeJsonTruncate } from "../json.ts";
+import type { LlmEntry } from "../state.ts";
 import type { Runtime } from "../runtime.ts";
 import type {
+  AfterProviderResponseEvent,
+  BeforeProviderRequestEvent,
   ExtensionContext,
   MessageEndEvent,
   ModelSelectEvent,
   TurnEndEvent,
   TurnStartEvent,
 } from "../types.ts";
+
+const PAYLOAD_MAX = 16384;
+
+function requestMessages(payload: unknown): unknown[] | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const p = payload as { input?: unknown; messages?: unknown };
+  if (Array.isArray(p.input)) return p.input;
+  if (Array.isArray(p.messages)) return p.messages;
+  return undefined;
+}
 
 function resolveModel(rt: Runtime, ctx: ExtensionContext | undefined): { provider: string; id: string } | null {
   if (rt.state.currentModel) return rt.state.currentModel;
@@ -21,7 +35,12 @@ function resolveModel(rt: Runtime, ctx: ExtensionContext | undefined): { provide
 }
 
 export function registerLlm(rt: Runtime): void {
-  const { pi, state } = rt;
+  const { pi, state, config } = rt;
+
+  const currentLlm = (): LlmEntry | undefined => {
+    if (state.currentLlmTurnIndex === null) return undefined;
+    return state.llmSpans.get(state.currentLlmTurnIndex);
+  };
 
   pi.on("model_select", async (raw) => {
     const event = raw as ModelSelectEvent;
@@ -79,8 +98,7 @@ export function registerLlm(rt: Runtime): void {
     const message = event?.message;
     if (!message || message.role !== "assistant") return;
 
-    const entry =
-      (state.currentLlmTurnIndex !== null && state.llmSpans.get(state.currentLlmTurnIndex)) || undefined;
+    const entry = currentLlm();
     if (!entry) return;
 
     const usage = message.usage;
@@ -117,5 +135,47 @@ export function registerLlm(rt: Runtime): void {
     state.llmSpans.delete(turnIndex);
     if (state.currentLlmTurnIndex === turnIndex) state.currentLlmTurnIndex = null;
     rt.debug("closed LLM span turnIndex=", turnIndex);
+  });
+
+  // P2-A — request messages as the LLM Input + message count; full payload opt-in.
+  pi.on("before_provider_request", async (raw) => {
+    const entry = currentLlm();
+    if (!entry) return;
+    const event = raw as BeforeProviderRequestEvent;
+    const messages = requestMessages(event?.payload);
+    if (messages) {
+      setAttr(entry.span, "traceroot.pi.request_message_count", messages.length);
+      // The messages sent to the model are this LLM span's Input panel.
+      setAttr(entry.span, "traceroot.span.input", safeJsonTruncate(messages, IO_LIMITS.llmInput));
+    }
+    if (config.captureFullPayload) {
+      setAttr(entry.span, "traceroot.pi.full_request_payload", safeJsonTruncate(event?.payload, PAYLOAD_MAX));
+    }
+  });
+
+  // P2-B — HTTP status + rate-limit headers, plus error events.
+  pi.on("after_provider_response", async (raw) => {
+    const entry = currentLlm();
+    if (!entry) return;
+    const event = raw as AfterProviderResponseEvent;
+    const status = event?.status;
+    if (typeof status !== "number") return;
+    setAttr(entry.span, "http.status_code", status);
+    // Record rate-limit / retry-after headers as queryable attributes on every
+    // response (not only at 429), so throttling is debuggable over time.
+    const headers = event?.headers;
+    if (headers) {
+      for (const key of Object.keys(headers)) {
+        const lower = key.toLowerCase();
+        if (lower.startsWith("x-ratelimit-") || lower === "retry-after") {
+          setAttr(entry.span, `traceroot.pi.${lower.replace(/-/g, "_")}`, headers[key]);
+        }
+      }
+    }
+    if (status === 429) {
+      addEvent(entry.span, "rate_limited", { "http.retry_after": event?.headers?.["retry-after"] });
+    } else if (status >= 500) {
+      addEvent(entry.span, "provider_error", { "http.status_code": status });
+    }
   });
 }

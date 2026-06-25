@@ -1,12 +1,18 @@
 // Session lifecycle: capture fork origin on start; close everything and flush on
 // shutdown. The session span itself is opened lazily in turn.ts on first agent_start.
+import { SpanKind } from "@opentelemetry/api";
 import { setAttr } from "../attributes.ts";
 import { closeAllOpenSpans } from "../state.ts";
 import { readSessionTrace } from "../fork-link.ts";
-import { remoteParentContext } from "../remote-parent.ts";
+import { isSpanId, isTraceId } from "../hex.ts";
 import { setStatus, STATUS_INACTIVE } from "../ui.ts";
 import type { Runtime } from "../runtime.ts";
-import type { ExtensionContext, SessionShutdownEvent, SessionStartEvent } from "../types.ts";
+import type {
+  ExtensionContext,
+  SessionCompactEvent,
+  SessionShutdownEvent,
+  SessionStartEvent,
+} from "../types.ts";
 
 const FLUSH_TIMEOUT_MS = 5000;
 
@@ -43,12 +49,11 @@ export function registerSession(rt: Runtime): void {
       }
       const prior = readSessionTrace(config.stateDir, sessionFile);
       if (prior) {
-        const parent = remoteParentContext(prior.traceId, prior.spanId);
-        if (parent) {
-          state.resumeParent = parent;
+        const valid = isTraceId(prior.traceId) && isSpanId(prior.spanId);
+        if (valid) {
           state.resumeFrom = prior;
         }
-        debug("session continuation", parent ? "found" : "invalid-id");
+        debug("session continuation", valid ? "found" : "invalid-id");
       }
     }
   });
@@ -72,5 +77,29 @@ export function registerSession(rt: Runtime): void {
       /* shutdown is best-effort on exit */
     }
     debug("flushed + shutdown");
+  });
+
+  // P2-C — compaction as a timed child span on the session.
+  pi.on("session_before_compact", async () => {
+    if (state.sessionDisabled || !state.sessionSpan || state.compactionSpan) return;
+    state.compactionSpan = rt.tracer.startSpan(
+      "pi.compaction",
+      { kind: SpanKind.INTERNAL },
+      state.sessionCtx ?? undefined,
+    );
+  });
+
+  pi.on("session_compact", async (raw) => {
+    const event = raw as SessionCompactEvent;
+    const tokensBefore = event?.compactionEntry?.tokensBefore ?? 0;
+    // Open lazily if before_compact never fired, so the compaction still records.
+    let span = state.compactionSpan;
+    if (!span) {
+      if (!state.sessionSpan) return;
+      span = rt.tracer.startSpan("pi.compaction", { kind: SpanKind.INTERNAL }, state.sessionCtx ?? undefined);
+    }
+    setAttr(span, "traceroot.pi.tokens_before", tokensBefore);
+    span.end();
+    state.compactionSpan = null;
   });
 }
