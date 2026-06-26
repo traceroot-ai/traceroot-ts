@@ -11,7 +11,7 @@ import type { Runtime } from "../runtime.ts";
 import type { ToolExecutionEndEvent, ToolExecutionStartEvent } from "../types.ts";
 
 export function registerTool(rt: Runtime): void {
-  const { pi, state } = rt;
+  const { pi, state, config } = rt;
 
   pi.on("tool_execution_start", async (raw) => {
     if (state.sessionDisabled) return;
@@ -28,8 +28,12 @@ export function registerTool(rt: Runtime): void {
     );
     setAttr(span, "gen_ai.tool.name", toolName);
     setAttr(span, "gen_ai.tool.call.id", toolCallId);
-    // gen_ai.tool.call.arguments populates the span's Input panel.
-    setAttr(span, "gen_ai.tool.call.arguments", safeJsonTruncate(event?.args, IO_LIMITS.toolArgs));
+    // Tool arguments routinely carry file paths, file contents, and shell commands.
+    // Capture the (truncated) Input panel only when tool-IO capture is enabled; the
+    // span still records the tool name, id, and (on end) error state and duration.
+    if (config.captureToolIo) {
+      setAttr(span, "gen_ai.tool.call.arguments", safeJsonTruncate(event?.args, IO_LIMITS.toolArgs));
+    }
 
     state.toolSpans.set(toolCallId, { span, startTime: Date.now(), toolName });
     rt.debug("opened tool span", toolName, toolCallId);
@@ -42,8 +46,11 @@ export function registerTool(rt: Runtime): void {
     const entry = state.toolSpans.get(toolCallId);
     if (!entry) return; // end without a matching start — ignore rather than orphan
 
-    // gen_ai.tool.call.result populates the span's Output panel.
-    setAttr(entry.span, "gen_ai.tool.call.result", renderToolResult(event?.result, IO_LIMITS.toolResult));
+    // Tool results can carry file contents and command output; gate the Output panel
+    // behind tool-IO capture. Error state and duration below are always recorded.
+    if (config.captureToolIo) {
+      setAttr(entry.span, "gen_ai.tool.call.result", renderToolResult(event?.result, IO_LIMITS.toolResult));
+    }
     setAttr(entry.span, "traceroot.pi.tool_is_error", event?.isError === true);
     setAttr(entry.span, "traceroot.pi.tool_duration_ms", Date.now() - entry.startTime);
 

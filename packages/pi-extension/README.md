@@ -73,7 +73,8 @@ but only when the project is trusted and only for presentation fields (`project`
 | `TRACEROOT_SERVICE_NAME` | `pi-agent` | OTel `service.name`. |
 | `TRACEROOT_ENVIRONMENT` | `development` | Deployment environment. |
 | `TRACEROOT_GITHUB_OWNER` / `_REPO_NAME` / `_COMMIT_HASH` | — | Optional source attribution. |
-| `TRACEROOT_CAPTURE_FULL_PAYLOAD` | `false` | Capture full LLM request payloads. May contain PII. |
+| `TRACEROOT_CAPTURE_FULL_PAYLOAD` | `false` | Capture full LLM request payloads **and** the request-message Input panel (`traceroot.span.input`). Off by default: LLM spans then record only `request_message_count`, not conversation content. May contain PII. |
+| `TRACEROOT_CAPTURE_TOOL_IO` | `true` | Capture tool-call arguments and results (truncated) on tool spans. Set `false` to record only the tool name, error state, and duration. |
 | `TRACEROOT_SHOW_UI` | `true` | Show the TUI status indicator and trace-URL widget. |
 | `TRACEROOT_PI_DEBUG` | `false` | Log span lifecycle to stderr. |
 | `TRACEROOT_LOG_FILE` | — | Also write a JSON-lines debug log to this file. |

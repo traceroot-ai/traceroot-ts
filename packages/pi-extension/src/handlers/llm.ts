@@ -81,7 +81,10 @@ export function registerLlm(rt: Runtime): void {
       setAttr(span, "gen_ai.system", model.provider);
       setAttr(span, "gen_ai.request.model", model.id);
     }
-    setAttr(span, "gen_ai.request.thinking_level", state.thinkingLevel ?? "unknown");
+    // Only stamp the level when one was actually selected. setAttr drops null, so an
+    // unset level leaves the attribute absent rather than polluting every span with the
+    // literal "unknown" (which is indistinguishable from a real level named "unknown").
+    setAttr(span, "gen_ai.request.thinking_level", state.thinkingLevel);
 
     // P2-C: context-window pressure, when the running mode exposes it.
     try {
@@ -164,9 +167,14 @@ export function registerLlm(rt: Runtime): void {
     const event = raw as BeforeProviderRequestEvent;
     const messages = requestMessages(event?.payload);
     if (messages) {
+      // The message count is non-sensitive metadata; always record it.
       setAttr(entry.span, "traceroot.pi.request_message_count", messages.length);
-      // The messages sent to the model are this LLM span's Input panel.
-      setAttr(entry.span, "traceroot.span.input", safeJsonTruncate(messages, IO_LIMITS.llmInput));
+      // The request messages are the full prior conversation (system prompt, earlier
+      // turns, tool results, file content) — high-PII content. Gate the Input panel
+      // behind the same opt-in that governs full payloads; default is count-only.
+      if (config.captureFullPayload) {
+        setAttr(entry.span, "traceroot.span.input", safeJsonTruncate(messages, IO_LIMITS.llmInput));
+      }
     }
     if (config.captureFullPayload) {
       setAttr(entry.span, "traceroot.pi.full_request_payload", safeJsonTruncate(event?.payload, PAYLOAD_MAX));

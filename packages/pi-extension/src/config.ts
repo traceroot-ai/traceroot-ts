@@ -37,6 +37,7 @@ export interface TracerootPiConfig {
   debug: boolean;
   logFile?: string;
   captureFullPayload: boolean;
+  captureToolIo: boolean;
   showUiIndicator: boolean;
   stateDir: string;
   parentSpanId?: string;
@@ -61,6 +62,7 @@ export type RawConfig = Partial<{
   debug: boolean;
   logFile: string;
   captureFullPayload: boolean;
+  captureToolIo: boolean;
   showUiIndicator: boolean;
   stateDir: string;
   parentSpanId: string;
@@ -149,6 +151,7 @@ export function envRaw(): RawConfig {
     debug: boolEnv("TRACEROOT_PI_DEBUG"),
     logFile: strEnv("TRACEROOT_LOG_FILE"),
     captureFullPayload: boolEnv("TRACEROOT_CAPTURE_FULL_PAYLOAD"),
+    captureToolIo: boolEnv("TRACEROOT_CAPTURE_TOOL_IO"),
     showUiIndicator: boolEnv("TRACEROOT_SHOW_UI"),
     stateDir: strEnv("TRACEROOT_STATE_DIR"),
     parentSpanId: strEnv("PI_PARENT_SPAN_ID"),
@@ -201,6 +204,7 @@ export function resolve(raw: RawConfig): TracerootPiConfig {
     debug: raw.debug ?? false,
     logFile: raw.logFile,
     captureFullPayload: raw.captureFullPayload ?? false,
+    captureToolIo: raw.captureToolIo ?? true,
     showUiIndicator: raw.showUiIndicator ?? true,
     stateDir: raw.stateDir ?? join(homedir(), ".pi", "agent", "state", "traceroot-pi-extension"),
     parentSpanId: raw.parentSpanId,
