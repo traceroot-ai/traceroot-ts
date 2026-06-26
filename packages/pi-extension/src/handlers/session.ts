@@ -2,7 +2,7 @@
 // shutdown. The session span itself is opened lazily in turn.ts on first agent_start.
 import { SpanKind } from "@opentelemetry/api";
 import { setAttr } from "../attributes.ts";
-import { closeAllOpenSpans } from "../state.ts";
+import { beginNewSession, closeAllOpenSpans } from "../state.ts";
 import { readSessionTrace } from "../fork-link.ts";
 import { isSpanId, isTraceId } from "../hex.ts";
 import { setStatus, STATUS_INACTIVE } from "../ui.ts";
@@ -43,15 +43,16 @@ export function registerSession(rt: Runtime): void {
     const event = raw as SessionStartEvent;
     const ctx = rawCtx as ExtensionContext;
     const reason = event?.reason;
+
+    // pi reuses one extension-module instance across sessions, firing
+    // session_shutdown -> session_start on every transition. Start each session from a
+    // clean slate (close anything still open, then clear the turn counter, model, last
+    // output, buffered input, linkage, and the project-finalized flag) so the previous
+    // session cannot bleed into this one. The provider is process-scoped and untouched.
+    // resetForNewSession clears sessionStartReason, so set it after.
+    beginNewSession(state, reason ?? "new");
     state.sessionStartReason = reason ?? null;
     debug("session_start reason=", reason);
-
-    // New session in a reused instance: clear any linkage captured by a prior
-    // fork/resume so it cannot leak into this session's root span. The branches
-    // below re-populate these for the current session's reason.
-    state.forkLink = null;
-    state.forkedFromSessionFile = null;
-    state.resumeFrom = null;
 
     // Fork: link the new session's trace back to the parent it branched from.
     if (reason === "fork" && event?.previousSessionFile) {

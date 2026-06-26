@@ -227,16 +227,16 @@ test(
   },
 );
 
-test(
-  "spec: a new (non-continuation) session_start should reset per-session counters",
-  { todo: "P1 SESS-01 (session.ts:26-66): call resetForNewSession so promptIndex/currentModel do not leak across sessions" },
-  async () => {
-    const { rt, handlers } = fakeRuntime();
-    registerSession(rt);
-    rt.state.promptIndex = 3;
-    rt.state.currentModel = { provider: "openai", id: "gpt-4o" };
-    await fire(handlers, "session_start", { reason: "new" }, {});
-    assert.equal(rt.state.promptIndex, 0, "turn numbering restarts for a new session");
-    assert.equal(rt.state.currentModel, null, "a stale model must not carry into the new session");
-  },
-);
+test("session reset: a new session_start clears per-session state from a reused instance", async () => {
+  const { rt, handlers } = fakeRuntime();
+  registerSession(rt);
+  rt.state.promptIndex = 3;
+  rt.state.currentModel = { provider: "openai", id: "gpt-4o" };
+  rt.state.lastAssistantText = "leftover from the prior session";
+  rt.state.projectFinalized = true;
+  await fire(handlers, "session_start", { reason: "new" }, UI_CTX);
+  assert.equal(rt.state.promptIndex, 0, "turn numbering restarts for a new session");
+  assert.equal(rt.state.currentModel, null, "a stale model must not carry over");
+  assert.equal(rt.state.lastAssistantText, null, "a stale assistant output must not carry over");
+  assert.equal(rt.state.projectFinalized, false, "project-local config is re-read for the new session");
+});

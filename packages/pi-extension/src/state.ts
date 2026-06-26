@@ -192,3 +192,13 @@ export function resetForNewSession(state: SpanState): void {
   state.currentModel = null;
   state.thinkingLevel = null;
 }
+
+// Begin a fresh session on a reused extension instance. pi keeps one module instance
+// across sessions, so without this the previous session's spans, turn counter, model,
+// last output, and project-finalized flag bleed into the next one. Close anything still
+// open first (defensive — session_shutdown normally already did), then clear per-session
+// state. providerShutdown is process-scoped and deliberately preserved.
+export function beginNewSession(state: SpanState, reason: string): void {
+  closeAllOpenSpans(state, reason);
+  resetForNewSession(state);
+}
