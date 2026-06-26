@@ -59,6 +59,10 @@ export interface SpanState {
 
   projectFinalized: boolean;
   sessionDisabled: boolean;
+  // True once the single shared OTel provider has been shut down on a terminal quit.
+  // Spans after this are no-ops; used so /traceroot flush can report accurately. Not a
+  // per-session field — it is never reset by resetForNewSession.
+  providerShutdown: boolean;
 }
 
 export function createSpanState(): SpanState {
@@ -85,6 +89,7 @@ export function createSpanState(): SpanState {
     compactionSpan: null,
     projectFinalized: false,
     sessionDisabled: false,
+    providerShutdown: false,
   };
 }
 

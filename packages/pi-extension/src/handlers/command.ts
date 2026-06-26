@@ -77,6 +77,10 @@ export function registerCommand(rt: Runtime): void {
           return;
         }
         case "flush": {
+          if (state.providerShutdown) {
+            ctx.ui.notify("Traceroot: tracing has shut down for this session; nothing to flush.", "warning");
+            return;
+          }
           try {
             await provider.forceFlush();
             ctx.ui.notify("Traceroot: flushed.", "info");

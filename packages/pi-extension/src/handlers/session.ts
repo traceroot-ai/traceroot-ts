@@ -16,8 +16,24 @@ import type {
 
 const FLUSH_TIMEOUT_MS = 5000;
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Best-effort flush bounded by a non-blocking timeout. The timeout timer is unref'd
+// and always cleared, so a flush that resolves first never leaves an armed timer
+// holding Node's event loop open (which would delay pi's exit by up to the timeout).
+async function flushWithTimeout(provider: { forceFlush: () => Promise<void> }): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      provider.forceFlush(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+  } catch {
+    /* flush is best-effort */
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function registerSession(rt: Runtime): void {
@@ -73,17 +89,24 @@ export function registerSession(rt: Runtime): void {
       setAttr(state.sessionSpan, "traceroot.span.output", state.lastAssistantText);
     }
     closeAllOpenSpans(state, event?.reason ?? "unknown");
-    try {
-      await Promise.race([provider.forceFlush(), delay(FLUSH_TIMEOUT_MS)]);
-    } catch {
-      /* flush is best-effort on exit */
+
+    // Always flush the just-closed spans. Only fully shut the provider down on a
+    // terminal quit: reload/new/resume/fork tear down THIS session while the process
+    // and the single shared provider live on, and an OTel provider returns no-op
+    // tracers after shutdown — shutting it down here would silently drop every span of
+    // the next session in a reused instance (the cubic provider-reuse regression).
+    await flushWithTimeout(provider);
+    if (event?.reason === "quit") {
+      try {
+        await provider.shutdown();
+      } catch {
+        /* shutdown is best-effort on exit */
+      }
+      state.providerShutdown = true;
+      debug("flushed + shutdown (quit)");
+    } else {
+      debug(`flushed (session transition: ${event?.reason ?? "unknown"})`);
     }
-    try {
-      await provider.shutdown();
-    } catch {
-      /* shutdown is best-effort on exit */
-    }
-    debug("flushed + shutdown");
   });
 
   // P2-C — compaction as a timed child span on the session.

@@ -66,18 +66,29 @@ function recordingTracer(): { tracer: Tracer; spans: SpanRecord[] } {
 function fakeRuntime(config: Record<string, unknown> = {}) {
   const handlers = new Map<string, (raw: unknown, ctx?: unknown) => unknown>();
   const { tracer, spans } = recordingTracer();
+  const providerCalls = { flush: 0, shutdown: 0 };
   const rt = {
     pi: { on: (event: string, handler: (raw: unknown, ctx?: unknown) => unknown) => handlers.set(event, handler) },
     state: createSpanState(),
     config: { captureFullPayload: false, stateDir: "/tmp/pi-review-test", ...config },
     envProvided: {},
     configIssues: [],
-    provider: { forceFlush: async () => {}, shutdown: async () => {} },
+    provider: {
+      forceFlush: async () => {
+        providerCalls.flush += 1;
+      },
+      shutdown: async () => {
+        providerCalls.shutdown += 1;
+      },
+    },
     tracer,
     debug: () => {},
   } as unknown as Runtime;
-  return { rt, handlers, spans };
+  return { rt, handlers, spans, providerCalls };
 }
+
+// A context with no-op UI hooks, for handlers that call setStatus/notify.
+const UI_CTX = { ui: { setStatus() {}, setWidget() {}, notify() {} }, mode: "tui", hasUI: true, cwd: "/tmp" };
 
 async function fire(
   handlers: Map<string, (raw: unknown, ctx?: unknown) => unknown>,
@@ -185,6 +196,23 @@ test("guard: each turn gets its own LLM span with its own usage (no cross-turn b
   assert.equal(spans.length, 2);
   assert.equal(first.attrs["gen_ai.usage.output_tokens"], 5);
   assert.equal(second.attrs["gen_ai.usage.output_tokens"], 8);
+});
+
+test("lifecycle: a reload session_shutdown flushes but keeps the shared provider alive", async () => {
+  const { rt, handlers, providerCalls } = fakeRuntime();
+  registerSession(rt);
+  await fire(handlers, "session_shutdown", { reason: "reload" }, UI_CTX);
+  assert.equal(providerCalls.shutdown, 0, "reload is a session transition, not a terminal quit");
+  assert.ok(providerCalls.flush >= 1, "spans are still flushed across a reload");
+  assert.equal(rt.state.providerShutdown, false, "the provider must remain usable for the reloaded session");
+});
+
+test("lifecycle: a quit session_shutdown shuts the provider down exactly once", async () => {
+  const { rt, handlers, providerCalls } = fakeRuntime();
+  registerSession(rt);
+  await fire(handlers, "session_shutdown", { reason: "quit" }, UI_CTX);
+  assert.equal(providerCalls.shutdown, 1, "quit is terminal");
+  assert.equal(rt.state.providerShutdown, true);
 });
 
 test(
