@@ -8,14 +8,14 @@
 // Project-local .pi/traceroot.json is applied separately and only when the
 // project is trusted (see project-config.ts), and only for presentation fields —
 // so an untrusted repo can never inject configuration or set the token/endpoint.
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 export interface ConfigIssue {
   path: string;
   message: string;
-  severity: "error" | "warning";
+  severity: 'error' | 'warning';
 }
 
 export type MetadataValue = string | number | boolean;
@@ -90,15 +90,22 @@ function mergeRaw(...layers: Array<RawConfig | null | undefined>): RawConfig {
   return out;
 }
 
+// Accept the common truthy/falsey spellings (case-insensitive, trimmed) so an env
+// boolean is not silently treated as false when set to "1"/"yes"/"on" etc. An unset,
+// empty, or unrecognized value falls through to the lower-precedence layer / default.
 function boolEnv(name: string): boolean | undefined {
   const v = process.env[name];
   if (v === undefined) return undefined;
-  return v === "true";
+  const normalized = v.trim().toLowerCase();
+  if (normalized === '') return undefined;
+  if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+  return undefined;
 }
 
 function strEnv(name: string): string | undefined {
   const v = process.env[name];
-  return v === undefined || v === "" ? undefined : v;
+  return v === undefined || v === '' ? undefined : v;
 }
 
 function jsonObjectEnv(name: string): Record<string, unknown> | undefined {
@@ -106,7 +113,7 @@ function jsonObjectEnv(name: string): Record<string, unknown> | undefined {
   if (v === undefined) return undefined;
   try {
     const parsed = JSON.parse(v);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : undefined;
   } catch {
@@ -135,36 +142,36 @@ export function envRaw(): RawConfig {
   return mergeRaw({
     // SDK-standard names (TRACEROOT_ENABLED / TRACEROOT_API_KEY) take precedence;
     // the pi-scoped legacy names remain as backward-compatible aliases.
-    enabled: firstBoolEnv("TRACEROOT_ENABLED", "TRACEROOT_PI_ENABLED"),
-    token: firstStrEnv("TRACEROOT_API_KEY", "TRACEROOT_TOKEN"),
-    localMode: boolEnv("TRACEROOT_LOCAL_MODE"),
-    apiUrl: firstStrEnv("TRACEROOT_HOST_URL", "TRACEROOT_API_URL"),
-    otlpEndpoint: strEnv("TRACEROOT_OTLP_ENDPOINT"),
-    uiUrl: strEnv("TRACEROOT_UI_URL"),
-    project: strEnv("TRACEROOT_PROJECT"),
-    projectId: strEnv("TRACEROOT_PROJECT_ID"),
-    serviceName: strEnv("TRACEROOT_SERVICE_NAME"),
-    environment: strEnv("TRACEROOT_ENVIRONMENT"),
-    githubOwner: strEnv("TRACEROOT_GITHUB_OWNER"),
-    githubRepo: strEnv("TRACEROOT_GITHUB_REPO_NAME"),
-    githubCommit: strEnv("TRACEROOT_GITHUB_COMMIT_HASH"),
-    debug: boolEnv("TRACEROOT_PI_DEBUG"),
-    logFile: strEnv("TRACEROOT_LOG_FILE"),
-    captureFullPayload: boolEnv("TRACEROOT_CAPTURE_FULL_PAYLOAD"),
-    captureToolIo: boolEnv("TRACEROOT_CAPTURE_TOOL_IO"),
-    showUiIndicator: boolEnv("TRACEROOT_SHOW_UI"),
-    stateDir: strEnv("TRACEROOT_STATE_DIR"),
-    parentSpanId: strEnv("PI_PARENT_SPAN_ID"),
-    rootSpanId: strEnv("PI_ROOT_SPAN_ID"),
-    additionalMetadata: jsonObjectEnv("TRACEROOT_ADDITIONAL_METADATA"),
+    enabled: firstBoolEnv('TRACEROOT_ENABLED', 'TRACEROOT_PI_ENABLED'),
+    token: firstStrEnv('TRACEROOT_API_KEY', 'TRACEROOT_TOKEN'),
+    localMode: boolEnv('TRACEROOT_LOCAL_MODE'),
+    apiUrl: firstStrEnv('TRACEROOT_HOST_URL', 'TRACEROOT_API_URL'),
+    otlpEndpoint: strEnv('TRACEROOT_OTLP_ENDPOINT'),
+    uiUrl: strEnv('TRACEROOT_UI_URL'),
+    project: strEnv('TRACEROOT_PROJECT'),
+    projectId: strEnv('TRACEROOT_PROJECT_ID'),
+    serviceName: strEnv('TRACEROOT_SERVICE_NAME'),
+    environment: strEnv('TRACEROOT_ENVIRONMENT'),
+    githubOwner: strEnv('TRACEROOT_GITHUB_OWNER'),
+    githubRepo: strEnv('TRACEROOT_GITHUB_REPO_NAME'),
+    githubCommit: strEnv('TRACEROOT_GITHUB_COMMIT_HASH'),
+    debug: boolEnv('TRACEROOT_PI_DEBUG'),
+    logFile: strEnv('TRACEROOT_LOG_FILE'),
+    captureFullPayload: boolEnv('TRACEROOT_CAPTURE_FULL_PAYLOAD'),
+    captureToolIo: boolEnv('TRACEROOT_CAPTURE_TOOL_IO'),
+    showUiIndicator: boolEnv('TRACEROOT_SHOW_UI'),
+    stateDir: strEnv('TRACEROOT_STATE_DIR'),
+    parentSpanId: strEnv('PI_PARENT_SPAN_ID'),
+    rootSpanId: strEnv('PI_ROOT_SPAN_ID'),
+    additionalMetadata: jsonObjectEnv('TRACEROOT_ADDITIONAL_METADATA'),
   });
 }
 
 export function readJsonConfig(file: string): RawConfig | null {
   try {
     if (!existsSync(file)) return null;
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
-    return parsed && typeof parsed === "object" ? (parsed as RawConfig) : null;
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' ? (parsed as RawConfig) : null;
   } catch {
     return null;
   }
@@ -172,32 +179,34 @@ export function readJsonConfig(file: string): RawConfig | null {
 
 // Keep only primitive values; arbitrary metadata is emitted as span attributes,
 // which OpenTelemetry restricts to string/number/boolean.
-function primitiveMetadata(value: Record<string, unknown> | undefined): Record<string, MetadataValue> | undefined {
+function primitiveMetadata(
+  value: Record<string, unknown> | undefined,
+): Record<string, MetadataValue> | undefined {
   if (!value) return undefined;
   const out: Record<string, MetadataValue> = {};
   for (const key of Object.keys(value)) {
     const v = value[key];
-    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[key] = v;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[key] = v;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export function resolve(raw: RawConfig): TracerootPiConfig {
   const localMode = raw.localMode ?? false;
-  const apiUrl = raw.apiUrl ?? (localMode ? "http://localhost:8000" : "https://app.traceroot.ai");
-  const uiUrl = raw.uiUrl ?? (localMode ? "http://localhost:3000" : "https://app.traceroot.ai");
-  const otlpEndpoint = raw.otlpEndpoint ?? `${apiUrl.replace(/\/+$/, "")}/api/v1/public/traces`;
+  const apiUrl = raw.apiUrl ?? (localMode ? 'http://localhost:8000' : 'https://app.traceroot.ai');
+  const uiUrl = raw.uiUrl ?? (localMode ? 'http://localhost:3000' : 'https://app.traceroot.ai');
+  const otlpEndpoint = raw.otlpEndpoint ?? `${apiUrl.replace(/\/+$/, '')}/api/v1/public/traces`;
   return {
     enabled: raw.enabled ?? false,
-    token: raw.token ?? "",
+    token: raw.token ?? '',
     localMode,
     apiUrl,
     otlpEndpoint,
     uiUrl,
-    project: raw.project ?? "pi",
+    project: raw.project ?? 'pi',
     projectId: raw.projectId,
-    serviceName: raw.serviceName ?? "pi-agent",
-    environment: raw.environment ?? "development",
+    serviceName: raw.serviceName ?? 'pi-agent',
+    environment: raw.environment ?? 'development',
     githubOwner: raw.githubOwner,
     githubRepo: raw.githubRepo,
     githubCommit: raw.githubCommit,
@@ -206,7 +215,7 @@ export function resolve(raw: RawConfig): TracerootPiConfig {
     captureFullPayload: raw.captureFullPayload ?? false,
     captureToolIo: raw.captureToolIo ?? true,
     showUiIndicator: raw.showUiIndicator ?? true,
-    stateDir: raw.stateDir ?? join(homedir(), ".pi", "agent", "state", "traceroot-pi-extension"),
+    stateDir: raw.stateDir ?? join(homedir(), '.pi', 'agent', 'state', 'traceroot-pi-extension'),
     parentSpanId: raw.parentSpanId,
     rootSpanId: raw.rootSpanId,
     additionalMetadata: primitiveMetadata(raw.additionalMetadata),
@@ -216,7 +225,7 @@ export function resolve(raw: RawConfig): TracerootPiConfig {
 function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
+    return url.protocol === 'http:' || url.protocol === 'https:';
   } catch {
     return false;
   }
@@ -225,30 +234,30 @@ function isHttpUrl(value: string): boolean {
 // Surface the misconfigurations that actually break or weaken tracing.
 export function validateConfig(config: TracerootPiConfig): ConfigIssue[] {
   const issues: ConfigIssue[] = [];
-  for (const name of ["apiUrl", "uiUrl", "otlpEndpoint"] as const) {
+  for (const name of ['apiUrl', 'uiUrl', 'otlpEndpoint'] as const) {
     if (!isHttpUrl(config[name])) {
-      issues.push({ path: name, message: `${name} must be an http(s) URL`, severity: "error" });
+      issues.push({ path: name, message: `${name} must be an http(s) URL`, severity: 'error' });
     }
   }
   if (config.enabled && !config.token) {
     issues.push({
-      path: "token",
-      message: "tracing is enabled but no token is set (TRACEROOT_API_KEY); spans will be rejected",
-      severity: "warning",
+      path: 'token',
+      message: 'tracing is enabled but no token is set (TRACEROOT_API_KEY); spans will be rejected',
+      severity: 'warning',
     });
   }
-  if (config.enabled && !config.localMode && config.otlpEndpoint.startsWith("http://")) {
+  if (config.enabled && !config.localMode && config.otlpEndpoint.startsWith('http://')) {
     issues.push({
-      path: "otlpEndpoint",
-      message: "endpoint is not https; the token will be sent in cleartext",
-      severity: "warning",
+      path: 'otlpEndpoint',
+      message: 'endpoint is not https; the token will be sent in cleartext',
+      severity: 'warning',
     });
   }
   return issues;
 }
 
 export function loadConfig(): ConfigBundle {
-  const globalFile = join(homedir(), ".pi", "agent", "traceroot.json");
+  const globalFile = join(homedir(), '.pi', 'agent', 'traceroot.json');
   const globalLayer = readJsonConfig(globalFile);
   const env = envRaw();
   const merged = mergeRaw(globalLayer, env);
@@ -257,7 +266,11 @@ export function loadConfig(): ConfigBundle {
 
   const configIssues: ConfigIssue[] = [];
   if (globalLayer === null && existsSync(globalFile)) {
-    configIssues.push({ path: globalFile, message: "config file is not valid JSON; ignored", severity: "warning" });
+    configIssues.push({
+      path: globalFile,
+      message: 'config file is not valid JSON; ignored',
+      severity: 'warning',
+    });
   }
   configIssues.push(...validateConfig(config));
 
