@@ -178,14 +178,21 @@ export function registerTurn(rt: Runtime): void {
   pi.on("agent_end", async (raw) => {
     // Close any LLM/tool spans an aborted turn left open, then the turn span.
     sweepTurnScoped(state);
-    if (!state.turnSpan) return;
-    // The final assistant message is the turn's Output panel.
-    const output = lastAssistantText((raw as { messages?: unknown })?.messages, IO_LIMITS.turnOutput);
-    if (output) setAttr(state.turnSpan, "traceroot.span.output", output);
-    state.turnSpan.end();
+    const turnSpan = state.turnSpan;
+    if (!turnSpan) return;
+    // Clear references before the best-effort attribute write + end, so a throw cannot
+    // leave a half-closed turn span dangling in state.
     state.turnSpan = null;
     state.turnCtx = null;
     state.promptIndex += 1;
+    try {
+      // The final assistant message is the turn's Output panel.
+      const output = lastAssistantText((raw as { messages?: unknown })?.messages, IO_LIMITS.turnOutput);
+      if (output) setAttr(turnSpan, "traceroot.span.output", output);
+      turnSpan.end();
+    } catch {
+      /* best-effort */
+    }
     rt.debug("closed turn span");
   });
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Span, Tracer } from "@opentelemetry/api";
+import { ROOT_CONTEXT, type Span, type Tracer } from "@opentelemetry/api";
 import { createSpanState } from "../state.ts";
 import { registerLlm, resolveModel } from "./llm.ts";
 import type { Runtime } from "../runtime.ts";
@@ -54,6 +54,9 @@ test("turn_start ends a prior open LLM span at the same turnIndex instead of lea
   ended.length = 0;
   const { rt, handlers } = fakeRuntime();
   registerLlm(rt);
+  // pi's agent_start opens the session span (setting sessionCtx) before turn_start; the
+  // LLM span parents under it. Establish that precondition here.
+  rt.state.sessionCtx = ROOT_CONTEXT;
   const turnStart = handlers.get("turn_start");
   if (!turnStart) throw new Error("turn_start handler not registered");
   const ctx = { model: { provider: "openai", id: "gpt-4o" } };

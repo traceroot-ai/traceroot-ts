@@ -65,16 +65,21 @@ export function registerLlm(rt: Runtime): void {
 
   pi.on("turn_start", async (raw, rawCtx) => {
     if (state.sessionDisabled) return;
+    // No turn/session context means agent_start has not (re)opened the session span yet
+    // — e.g. between a /traceroot enable and the next prompt. Opening an LLM span with no
+    // parent would start a brand-new root trace and split the agent loop, so skip until
+    // the session span exists (agent_start opens it and sets these contexts).
+    const parentCtx = state.turnCtx ?? state.sessionCtx;
+    if (!parentCtx) {
+      rt.debug("turn_start with no session/turn context; skipping LLM span");
+      return;
+    }
     const event = raw as TurnStartEvent;
     const ctx = rawCtx as ExtensionContext;
     const model = resolveModel(rt, ctx);
     const label = model ? `${model.provider}/${model.id}` : "unknown/unknown";
 
-    const span = rt.tracer.startSpan(
-      label,
-      { kind: SpanKind.CLIENT },
-      state.turnCtx ?? state.sessionCtx ?? undefined,
-    );
+    const span = rt.tracer.startSpan(label, { kind: SpanKind.CLIENT }, parentCtx);
     const turnIndex = typeof event?.turnIndex === "number" ? event.turnIndex : -1;
     setAttr(span, "traceroot.pi.turn_index", turnIndex);
     if (model) {
@@ -154,9 +159,15 @@ export function registerLlm(rt: Runtime): void {
     if (turnIndex === null) return;
     const entry = state.llmSpans.get(turnIndex);
     if (!entry) return;
-    entry.span.end();
+    // Delete first so a throw in end() cannot leak the entry (then mislabel it
+    // turn_incomplete in the agent_end sweep). end() is best-effort.
     state.llmSpans.delete(turnIndex);
     if (state.currentLlmTurnIndex === turnIndex) state.currentLlmTurnIndex = null;
+    try {
+      entry.span.end();
+    } catch {
+      /* best-effort */
+    }
     rt.debug("closed LLM span turnIndex=", turnIndex);
   });
 

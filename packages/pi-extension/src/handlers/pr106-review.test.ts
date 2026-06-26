@@ -7,7 +7,7 @@
 //     plain test once the underlying issue is fixed. Each cites the finding it pins.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SpanStatusCode, type Span, type Tracer } from "@opentelemetry/api";
+import { ROOT_CONTEXT, SpanStatusCode, type Span, type Tracer } from "@opentelemetry/api";
 import { createSpanState } from "../state.ts";
 import { registerLlm } from "./llm.ts";
 import { registerTool } from "./tool.ts";
@@ -84,6 +84,10 @@ function fakeRuntime(config: Record<string, unknown> = {}) {
     tracer,
     debug: () => {},
   } as unknown as Runtime;
+  // Default to an open session context: in pi, agent_start always opens the session
+  // span (setting sessionCtx) before any turn_start fires. Tests that exercise the
+  // no-context edge null this explicitly.
+  rt.state.sessionCtx = ROOT_CONTEXT;
   return { rt, handlers, spans, providerCalls };
 }
 
@@ -215,17 +219,35 @@ test("lifecycle: a quit session_shutdown shuts the provider down exactly once", 
   assert.equal(rt.state.providerShutdown, true);
 });
 
-test(
-  "spec: an errored tool should set the OTel span ERROR status, not only a boolean attribute",
-  { todo: "P1 TOOL-02 (tool.ts:46-48): call setStatus(ERROR) and extract the error message" },
-  async () => {
-    const { rt, handlers, spans } = fakeRuntime();
-    registerTool(rt);
-    await fire(handlers, "tool_execution_start", { toolCallId: "c1", toolName: "bash", args: {} });
-    await fire(handlers, "tool_execution_end", { toolCallId: "c1", isError: true, result: "boom" });
-    assert.equal(firstSpan(spans).status?.code, SpanStatusCode.ERROR);
-  },
-);
+test("tool errors set the OTel span ERROR status with an extracted message", async () => {
+  const { rt, handlers, spans } = fakeRuntime({ captureToolIo: true });
+  registerTool(rt);
+  await fire(handlers, "tool_execution_start", { toolCallId: "c1", toolName: "bash", args: {} });
+  await fire(handlers, "tool_execution_end", { toolCallId: "c1", isError: true, result: "command not found" });
+  assert.equal(firstSpan(spans).status?.code, SpanStatusCode.ERROR);
+  assert.equal(firstSpan(spans).status?.message, "command not found");
+});
+
+test("tool error status stays generic (no content leak) when tool-IO capture is off", async () => {
+  const { rt, handlers, spans } = fakeRuntime({ captureToolIo: false });
+  registerTool(rt);
+  await fire(handlers, "tool_execution_start", { toolCallId: "c1", toolName: "bash", args: {} });
+  await fire(handlers, "tool_execution_end", { toolCallId: "c1", isError: true, result: "secret output that must not leak" });
+  assert.equal(firstSpan(spans).status?.code, SpanStatusCode.ERROR);
+  assert.equal(firstSpan(spans).status?.message, "bash failed", "result content must not leak into the status message");
+});
+
+test("turn_start does not open an orphan-root LLM span when no session context exists", async () => {
+  const { rt, handlers, spans } = fakeRuntime();
+  registerLlm(rt);
+  // Simulate the rare disable -> enable-mid-loop window: tracing is on but no
+  // agent_start has (re)opened the session span, so there is no parent context.
+  rt.state.sessionCtx = null;
+  rt.state.turnCtx = null;
+  await fire(handlers, "turn_start", { turnIndex: 0 }, MODEL_CTX);
+  assert.equal(spans.length, 0, "no LLM span is opened without a parent context");
+  assert.equal(rt.state.llmSpans.size, 0);
+});
 
 test("session reset: a new session_start clears per-session state from a reused instance", async () => {
   const { rt, handlers } = fakeRuntime();
