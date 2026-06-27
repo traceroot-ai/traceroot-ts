@@ -257,6 +257,31 @@ test('lifecycle: a quit session_shutdown shuts the provider down exactly once', 
   assert.equal(rt.state.providerShutdown, true);
 });
 
+test('session_shutdown logs the real flush outcome instead of a blanket "flushed"', async () => {
+  const debugLines: string[] = [];
+  const handlers = new Map<string, (raw: unknown, ctx?: unknown) => unknown>();
+  const rt = {
+    pi: { on: (e: string, h: (raw: unknown, ctx?: unknown) => unknown) => handlers.set(e, h) },
+    state: createSpanState(),
+    config: {},
+    provider: {
+      forceFlush: async () => {
+        throw new Error('backend down');
+      },
+      shutdown: async () => {},
+    },
+    debug: (...args: unknown[]) => debugLines.push(args.map(String).join(' ')),
+  } as unknown as Runtime;
+  registerSession(rt);
+  const handler = handlers.get('session_shutdown');
+  assert.ok(handler, 'session_shutdown handler registered');
+  await handler({ reason: 'reload' }, UI_CTX);
+  assert.ok(
+    debugLines.some((l) => l.includes('error')),
+    'a failed flush is logged as error, not silently as flushed',
+  );
+});
+
 test('tool errors set the OTel span ERROR status with an extracted message', async () => {
   const { rt, handlers, spans } = fakeRuntime({ captureToolIo: true });
   registerTool(rt);

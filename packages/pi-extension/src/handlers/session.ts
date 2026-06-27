@@ -16,24 +16,34 @@ import type {
 
 const FLUSH_TIMEOUT_MS = 5000;
 
-// Best-effort flush bounded by a non-blocking timeout. The timeout timer is unref'd
-// and always cleared, so a flush that resolves first never leaves an armed timer
-// holding Node's event loop open (which would delay pi's exit by up to the timeout).
-async function flushWithTimeout(provider: { forceFlush: () => Promise<void> }): Promise<void> {
+type FlushOutcome = 'flushed' | 'timeout' | 'error';
+
+// Race a promise against a non-blocking timeout. The timer is unref'd and always cleared,
+// so it never holds Node's event loop open (which would delay pi's exit by up to the
+// deadline). Returns the work's value, or 'timeout' if the deadline wins first.
+async function raceWithTimeout<T>(work: Promise<T>, ms: number): Promise<T | 'timeout'> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), ms);
+    timer.unref?.();
+  });
   try {
-    await Promise.race([
-      provider.forceFlush(),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
-        timer.unref?.();
-      }),
-    ]);
-  } catch {
-    /* flush is best-effort */
+    return await Promise.race([work, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+// Best-effort flush that reports its actual outcome, so a backend outage at session end
+// is logged honestly ('error'/'timeout') rather than as a misleading 'flushed'.
+async function flushWithTimeout(provider: {
+  forceFlush: () => Promise<void>;
+}): Promise<FlushOutcome> {
+  const work = provider
+    .forceFlush()
+    .then((): FlushOutcome => 'flushed')
+    .catch((): FlushOutcome => 'error');
+  return raceWithTimeout(work, FLUSH_TIMEOUT_MS);
 }
 
 export function registerSession(rt: Runtime): void {
@@ -96,17 +106,18 @@ export function registerSession(rt: Runtime): void {
     // and the single shared provider live on, and an OTel provider returns no-op
     // tracers after shutdown — shutting it down here would silently drop every span of
     // the next session in a reused instance (the cubic provider-reuse regression).
-    await flushWithTimeout(provider);
+    const outcome = await flushWithTimeout(provider);
     if (event?.reason === 'quit') {
-      try {
-        await provider.shutdown();
-      } catch {
-        /* shutdown is best-effort on exit */
-      }
+      // The process is exiting; bound shutdown like flush so a hung exporter cannot
+      // stall pi's exit. shutdown() runs its own final flush internally.
+      await raceWithTimeout(
+        provider.shutdown().catch(() => undefined),
+        FLUSH_TIMEOUT_MS,
+      );
       state.providerShutdown = true;
-      debug('flushed + shutdown (quit)');
+      debug(`shutdown (quit); flush ${outcome}`);
     } else {
-      debug(`flushed (session transition: ${event?.reason ?? 'unknown'})`);
+      debug(`flush ${outcome} (session transition: ${event?.reason ?? 'unknown'})`);
     }
   });
 
