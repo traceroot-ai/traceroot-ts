@@ -20,8 +20,10 @@ type FlushOutcome = 'flushed' | 'timeout' | 'error';
 
 // Race a promise against a non-blocking timeout. The timer is unref'd and always cleared,
 // so it never holds Node's event loop open (which would delay pi's exit by up to the
-// deadline). Returns the work's value, or 'timeout' if the deadline wins first.
-async function raceWithTimeout<T>(work: Promise<T>, ms: number): Promise<T | 'timeout'> {
+// deadline). Returns the work's value, or 'timeout' if the deadline wins first. Do not
+// call with a T whose domain includes the string 'timeout' — a deadline result would be
+// indistinguishable from such a work value.
+export async function raceWithTimeout<T>(work: Promise<T>, ms: number): Promise<T | 'timeout'> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), ms);
@@ -107,6 +109,13 @@ export function registerSession(rt: Runtime): void {
     // tracers after shutdown — shutting it down here would silently drop every span of
     // the next session in a reused instance (the cubic provider-reuse regression).
     const outcome = await flushWithTimeout(provider);
+    if (outcome !== 'flushed') {
+      // Surface genuine data loss even when debug logging is off, so a stock install
+      // (no logFile, no debug) still learns its session-end spans may not have shipped.
+      console.error(
+        `[@traceroot-ai/pi-extension] span flush ${outcome} at session end; some spans may not have been exported`,
+      );
+    }
     if (event?.reason === 'quit') {
       // The process is exiting; bound shutdown like flush so a hung exporter cannot
       // stall pi's exit. shutdown() runs its own final flush internally.

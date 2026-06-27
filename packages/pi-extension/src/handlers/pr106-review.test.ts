@@ -10,7 +10,7 @@ import { ROOT_CONTEXT, SpanStatusCode, type Span, type Tracer } from '@opentelem
 import { createSpanState } from '../state.ts';
 import { registerLlm } from './llm.ts';
 import { registerTool } from './tool.ts';
-import { registerSession } from './session.ts';
+import { raceWithTimeout, registerSession } from './session.ts';
 import { registerTurn } from './turn.ts';
 import { registerCommand } from './command.ts';
 import type { Runtime } from '../runtime.ts';
@@ -279,6 +279,30 @@ test('session_shutdown logs the real flush outcome instead of a blanket "flushed
     debugLines.some((l) => l.includes('error')),
     'a failed flush is logged as error, not silently as flushed',
   );
+});
+
+test('raceWithTimeout resolves to "timeout" when the work does not settle in time', async () => {
+  const never = new Promise<string>(() => {}); // never resolves
+  assert.equal(await raceWithTimeout(never, 5), 'timeout');
+});
+
+test('raceWithTimeout resolves to the work value when it settles before the deadline', async () => {
+  assert.equal(await raceWithTimeout(Promise.resolve('done'), 1000), 'done');
+});
+
+test('lifecycle: a rejecting shutdown on quit still marks providerShutdown and does not throw', async () => {
+  const { rt, handlers, providerCalls } = fakeRuntime();
+  (rt.provider as unknown as { shutdown: () => Promise<void> }).shutdown = async () => {
+    throw new Error('shutdown failed');
+  };
+  registerSession(rt);
+  await fire(handlers, 'session_shutdown', { reason: 'quit' }, UI_CTX);
+  assert.equal(
+    rt.state.providerShutdown,
+    true,
+    'providerShutdown is set even when shutdown rejects',
+  );
+  assert.equal(providerCalls.flush, 1, 'the flush still ran before shutdown');
 });
 
 test('tool errors set the OTel span ERROR status with an extracted message', async () => {
