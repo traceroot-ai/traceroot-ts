@@ -60,26 +60,26 @@ then environment variables. A project-local `.pi/traceroot.json` is also merged,
 but only when the project is trusted and only for presentation fields (`project`,
 `projectId`, `showUiIndicator`, `debug`) — never the token or endpoint.
 
-| Environment variable | Default | Description |
-|---|---|---|
-| `TRACEROOT_PI_ENABLED` | `false` | Master opt-in. No spans unless `true`. |
-| `TRACEROOT_TOKEN` | — | Traceroot access token (Bearer). Required. |
-| `TRACEROOT_LOCAL_MODE` | `false` | Use localhost defaults for endpoint and UI. |
-| `TRACEROOT_API_URL` | `https://app.traceroot.ai` | Ingest API base. |
-| `TRACEROOT_OTLP_ENDPOINT` | `<api>/api/v1/public/traces` | Explicit OTLP endpoint override. |
-| `TRACEROOT_UI_URL` | `https://app.traceroot.ai` | Web UI base for trace links. |
-| `TRACEROOT_PROJECT` | `pi` | Project label. |
-| `TRACEROOT_PROJECT_ID` | — | Project UUID, used to build trace URLs. |
-| `TRACEROOT_SERVICE_NAME` | `pi-agent` | OTel `service.name`. |
-| `TRACEROOT_ENVIRONMENT` | `development` | Deployment environment. |
-| `TRACEROOT_GITHUB_OWNER` / `_REPO_NAME` / `_COMMIT_HASH` | — | Optional source attribution. |
-| `TRACEROOT_CAPTURE_FULL_PAYLOAD` | `false` | Capture full LLM request payloads **and** the request-message Input panel (`traceroot.span.input`). Off by default: LLM spans then record only `request_message_count`, not conversation content. May contain PII. |
-| `TRACEROOT_CAPTURE_TOOL_IO` | `true` | Capture tool-call arguments and results (truncated) on tool spans. Set `false` to record only the tool name, error state, and duration. |
-| `TRACEROOT_SHOW_UI` | `true` | Show the TUI status indicator and trace-URL widget. |
-| `TRACEROOT_PI_DEBUG` | `false` | Log span lifecycle to stderr. |
-| `TRACEROOT_LOG_FILE` | — | Also write a JSON-lines debug log to this file. |
-| `TRACEROOT_ADDITIONAL_METADATA` | — | JSON object of extra key/values added to the session span. |
-| `PI_PARENT_SPAN_ID` / `PI_ROOT_SPAN_ID` | — | Nest this session under a remote parent (subagent tracing); 16-hex span / 32-hex trace. |
+| Environment variable                                     | Default                      | Description                                                                                                                                                                                                        |
+| -------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `TRACEROOT_PI_ENABLED`                                   | `false`                      | Master opt-in. No spans unless `true`.                                                                                                                                                                             |
+| `TRACEROOT_TOKEN`                                        | —                            | Traceroot access token (Bearer). Required.                                                                                                                                                                         |
+| `TRACEROOT_LOCAL_MODE`                                   | `false`                      | Use localhost defaults for endpoint and UI.                                                                                                                                                                        |
+| `TRACEROOT_API_URL`                                      | `https://app.traceroot.ai`   | Ingest API base.                                                                                                                                                                                                   |
+| `TRACEROOT_OTLP_ENDPOINT`                                | `<api>/api/v1/public/traces` | Explicit OTLP endpoint override.                                                                                                                                                                                   |
+| `TRACEROOT_UI_URL`                                       | `https://app.traceroot.ai`   | Web UI base for trace links.                                                                                                                                                                                       |
+| `TRACEROOT_PROJECT`                                      | `pi`                         | Project label.                                                                                                                                                                                                     |
+| `TRACEROOT_PROJECT_ID`                                   | —                            | Project UUID, used to build trace URLs.                                                                                                                                                                            |
+| `TRACEROOT_SERVICE_NAME`                                 | `pi-agent`                   | OTel `service.name`.                                                                                                                                                                                               |
+| `TRACEROOT_ENVIRONMENT`                                  | `development`                | Deployment environment.                                                                                                                                                                                            |
+| `TRACEROOT_GITHUB_OWNER` / `_REPO_NAME` / `_COMMIT_HASH` | —                            | Optional source attribution.                                                                                                                                                                                       |
+| `TRACEROOT_CAPTURE_FULL_PAYLOAD`                         | `false`                      | Capture full LLM request payloads **and** the request-message Input panel (`traceroot.span.input`). Off by default: LLM spans then record only `request_message_count`, not conversation content. May contain PII. |
+| `TRACEROOT_CAPTURE_TOOL_IO`                              | `true`                       | Capture tool-call arguments and results (truncated) on tool spans. Set `false` to record only the tool name, error state, and duration.                                                                            |
+| `TRACEROOT_SHOW_UI`                                      | `true`                       | Show the TUI status indicator and trace-URL widget.                                                                                                                                                                |
+| `TRACEROOT_PI_DEBUG`                                     | `false`                      | Log span lifecycle to stderr.                                                                                                                                                                                      |
+| `TRACEROOT_LOG_FILE`                                     | —                            | Also write a JSON-lines debug log to this file.                                                                                                                                                                    |
+| `TRACEROOT_ADDITIONAL_METADATA`                          | —                            | JSON object of extra key/values added to the session span.                                                                                                                                                         |
+| `PI_PARENT_SPAN_ID` / `PI_ROOT_SPAN_ID`                  | —                            | Nest this session under a remote parent (subagent tracing); 16-hex span / 32-hex trace.                                                                                                                            |
 
 ## Session continuity & nesting
 

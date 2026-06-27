@@ -4,10 +4,10 @@
 // is the project UUID (not the human-readable project name). When the UUID is not
 // configured we cannot construct a correct link, so we return null and the caller
 // surfaces the trace id as plain text instead of a wrong URL.
-import type { TracerootPiConfig } from "./config.ts";
+import type { TracerootPiConfig } from './config.ts';
 
 export function buildTraceUrl(config: TracerootPiConfig, traceId: string | null): string | null {
   if (!traceId || !config.projectId) return null;
-  const base = config.uiUrl.replace(/\/+$/, "");
+  const base = config.uiUrl.replace(/\/+$/, '');
   return `${base}/projects/${config.projectId}/traces?traceId=${traceId}`;
 }

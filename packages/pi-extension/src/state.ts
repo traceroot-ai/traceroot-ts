@@ -2,8 +2,8 @@
 // no module-level mutable state — so lifecycle and concurrency are auditable in
 // one place. OTel context is threaded explicitly (never via AsyncLocalStorage),
 // because pi events arrive sequentially from an event loop, not as nested calls.
-import type { Context, Span } from "@opentelemetry/api";
-import { setAttr } from "./attributes.ts";
+import type { Context, Span } from '@opentelemetry/api';
+import { setAttr } from './attributes.ts';
 
 export interface LlmEntry {
   span: Span;
@@ -52,7 +52,12 @@ export interface SpanState {
   resumeFrom: { traceId: string; spanId: string } | null;
 
   // Buffered pi "input" event metadata, applied to the next turn span.
-  pendingInput: { source?: string; streamingBehavior?: string; imageCount?: number; raw?: string } | null;
+  pendingInput: {
+    source?: string;
+    streamingBehavior?: string;
+    imageCount?: number;
+    raw?: string;
+  } | null;
 
   // Open compaction span (session_before_compact -> session_compact).
   compactionSpan: Span | null;
@@ -106,7 +111,7 @@ export function activeParentCtx(state: SpanState): Context | undefined {
 function endToolSpans(state: SpanState): void {
   for (const entry of state.toolSpans.values()) {
     try {
-      setAttr(entry.span, "traceroot.pi.tool_incomplete", true);
+      setAttr(entry.span, 'traceroot.pi.tool_incomplete', true);
       entry.span.end();
     } catch {
       /* best-effort */
@@ -162,7 +167,7 @@ export function closeAllOpenSpans(state: SpanState, reason: string): void {
 
   if (state.sessionSpan) {
     try {
-      setAttr(state.sessionSpan, "traceroot.pi.shutdown_reason", reason);
+      setAttr(state.sessionSpan, 'traceroot.pi.shutdown_reason', reason);
       state.sessionSpan.end();
     } catch {
       /* best-effort */

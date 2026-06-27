@@ -5,7 +5,7 @@
 // the package does not import pi internals at runtime; pi injects the live objects
 // when it loads the extension. Only fields this extension reads are declared.
 
-export type ExtensionMode = "tui" | "rpc" | "json" | "print";
+export type ExtensionMode = 'tui' | 'rpc' | 'json' | 'print';
 
 export interface ContextUsage {
   /** Estimated context tokens, or null when unknown (e.g. just after compaction). */
@@ -29,9 +29,9 @@ export interface ExtensionUI {
   setWidget(
     key: string,
     content: string[] | undefined,
-    options?: { placement?: "aboveEditor" | "belowEditor" },
+    options?: { placement?: 'aboveEditor' | 'belowEditor' },
   ): void;
-  notify(message: string, type?: "info" | "warning" | "error"): void;
+  notify(message: string, type?: 'info' | 'warning' | 'error'): void;
 }
 
 export interface ExtensionContext {
@@ -65,11 +65,11 @@ export interface AgentMessageLike {
 
 // Event payloads — only the fields this extension reads.
 export interface SessionStartEvent {
-  reason: "startup" | "reload" | "new" | "resume" | "fork";
+  reason: 'startup' | 'reload' | 'new' | 'resume' | 'fork';
   previousSessionFile?: string;
 }
 export interface SessionShutdownEvent {
-  reason: "quit" | "reload" | "new" | "resume" | "fork";
+  reason: 'quit' | 'reload' | 'new' | 'resume' | 'fork';
 }
 export interface BeforeAgentStartEvent {
   prompt?: string;

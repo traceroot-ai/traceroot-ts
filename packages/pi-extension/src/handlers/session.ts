@@ -1,18 +1,18 @@
 // Session lifecycle: capture fork origin on start; close everything and flush on
 // shutdown. The session span itself is opened lazily in turn.ts on first agent_start.
-import { SpanKind } from "@opentelemetry/api";
-import { setAttr } from "../attributes.ts";
-import { beginNewSession, closeAllOpenSpans } from "../state.ts";
-import { readSessionTrace } from "../fork-link.ts";
-import { isSpanId, isTraceId } from "../hex.ts";
-import { setStatus, STATUS_INACTIVE } from "../ui.ts";
-import type { Runtime } from "../runtime.ts";
+import { SpanKind } from '@opentelemetry/api';
+import { setAttr } from '../attributes.ts';
+import { beginNewSession, closeAllOpenSpans } from '../state.ts';
+import { readSessionTrace } from '../fork-link.ts';
+import { isSpanId, isTraceId } from '../hex.ts';
+import { setStatus, STATUS_INACTIVE } from '../ui.ts';
+import type { Runtime } from '../runtime.ts';
 import type {
   ExtensionContext,
   SessionCompactEvent,
   SessionShutdownEvent,
   SessionStartEvent,
-} from "../types.ts";
+} from '../types.ts';
 
 const FLUSH_TIMEOUT_MS = 5000;
 
@@ -39,7 +39,7 @@ async function flushWithTimeout(provider: { forceFlush: () => Promise<void> }): 
 export function registerSession(rt: Runtime): void {
   const { pi, state, provider, config, debug } = rt;
 
-  pi.on("session_start", async (raw, rawCtx) => {
+  pi.on('session_start', async (raw, rawCtx) => {
     const event = raw as SessionStartEvent;
     const ctx = rawCtx as ExtensionContext;
     const reason = event?.reason;
@@ -50,21 +50,21 @@ export function registerSession(rt: Runtime): void {
     // output, buffered input, linkage, and the project-finalized flag) so the previous
     // session cannot bleed into this one. The provider is process-scoped and untouched.
     // resetForNewSession clears sessionStartReason, so set it after.
-    beginNewSession(state, reason ?? "new");
+    beginNewSession(state, reason ?? 'new');
     state.sessionStartReason = reason ?? null;
-    debug("session_start reason=", reason);
+    debug('session_start reason=', reason);
 
     // Fork: link the new session's trace back to the parent it branched from.
-    if (reason === "fork" && event?.previousSessionFile) {
+    if (reason === 'fork' && event?.previousSessionFile) {
       state.forkedFromSessionFile = event.previousSessionFile;
       state.forkLink = readSessionTrace(config.stateDir, event.previousSessionFile);
-      debug("fork link", state.forkLink ? "found" : "none");
+      debug('fork link', state.forkLink ? 'found' : 'none');
       return;
     }
 
     // Reload/resume: continue the same trace by parenting new spans under the
     // persisted root (OTel can't reopen the original span across instances).
-    if (reason === "reload" || reason === "resume") {
+    if (reason === 'reload' || reason === 'resume') {
       let sessionFile: string | null = null;
       try {
         sessionFile = ctx?.sessionManager?.getSessionFile?.() ?? null;
@@ -77,19 +77,19 @@ export function registerSession(rt: Runtime): void {
         if (valid) {
           state.resumeFrom = prior;
         }
-        debug("session continuation", valid ? "found" : "invalid-id");
+        debug('session continuation', valid ? 'found' : 'invalid-id');
       }
     }
   });
 
-  pi.on("session_shutdown", async (raw, ctx) => {
+  pi.on('session_shutdown', async (raw, ctx) => {
     const event = raw as SessionShutdownEvent;
     setStatus(ctx as ExtensionContext, STATUS_INACTIVE);
     // The last assistant response is the session's Output panel.
     if (state.sessionSpan && state.lastAssistantText) {
-      setAttr(state.sessionSpan, "traceroot.span.output", state.lastAssistantText);
+      setAttr(state.sessionSpan, 'traceroot.span.output', state.lastAssistantText);
     }
-    closeAllOpenSpans(state, event?.reason ?? "unknown");
+    closeAllOpenSpans(state, event?.reason ?? 'unknown');
 
     // Always flush the just-closed spans. Only fully shut the provider down on a
     // terminal quit: reload/new/resume/fork tear down THIS session while the process
@@ -97,39 +97,43 @@ export function registerSession(rt: Runtime): void {
     // tracers after shutdown — shutting it down here would silently drop every span of
     // the next session in a reused instance (the cubic provider-reuse regression).
     await flushWithTimeout(provider);
-    if (event?.reason === "quit") {
+    if (event?.reason === 'quit') {
       try {
         await provider.shutdown();
       } catch {
         /* shutdown is best-effort on exit */
       }
       state.providerShutdown = true;
-      debug("flushed + shutdown (quit)");
+      debug('flushed + shutdown (quit)');
     } else {
-      debug(`flushed (session transition: ${event?.reason ?? "unknown"})`);
+      debug(`flushed (session transition: ${event?.reason ?? 'unknown'})`);
     }
   });
 
   // P2-C — compaction as a timed child span on the session.
-  pi.on("session_before_compact", async () => {
+  pi.on('session_before_compact', async () => {
     if (state.sessionDisabled || !state.sessionSpan || state.compactionSpan) return;
     state.compactionSpan = rt.tracer.startSpan(
-      "pi.compaction",
+      'pi.compaction',
       { kind: SpanKind.INTERNAL },
       state.sessionCtx ?? undefined,
     );
   });
 
-  pi.on("session_compact", async (raw) => {
+  pi.on('session_compact', async (raw) => {
     const event = raw as SessionCompactEvent;
     const tokensBefore = event?.compactionEntry?.tokensBefore ?? 0;
     // Open lazily if before_compact never fired, so the compaction still records.
     let span = state.compactionSpan;
     if (!span) {
       if (!state.sessionSpan) return;
-      span = rt.tracer.startSpan("pi.compaction", { kind: SpanKind.INTERNAL }, state.sessionCtx ?? undefined);
+      span = rt.tracer.startSpan(
+        'pi.compaction',
+        { kind: SpanKind.INTERNAL },
+        state.sessionCtx ?? undefined,
+      );
     }
-    setAttr(span, "traceroot.pi.tokens_before", tokensBefore);
+    setAttr(span, 'traceroot.pi.tokens_before', tokensBefore);
     span.end();
     state.compactionSpan = null;
   });
