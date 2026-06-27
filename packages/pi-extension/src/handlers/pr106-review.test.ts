@@ -314,3 +314,23 @@ test('session reset: a new session_start clears per-session state from a reused 
     'project-local config is re-read for the new session',
   );
 });
+
+test('session reset: a new session re-enables tracing (disable is scoped per-session)', async () => {
+  const { rt, handlers } = fakeRuntime();
+  registerSession(rt);
+  rt.state.sessionDisabled = true;
+  await fire(handlers, 'session_start', { reason: 'new' }, UI_CTX);
+  assert.equal(rt.state.sessionDisabled, false, 'a new session starts with tracing enabled');
+});
+
+test('session reset: providerShutdown is process-scoped and survives a new session', async () => {
+  const { rt, handlers } = fakeRuntime();
+  registerSession(rt);
+  rt.state.providerShutdown = true;
+  await fire(handlers, 'session_start', { reason: 'new' }, UI_CTX);
+  assert.equal(
+    rt.state.providerShutdown,
+    true,
+    'providerShutdown must not be reset across sessions',
+  );
+});

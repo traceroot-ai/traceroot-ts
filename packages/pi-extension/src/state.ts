@@ -176,6 +176,14 @@ export function resetForNewSession(state: SpanState): void {
   // from its own ctx.model / model_select, so a stale cache must not carry over.
   state.currentModel = null;
   state.thinkingLevel = null;
+  // /traceroot disable is scoped "for this session" (per its UI message), so a new
+  // session re-enables tracing. The disable command sets sessionDisabled = true again
+  // immediately after calling beginNewSession, so disabling the current session still
+  // works; only a session transition clears it.
+  state.sessionDisabled = false;
+  // NOTE: providerShutdown is intentionally NOT reset here — it is process-scoped (set
+  // only on a terminal quit, after which no next session runs). Resetting it would
+  // revive the no-op-tracer regression. See its field doc in SpanState.
 }
 
 // Begin a fresh session on a reused extension instance. pi keeps one module instance
