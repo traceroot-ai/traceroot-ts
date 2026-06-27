@@ -6,7 +6,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSpanState } from './state.ts';
+import { createSpanState, type SpanState } from './state.ts';
+import type { TracerootPiConfig } from './config.ts';
 import type { Runtime } from './runtime.ts';
 
 // A fake OTLP provider that counts the flush/shutdown calls the lifecycle handlers make.
@@ -90,9 +91,9 @@ export function recordingTracer(): { tracer: Tracer; spans: SpanRecord[] } {
 }
 
 // A fake pi runtime for event-handler tests. Records provider flush/shutdown calls and
-// defaults to an open session context (in pi, agent_start opens the session span before
-// any turn_start; tests that exercise the no-context edge null it explicitly).
-export function fakeRuntime(config: Record<string, unknown> = {}) {
+// defaults sessionCtx to a non-null (ROOT) context, mirroring a real session after
+// agent_start opens the session span (tests that exercise the no-context edge null it).
+export function fakeRuntime(config: Partial<TracerootPiConfig> = {}) {
   const handlers = new Map<string, (raw: unknown, ctx?: unknown) => unknown>();
   const { tracer, spans } = recordingTracer();
   const { provider, providerCalls } = fakeProvider();
@@ -147,7 +148,7 @@ export function firstSpan(spans: SpanRecord[]): SpanRecord {
 
 // A fake pi runtime for the /traceroot command handler: captures the registered command
 // handler and the notifications it emits, and records provider flush/shutdown calls.
-export function commandRuntime(stateOverrides: Record<string, unknown> = {}) {
+export function commandRuntime(stateOverrides: Partial<SpanState> = {}) {
   let commandHandler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
   const notifications: Array<{ message: string; level?: string }> = [];
   const { provider, providerCalls } = fakeProvider();

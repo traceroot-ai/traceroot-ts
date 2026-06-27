@@ -110,7 +110,11 @@ function openSessionSpan(
   }
   // The repo slug is a git lookup; resolve it off the hot path and attach it to the
   // long-lived session span when it settles, so the first prompt is never blocked on git.
-  void repoSlug(cwd).then((slug) => setAttr(sessionSpan, 'traceroot.pi.repo', slug));
+  // repoSlug never rejects, but keep the terminal .catch() so the no-throw guarantee is
+  // local here rather than contingent on that invariant (matches session.ts's flush chain).
+  void repoSlug(cwd)
+    .then((slug) => setAttr(sessionSpan, 'traceroot.pi.repo', slug))
+    .catch((error) => debug('repo slug attribution failed', error));
   if (state.forkedFromSessionFile) {
     setAttr(sessionSpan, 'traceroot.pi.forked_from_session', state.forkedFromSessionFile);
   }

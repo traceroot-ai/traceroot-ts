@@ -111,6 +111,19 @@ test('message_end ignores non-assistant messages', async () => {
   assert.equal(firstSpan(spans).attrs['gen_ai.usage.input_tokens'], undefined);
 });
 
+test('message_end with partial usage defaults the missing token field to 0', async () => {
+  const { rt, handlers, spans } = fakeRuntime();
+  registerLlm(rt);
+  await fire(handlers, 'turn_start', { turnIndex: 0 }, MODEL_CTX);
+  await fire(handlers, 'message_end', { message: { role: 'assistant', usage: { input: 12 } } });
+  assert.equal(firstSpan(spans).attrs['gen_ai.usage.input_tokens'], 12);
+  assert.equal(
+    firstSpan(spans).attrs['gen_ai.usage.output_tokens'],
+    0,
+    'a missing output count defaults to 0',
+  );
+});
+
 test('message_end with an error/aborted stopReason sets the span ERROR status (generic by default)', async () => {
   const { rt, handlers, spans } = fakeRuntime({ captureFullPayload: false });
   registerLlm(rt);
