@@ -9,7 +9,7 @@ import {
   type Link,
   type Span,
 } from '@opentelemetry/api';
-import { setAttr } from '../attributes.ts';
+import { endSpan, setAttr } from '../attributes.ts';
 import { IO_LIMITS, lastAssistantText } from '../content.ts';
 import { safeJsonTruncate } from '../json.ts';
 import { sweepTurnScoped } from '../state.ts';
@@ -167,11 +167,7 @@ export function registerTurn(rt: Runtime): void {
     // turn-scoped spans open. Close them before starting a new loop.
     if (state.turnSpan) {
       sweepTurnScoped(state);
-      try {
-        state.turnSpan.end();
-      } catch {
-        /* best-effort */
-      }
+      endSpan(state.turnSpan);
       state.turnSpan = null;
       state.turnCtx = null;
     }
@@ -200,22 +196,18 @@ export function registerTurn(rt: Runtime): void {
     sweepTurnScoped(state);
     const turnSpan = state.turnSpan;
     if (!turnSpan) return;
-    // Clear references before the best-effort attribute write + end, so a throw cannot
-    // leave a half-closed turn span dangling in state.
+    // Clear references before writing output and ending the span, so the turn span is
+    // never left half-closed in state.
     state.turnSpan = null;
     state.turnCtx = null;
     state.promptIndex += 1;
-    try {
-      // The final assistant message is the turn's Output panel.
-      const output = lastAssistantText(
-        (raw as { messages?: unknown })?.messages,
-        IO_LIMITS.turnOutput,
-      );
-      if (output) setAttr(turnSpan, 'traceroot.span.output', output);
-      turnSpan.end();
-    } catch {
-      /* best-effort */
-    }
+    // The final assistant message is the turn's Output panel.
+    const output = lastAssistantText(
+      (raw as { messages?: unknown })?.messages,
+      IO_LIMITS.turnOutput,
+    );
+    if (output) setAttr(turnSpan, 'traceroot.span.output', output);
+    endSpan(turnSpan);
     rt.debug('closed turn span');
   });
 }

@@ -3,7 +3,7 @@
 // one place. OTel context is threaded explicitly (never via AsyncLocalStorage),
 // because pi events arrive sequentially from an event loop, not as nested calls.
 import type { Context, Span } from '@opentelemetry/api';
-import { setAttr } from './attributes.ts';
+import { endSpan, setAttr } from './attributes.ts';
 
 export interface LlmEntry {
   span: Span;
@@ -110,23 +110,15 @@ export function activeParentCtx(state: SpanState): Context | undefined {
 
 function endToolSpans(state: SpanState): void {
   for (const entry of state.toolSpans.values()) {
-    try {
-      setAttr(entry.span, 'traceroot.pi.tool_incomplete', true);
-      entry.span.end();
-    } catch {
-      /* best-effort */
-    }
+    setAttr(entry.span, 'traceroot.pi.tool_incomplete', true);
+    endSpan(entry.span);
   }
   state.toolSpans.clear();
 }
 
 function endLlmSpans(state: SpanState): void {
   for (const entry of state.llmSpans.values()) {
-    try {
-      entry.span.end();
-    } catch {
-      /* best-effort */
-    }
+    endSpan(entry.span);
   }
   state.llmSpans.clear();
   state.currentLlmTurnIndex = null;
@@ -147,31 +139,19 @@ export function closeAllOpenSpans(state: SpanState, reason: string): void {
   sweepTurnScoped(state);
 
   if (state.compactionSpan) {
-    try {
-      state.compactionSpan.end();
-    } catch {
-      /* best-effort */
-    }
+    endSpan(state.compactionSpan);
     state.compactionSpan = null;
   }
 
   if (state.turnSpan) {
-    try {
-      state.turnSpan.end();
-    } catch {
-      /* best-effort */
-    }
+    endSpan(state.turnSpan);
     state.turnSpan = null;
     state.turnCtx = null;
   }
 
   if (state.sessionSpan) {
-    try {
-      setAttr(state.sessionSpan, 'traceroot.pi.shutdown_reason', reason);
-      state.sessionSpan.end();
-    } catch {
-      /* best-effort */
-    }
+    setAttr(state.sessionSpan, 'traceroot.pi.shutdown_reason', reason);
+    endSpan(state.sessionSpan);
     state.sessionSpan = null;
     state.sessionCtx = null;
   }

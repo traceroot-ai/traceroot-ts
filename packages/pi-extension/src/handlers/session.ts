@@ -1,7 +1,7 @@
 // Session lifecycle: capture fork origin on start; close everything and flush on
 // shutdown. The session span itself is opened lazily in turn.ts on first agent_start.
 import { SpanKind } from '@opentelemetry/api';
-import { setAttr } from '../attributes.ts';
+import { endSpan, setAttr } from '../attributes.ts';
 import { beginNewSession, closeAllOpenSpans } from '../state.ts';
 import { readSessionTrace } from '../fork-link.ts';
 import { isSpanId, isTraceId } from '../hex.ts';
@@ -134,7 +134,7 @@ export function registerSession(rt: Runtime): void {
       );
     }
     setAttr(span, 'traceroot.pi.tokens_before', tokensBefore);
-    span.end();
+    endSpan(span);
     state.compactionSpan = null;
   });
 }

@@ -1,7 +1,7 @@
 // P2-G — the /traceroot command: status | open | flush | disable | enable.
 // All UI output goes through ctx.ui.notify; spawning a browser is guarded by mode.
 import { spawn } from 'node:child_process';
-import { closeAllOpenSpans, resetForNewSession } from '../state.ts';
+import { beginNewSession } from '../state.ts';
 import { buildTraceUrl } from '../url.ts';
 import { setStatus, STATUS_ACTIVE, STATUS_INACTIVE } from '../ui.ts';
 import type { Runtime } from '../runtime.ts';
@@ -104,9 +104,9 @@ export function registerCommand(rt: Runtime): void {
         }
         case 'disable': {
           // Finalize the in-flight tree now, then stop opening spans. Re-enabling
-          // starts a fresh session span (and a fresh trace) on the next prompt.
-          closeAllOpenSpans(state, 'disabled');
-          resetForNewSession(state);
+          // starts a fresh session span (and a fresh trace) on the next prompt — the
+          // same begin-fresh-session step session_start runs.
+          beginNewSession(state, 'disabled');
           state.sessionDisabled = true;
           setStatus(ctx, STATUS_INACTIVE);
           ctx.ui.notify('Traceroot: tracing disabled for this session.', 'info');

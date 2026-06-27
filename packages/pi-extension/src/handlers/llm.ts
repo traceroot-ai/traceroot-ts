@@ -3,7 +3,7 @@
 // falling back to the last model_select only when the context omits it (model_select
 // fires on interactive model changes, not on a CLI --model flag — verified empirically).
 import { context, SpanKind, trace } from '@opentelemetry/api';
-import { addEvent, setAttr } from '../attributes.ts';
+import { addEvent, endSpan, setAttr } from '../attributes.ts';
 import { IO_LIMITS, renderMessageContent } from '../content.ts';
 import { safeJsonTruncate } from '../json.ts';
 import type { LlmEntry } from '../state.ts';
@@ -109,12 +109,8 @@ export function registerLlm(rt: Runtime): void {
     // double-open guard, but ends-then-replaces rather than skipping.
     const stale = state.llmSpans.get(turnIndex);
     if (stale) {
-      try {
-        setAttr(stale.span, 'traceroot.pi.turn_incomplete', true);
-        stale.span.end();
-      } catch {
-        /* best-effort */
-      }
+      setAttr(stale.span, 'traceroot.pi.turn_incomplete', true);
+      endSpan(stale.span);
     }
     state.llmSpans.set(turnIndex, { span, ctx: llmCtx, startTime: Date.now(), turnIndex });
     state.currentLlmTurnIndex = turnIndex;
@@ -174,11 +170,7 @@ export function registerLlm(rt: Runtime): void {
     // turn_incomplete in the agent_end sweep). end() is best-effort.
     state.llmSpans.delete(turnIndex);
     if (state.currentLlmTurnIndex === turnIndex) state.currentLlmTurnIndex = null;
-    try {
-      entry.span.end();
-    } catch {
-      /* best-effort */
-    }
+    endSpan(entry.span);
     rt.debug('closed LLM span turnIndex=', turnIndex);
   });
 

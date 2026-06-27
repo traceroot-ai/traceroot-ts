@@ -2,7 +2,7 @@
 // parented under the active LLM span. pi runs tools concurrently and their
 // start/end events interleave, so position-based tracking would orphan spans.
 import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
-import { setAttr } from '../attributes.ts';
+import { endSpan, setAttr } from '../attributes.ts';
 import { safeJsonTruncate } from '../json.ts';
 import { IO_LIMITS, renderToolResult } from '../content.ts';
 import { formatToolSpanName } from '../span-name.ts';
@@ -97,11 +97,7 @@ export function registerTool(rt: Runtime): void {
     } catch {
       /* best-effort */
     } finally {
-      try {
-        entry.span.end();
-      } catch {
-        /* best-effort */
-      }
+      endSpan(entry.span);
     }
     rt.debug('closed tool span', entry.toolName, toolCallId);
   });
