@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { collectEnvIssues, envRaw, resolve, validateConfig } from './config.ts';
+import { readFileSync } from 'node:fs';
+import { BOOLEAN_ENV_KEYS, collectEnvIssues, envRaw, resolve, validateConfig } from './config.ts';
 
 test('resolve applies cloud defaults', () => {
   const c = resolve({});
@@ -137,6 +138,28 @@ test('collectEnvIssues warns on a set-but-unrecognized boolean and on malformed 
   } finally {
     process.env = saved;
   }
+});
+
+test('BOOLEAN_ENV_KEYS covers every boolean env var parsed in envRaw (drift guard)', () => {
+  // Extract the env-var literals passed to boolEnv(...) / firstBoolEnv(...) in the source.
+  // If a new boolean var is parsed but not listed, a typo'd value would silently regress
+  // to "unset" with no collectEnvIssues warning — the exact bug that list prevents.
+  const src = readFileSync(new URL('./config.ts', import.meta.url), 'utf8');
+  const parsed = new Set<string>();
+  for (const call of src.matchAll(/(?:first)?[Bb]oolEnv\(([^)]*)\)/g)) {
+    const args = call[1] ?? '';
+    for (const lit of args.matchAll(/'([A-Z0-9_]+)'/g)) {
+      const name = lit[1];
+      if (name) parsed.add(name);
+    }
+  }
+  assert.ok(parsed.size >= 7, 'sanity: found the boolEnv call sites in source');
+  const missing = [...parsed].filter((k) => !BOOLEAN_ENV_KEYS.includes(k));
+  assert.deepEqual(
+    missing,
+    [],
+    `BOOLEAN_ENV_KEYS is missing parsed boolean env keys: ${missing.join(', ')}`,
+  );
 });
 
 test('collectEnvIssues is silent for recognized values, unset vars, and valid metadata', () => {

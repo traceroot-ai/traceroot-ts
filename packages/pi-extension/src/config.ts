@@ -96,7 +96,7 @@ const FALSE_SPELLINGS = ['false', '0', 'no', 'n', 'off'];
 // Every env var this extension parses as a boolean. Kept as one list so collectEnvIssues
 // can warn when any is set to an unrecognized spelling (a typo would otherwise be
 // silently treated as unset). Update alongside any new boolEnv(...) call in envRaw.
-const BOOLEAN_ENV_KEYS = [
+export const BOOLEAN_ENV_KEYS = [
   'TRACEROOT_ENABLED',
   'TRACEROOT_PI_ENABLED',
   'TRACEROOT_LOCAL_MODE',

@@ -164,7 +164,7 @@ test('guard: tool_execution_end flags an errored tool via tool_is_error and ends
 });
 
 // ---------------------------------------------------------------------------
-// todo SPECS — confirmed defects; assert the desired post-fix behavior
+// POST-FIX REGRESSION SPECS — assert the behavior each fix from the review locked in
 // ---------------------------------------------------------------------------
 
 test('privacy: request messages are not exported as span input unless captureFullPayload is on', async () => {
