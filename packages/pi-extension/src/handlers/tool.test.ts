@@ -1,61 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ROOT_CONTEXT, type Span, type Tracer } from '@opentelemetry/api';
-import { createSpanState } from '../state.ts';
+import { SpanStatusCode } from '@opentelemetry/api';
 import { registerTool } from './tool.ts';
-import type { Runtime } from '../runtime.ts';
+import { fakeRuntime, fire, firstSpan } from '../test-support.ts';
 
-interface SpanRecord {
-  name: string;
-  ended: boolean;
-  attrs: Record<string, unknown>;
-}
-
-function setup(config: Record<string, unknown> = {}) {
-  const handlers = new Map<string, (raw: unknown) => unknown>();
-  const spans: SpanRecord[] = [];
-  const tracer = {
-    startSpan(name: string) {
-      const rec: SpanRecord = { name, ended: false, attrs: {} };
-      const span = {
-        setAttribute(key: string, value: unknown) {
-          rec.attrs[key] = value;
-          return span;
-        },
-        setStatus() {
-          return span;
-        },
-        end() {
-          rec.ended = true;
-        },
-      } as unknown as Span;
-      spans.push(rec);
-      return span;
-    },
-  } as unknown as Tracer;
-  const rt = {
-    pi: { on: (event: string, handler: (raw: unknown) => unknown) => handlers.set(event, handler) },
-    state: createSpanState(),
-    config: { captureToolIo: true, ...config },
-    tracer,
-    debug: () => {},
-  } as unknown as Runtime;
-  rt.state.sessionCtx = ROOT_CONTEXT;
-  return { rt, handlers, spans };
-}
-
-async function fire(
-  handlers: Map<string, (raw: unknown) => unknown>,
-  name: string,
-  raw: unknown,
-): Promise<void> {
-  const handler = handlers.get(name);
-  if (!handler) throw new Error(`handler ${name} not registered`);
-  await handler(raw);
-}
+// ---------------------------------------------------------------------------
+// Span bookkeeping: parallel safety, double-open / end-without-start guards
+// ---------------------------------------------------------------------------
 
 test('parallel tools: out-of-order start/end keep separate spans keyed by call id', async () => {
-  const { rt, handlers, spans } = setup();
+  const { rt, handlers, spans } = fakeRuntime();
   registerTool(rt);
   await fire(handlers, 'tool_execution_start', {
     toolCallId: 'a',
@@ -68,7 +22,6 @@ test('parallel tools: out-of-order start/end keep separate spans keyed by call i
     args: { command: 'ls' },
   });
   assert.equal(rt.state.toolSpans.size, 2, 'two concurrent tool spans are tracked');
-  // End in the opposite order they started.
   await fire(handlers, 'tool_execution_end', {
     toolCallId: 'b',
     toolName: 'bash',
@@ -90,7 +43,7 @@ test('parallel tools: out-of-order start/end keep separate spans keyed by call i
 });
 
 test('a duplicate tool_execution_start for the same call id is ignored', async () => {
-  const { rt, handlers, spans } = setup();
+  const { rt, handlers, spans } = fakeRuntime();
   registerTool(rt);
   await fire(handlers, 'tool_execution_start', { toolCallId: 'a', toolName: 'bash', args: {} });
   await fire(handlers, 'tool_execution_start', { toolCallId: 'a', toolName: 'bash', args: {} });
@@ -99,7 +52,7 @@ test('a duplicate tool_execution_start for the same call id is ignored', async (
 });
 
 test('tool_execution_end without a matching start is a no-op', async () => {
-  const { rt, handlers, spans } = setup();
+  const { rt, handlers, spans } = fakeRuntime();
   registerTool(rt);
   await fire(handlers, 'tool_execution_end', {
     toolCallId: 'ghost',
@@ -112,7 +65,7 @@ test('tool_execution_end without a matching start is a no-op', async () => {
 });
 
 test('tool_execution_start is skipped while the session is disabled', async () => {
-  const { rt, handlers, spans } = setup();
+  const { rt, handlers, spans } = fakeRuntime();
   registerTool(rt);
   rt.state.sessionDisabled = true;
   await fire(handlers, 'tool_execution_start', { toolCallId: 'a', toolName: 'bash', args: {} });
@@ -121,31 +74,110 @@ test('tool_execution_start is skipped while the session is disabled', async () =
 });
 
 test('a tool with no call id is ignored on both start and end', async () => {
-  const { rt, handlers, spans } = setup();
+  const { rt, handlers, spans } = fakeRuntime();
   registerTool(rt);
   await fire(handlers, 'tool_execution_start', { toolName: 'bash', args: {} });
   await fire(handlers, 'tool_execution_end', { toolName: 'bash', result: 'x', isError: false });
   assert.equal(spans.length, 0);
 });
 
-test('tool argument and result bodies are omitted when captureToolIo is off', async () => {
-  const { rt, handlers, spans } = setup({ captureToolIo: false });
+// ---------------------------------------------------------------------------
+// Content capture (captureToolIo) and recorded attributes
+// ---------------------------------------------------------------------------
+
+test('tool name, id, error state, and duration are always recorded', async () => {
+  const { rt, handlers, spans } = fakeRuntime();
   registerTool(rt);
   await fire(handlers, 'tool_execution_start', {
     toolCallId: 'a',
     toolName: 'bash',
-    args: { command: 'cat .env' },
+    args: { command: 'ls' },
   });
   await fire(handlers, 'tool_execution_end', {
+    toolCallId: 'a',
+    toolName: 'bash',
+    result: 'ok',
+    isError: false,
+  });
+  const span = firstSpan(spans);
+  assert.equal(span.attrs['gen_ai.tool.name'], 'bash');
+  assert.equal(span.attrs['gen_ai.tool.call.id'], 'a');
+  assert.equal(span.attrs['traceroot.pi.tool_is_error'], false);
+  assert.equal(typeof span.attrs['traceroot.pi.tool_duration_ms'], 'number');
+});
+
+test('tool argument and result bodies are captured by default and omitted when captureToolIo is off', async () => {
+  const on = fakeRuntime({ captureToolIo: true });
+  registerTool(on.rt);
+  await fire(on.handlers, 'tool_execution_start', {
+    toolCallId: 'a',
+    toolName: 'bash',
+    args: { command: 'echo hi' },
+  });
+  await fire(on.handlers, 'tool_execution_end', {
+    toolCallId: 'a',
+    toolName: 'bash',
+    result: 'hi',
+    isError: false,
+  });
+  assert.ok(firstSpan(on.spans).attrs['gen_ai.tool.call.arguments'], 'args captured by default');
+  assert.ok(firstSpan(on.spans).attrs['gen_ai.tool.call.result'], 'result captured by default');
+
+  const off = fakeRuntime({ captureToolIo: false });
+  registerTool(off.rt);
+  await fire(off.handlers, 'tool_execution_start', {
+    toolCallId: 'a',
+    toolName: 'bash',
+    args: { command: 'cat .env' },
+  });
+  await fire(off.handlers, 'tool_execution_end', {
     toolCallId: 'a',
     toolName: 'bash',
     result: 'SECRET=1',
     isError: false,
   });
-  const [span] = spans;
-  assert.ok(span);
+  const span = firstSpan(off.spans);
   assert.equal(span.attrs['gen_ai.tool.call.arguments'], undefined, 'args body suppressed');
   assert.equal(span.attrs['gen_ai.tool.call.result'], undefined, 'result body suppressed');
   assert.equal(span.attrs['gen_ai.tool.name'], 'bash', 'tool name still recorded');
-  assert.equal(span.attrs['traceroot.pi.tool_is_error'], false, 'error state still recorded');
+});
+
+// ---------------------------------------------------------------------------
+// Error reporting: OTel span ERROR status without leaking content
+// ---------------------------------------------------------------------------
+
+test('an errored tool flags tool_is_error, ends the span, and sets an ERROR status with an extracted message', async () => {
+  const { rt, handlers, spans } = fakeRuntime({ captureToolIo: true });
+  registerTool(rt);
+  await fire(handlers, 'tool_execution_start', { toolCallId: 'c1', toolName: 'bash', args: {} });
+  await fire(handlers, 'tool_execution_end', {
+    toolCallId: 'c1',
+    toolName: 'bash',
+    result: 'command not found',
+    isError: true,
+  });
+  const span = firstSpan(spans);
+  assert.equal(span.attrs['traceroot.pi.tool_is_error'], true);
+  assert.equal(span.ended, true);
+  assert.equal(span.status?.code, SpanStatusCode.ERROR);
+  assert.equal(span.status?.message, 'command not found');
+});
+
+test('tool error status message stays generic (no content leak) when tool-IO capture is off', async () => {
+  const { rt, handlers, spans } = fakeRuntime({ captureToolIo: false });
+  registerTool(rt);
+  await fire(handlers, 'tool_execution_start', { toolCallId: 'c1', toolName: 'bash', args: {} });
+  await fire(handlers, 'tool_execution_end', {
+    toolCallId: 'c1',
+    toolName: 'bash',
+    result: 'secret output that must not leak',
+    isError: true,
+  });
+  const span = firstSpan(spans);
+  assert.equal(span.status?.code, SpanStatusCode.ERROR);
+  assert.equal(
+    span.status?.message,
+    'bash failed',
+    'result content must not leak into the status message',
+  );
 });

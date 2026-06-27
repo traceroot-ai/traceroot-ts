@@ -16,6 +16,7 @@
   "files": [
     "src",
     "!src/**/*.test.ts",
+    "!src/test-support.ts",
     "README.md",
     "LICENSE"
   ],
