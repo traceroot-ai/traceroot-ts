@@ -9,5 +9,7 @@ import type { TracerootPiConfig } from './config.ts';
 export function buildTraceUrl(config: TracerootPiConfig, traceId: string | null): string | null {
   if (!traceId || !config.projectId) return null;
   const base = config.uiUrl.replace(/\/+$/, '');
-  return `${base}/projects/${config.projectId}/traces?traceId=${traceId}`;
+  // Encode the dynamic segments so an unusual projectId/traceId cannot break the URL
+  // (or, on the Windows launch path, inject shell metacharacters into cmd.exe).
+  return `${base}/projects/${encodeURIComponent(config.projectId)}/traces?traceId=${encodeURIComponent(traceId)}`;
 }

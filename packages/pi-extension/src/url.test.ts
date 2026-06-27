@@ -25,3 +25,11 @@ test('returns null without a traceId', () => {
   const config = resolve({ projectId: 'p' });
   assert.equal(buildTraceUrl(config, null), null);
 });
+
+test('encodes special characters in projectId and traceId (no raw shell metacharacters)', () => {
+  const config = resolve({ projectId: 'a/b&c', uiUrl: 'http://localhost:3000' });
+  const url = buildTraceUrl(config, 'x y&z');
+  assert.ok(url);
+  assert.ok(!/[&<>"|^\s]/.test(url), 'the built URL contains no raw shell metacharacters');
+  assert.match(url, /\/projects\/a%2Fb%26c\/traces\?traceId=x%20y%26z$/);
+});

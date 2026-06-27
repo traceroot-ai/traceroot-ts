@@ -7,6 +7,20 @@ import { setStatus, STATUS_ACTIVE, STATUS_INACTIVE } from '../ui.ts';
 import type { Runtime } from '../runtime.ts';
 import type { CommandContext } from '../types.ts';
 
+// Only hand the launcher a well-formed http(s) URL with no characters cmd.exe would
+// interpret as shell operators on the Windows `start` path. Defense in depth on top of
+// the URL-encoding in buildTraceUrl — the URL we build is already clean, but a launch
+// must never become a command-injection vector regardless of where the URL came from.
+export function isLaunchableUrl(url: string): boolean {
+  if (/[&|<>^"\s]/.test(url)) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 // The launcher command + args for opening a URL on the given platform. Windows
 // must go through cmd.exe because `start` is a cmd builtin, not an executable on
 // PATH; the empty "" is start's title argument so the URL is not swallowed as a
@@ -26,6 +40,7 @@ export function browserLaunch(
 // it), so we listen for it and degrade to false instead of letting it surface as
 // an uncaught exception that would crash the host.
 function openInBrowser(url: string): Promise<boolean> {
+  if (!isLaunchableUrl(url)) return Promise.resolve(false);
   const launch = browserLaunch(process.platform, url);
   if (!launch) return Promise.resolve(false);
   return new Promise((resolve) => {
