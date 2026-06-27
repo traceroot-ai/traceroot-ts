@@ -17,11 +17,13 @@ export function createFileLogger(filePath: string | undefined): FileLogger {
     log(level, message, data) {
       try {
         if (!dirEnsured) {
-          mkdirSync(dirname(filePath), { recursive: true });
+          // Owner-only: the debug log can contain workspace paths, the repo slug, and
+          // model/id data, so it must not be group/world readable.
+          mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
           dirEnsured = true;
         }
         const line = JSON.stringify({ timestamp: new Date().toISOString(), level, message, data });
-        appendFileSync(filePath, `${line}\n`, 'utf8');
+        appendFileSync(filePath, `${line}\n`, { encoding: 'utf8', mode: 0o600 });
       } catch {
         /* logging is best-effort and must never affect the session */
       }
