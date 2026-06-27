@@ -188,7 +188,9 @@ export function readJsonConfig(file: string): RawConfig | null {
   try {
     if (!existsSync(file)) return null;
     const parsed = JSON.parse(readFileSync(file, 'utf8'));
-    return parsed && typeof parsed === 'object' ? (parsed as RawConfig) : null;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as RawConfig)
+      : null;
   } catch {
     return null;
   }
@@ -311,9 +313,50 @@ export function collectEnvIssues(): ConfigIssue[] {
   return issues;
 }
 
+const BOOLEAN_CONFIG_FIELDS = [
+  'enabled',
+  'localMode',
+  'debug',
+  'captureFullPayload',
+  'captureToolIo',
+  'showUiIndicator',
+] as const;
+
+// File-sourced config (the global ~/.pi/agent/traceroot.json) is untrusted JSON: drop
+// type-mismatched values with a warning instead of letting e.g. "enabled": "false"
+// propagate as a truthy STRING into a boolean field, or a non-object additional_metadata
+// slip through. Mutates `raw` to drop bad fields so they fall back to defaults.
+export function validateFileConfig(raw: RawConfig, sourcePath: string): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  const record = raw as Record<string, unknown>;
+  for (const field of BOOLEAN_CONFIG_FIELDS) {
+    const value = record[field];
+    if (value !== undefined && typeof value !== 'boolean') {
+      issues.push({
+        path: `${sourcePath} (${field})`,
+        message: `${field} must be true or false; ignored`,
+        severity: 'warning',
+      });
+      delete record[field];
+    }
+  }
+  const meta = record.additionalMetadata;
+  if (meta !== undefined && (!meta || typeof meta !== 'object' || Array.isArray(meta))) {
+    issues.push({
+      path: `${sourcePath} (additionalMetadata)`,
+      message: 'additionalMetadata must be a JSON object; ignored',
+      severity: 'warning',
+    });
+    delete record.additionalMetadata;
+  }
+  return issues;
+}
+
 export function loadConfig(): ConfigBundle {
   const globalFile = join(homedir(), '.pi', 'agent', 'traceroot.json');
   const globalLayer = readJsonConfig(globalFile);
+  // Validate the untrusted global file before it is merged, dropping bad-typed fields.
+  const globalIssues = globalLayer ? validateFileConfig(globalLayer, globalFile) : [];
   const env = envRaw();
   const merged = mergeRaw(globalLayer, env);
   const config = resolve(merged);
@@ -327,6 +370,7 @@ export function loadConfig(): ConfigBundle {
       severity: 'warning',
     });
   }
+  configIssues.push(...globalIssues);
   configIssues.push(...collectEnvIssues());
   configIssues.push(...validateConfig(config));
 

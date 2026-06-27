@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { BOOLEAN_ENV_KEYS, collectEnvIssues, envRaw, resolve, validateConfig } from './config.ts';
+import {
+  BOOLEAN_ENV_KEYS,
+  collectEnvIssues,
+  envRaw,
+  resolve,
+  validateConfig,
+  validateFileConfig,
+} from './config.ts';
+import type { RawConfig } from './config.ts';
 
 test('resolve applies cloud defaults', () => {
   const c = resolve({});
@@ -175,6 +183,36 @@ test('collectEnvIssues is silent for recognized values, unset vars, and valid me
   } finally {
     process.env = saved;
   }
+});
+
+test('validateFileConfig drops type-mismatched boolean fields and warns (global file)', () => {
+  const raw = { enabled: 'false', token: 'ok', captureToolIo: 1 } as unknown as RawConfig;
+  const issues = validateFileConfig(raw, '/cfg.json');
+  const record = raw as Record<string, unknown>;
+  assert.equal('enabled' in record, false, 'string "false" is dropped from a boolean field');
+  assert.equal('captureToolIo' in record, false, 'a number is dropped from a boolean field');
+  assert.equal(record.token, 'ok', 'a valid string field is kept');
+  assert.ok(issues.some((i) => i.path.includes('enabled') && i.severity === 'warning'));
+  assert.ok(issues.some((i) => i.path.includes('captureToolIo')));
+});
+
+test('validateFileConfig drops non-object additionalMetadata and warns', () => {
+  const raw = { additionalMetadata: [1, 2] } as unknown as RawConfig;
+  const issues = validateFileConfig(raw, '/cfg.json');
+  assert.equal('additionalMetadata' in (raw as Record<string, unknown>), false);
+  assert.ok(issues.some((i) => i.path.includes('additionalMetadata')));
+});
+
+test('validateFileConfig keeps well-typed values and emits no issues', () => {
+  const raw = {
+    enabled: true,
+    debug: false,
+    token: 'k',
+    additionalMetadata: { a: 1 },
+  } as unknown as RawConfig;
+  const issues = validateFileConfig(raw, '/cfg.json');
+  assert.deepEqual(issues, []);
+  assert.equal((raw as Record<string, unknown>).enabled, true);
 });
 
 test('validateConfig errors on a malformed url', () => {
