@@ -1,8 +1,9 @@
 // Persist a session's root SpanContext so a later forked session can link back to
 // it (P2-F). Keyed by the session file's basename under the configured state dir.
 // All operations are best-effort; failure degrades to "no link", never an error.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { isSpanId, isTraceId } from './hex.ts';
 
 export interface PersistedTrace {
@@ -10,8 +11,11 @@ export interface PersistedTrace {
   spanId: string;
 }
 
+// Key by a hash of the FULL session-file path, not just its basename: two sessions with
+// the same filename in different directories would otherwise collide and cross-link.
 function fileFor(stateDir: string, sessionFile: string): string {
-  return join(stateDir, `${basename(sessionFile)}.json`);
+  const key = createHash('sha256').update(sessionFile).digest('hex').slice(0, 32);
+  return join(stateDir, `${key}.json`);
 }
 
 export function persistSessionTrace(
@@ -22,7 +26,12 @@ export function persistSessionTrace(
   try {
     if (!sessionFile) return;
     mkdirSync(stateDir, { recursive: true });
-    writeFileSync(fileFor(stateDir, sessionFile), JSON.stringify(trace), 'utf8');
+    // Write atomically (temp file + rename) so a concurrently-forking session never
+    // reads a half-written file.
+    const target = fileFor(stateDir, sessionFile);
+    const tmp = `${target}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(trace), 'utf8');
+    renameSync(tmp, target);
   } catch {
     /* best-effort */
   }

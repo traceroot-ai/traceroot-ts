@@ -42,6 +42,19 @@ test('returns null when no persisted file exists', () => {
   });
 });
 
+test('same basename in different directories does not cross-link (keyed by full path)', () => {
+  withTempDir((dir) => {
+    const a = '/projects/alpha/session.jsonl';
+    const b = '/projects/beta/session.jsonl'; // same basename, different directory
+    const traceA = { traceId: 'a'.repeat(32), spanId: 'a'.repeat(16) };
+    const traceB = { traceId: 'b'.repeat(32), spanId: 'b'.repeat(16) };
+    persistSessionTrace(dir, a, traceA);
+    persistSessionTrace(dir, b, traceB);
+    assert.deepEqual(readSessionTrace(dir, a), traceA, 'session a keeps its own trace');
+    assert.deepEqual(readSessionTrace(dir, b), traceB, 'session b is not overwritten by a');
+  });
+});
+
 test('a null session file is a no-op, not an error', () => {
   withTempDir((dir) => {
     persistSessionTrace(dir, null, VALID);

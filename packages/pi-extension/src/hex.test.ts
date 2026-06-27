@@ -20,3 +20,11 @@ test('isSpanId accepts 16 lowercase hex chars only', () => {
   assert.equal(isSpanId('B'.repeat(16)), false);
   assert.equal(isSpanId(''), false);
 });
+
+test('rejects the all-zero "invalid" sentinel ids (W3C Trace Context)', () => {
+  assert.equal(isTraceId('0'.repeat(32)), false, 'all-zero trace id is invalid');
+  assert.equal(isSpanId('0'.repeat(16)), false, 'all-zero span id is invalid');
+  // A single non-zero hex digit makes it valid again.
+  assert.equal(isTraceId('0'.repeat(31) + '1'), true);
+  assert.equal(isSpanId('1' + '0'.repeat(15)), true);
+});
