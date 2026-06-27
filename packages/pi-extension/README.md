@@ -27,24 +27,24 @@ pi install npm:@traceroot-ai/pi-extension
 ```
 
 The extension is **opt-in**: it registers no listeners and emits no spans unless
-`TRACEROOT_PI_ENABLED=true`.
+`TRACEROOT_ENABLED=true`.
 
 ## Quick start
 
 ### Traceroot Cloud
 
 ```bash
-TRACEROOT_PI_ENABLED=true \
-TRACEROOT_TOKEN=<your-token> \
+TRACEROOT_ENABLED=true \
+TRACEROOT_API_KEY=<your-token> \
 pi
 ```
 
 ### Local Traceroot
 
 ```bash
-TRACEROOT_PI_ENABLED=true \
+TRACEROOT_ENABLED=true \
 TRACEROOT_LOCAL_MODE=true \
-TRACEROOT_TOKEN=<local-token> \
+TRACEROOT_API_KEY=<local-token> \
 TRACEROOT_PROJECT_ID=<project-uuid> \
 pi
 ```
@@ -62,7 +62,7 @@ but only when the project is trusted and only for presentation fields (`project`
 
 | Environment variable                                     | Default                      | Description                                                                                                                                                                                                        |
 | -------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `TRACEROOT_ENABLED` (alias `TRACEROOT_PI_ENABLED`)                                   | `false`                      | Master opt-in. No spans unless `true`.                                                                                                                                                                             |
+| `TRACEROOT_ENABLED` (alias `TRACEROOT_PI_ENABLED`)       | `false`                      | Master opt-in. No spans unless `true`.                                                                                                                                                                             |
 | `TRACEROOT_API_KEY` (alias `TRACEROOT_TOKEN`)            | —                            | Traceroot access token (Bearer). Required.                                                                                                                                                                         |
 | `TRACEROOT_LOCAL_MODE`                                   | `false`                      | Use localhost defaults for endpoint and UI.                                                                                                                                                                        |
 | `TRACEROOT_HOST_URL` (alias `TRACEROOT_API_URL`)         | `https://app.traceroot.ai`   | Ingest API base.                                                                                                                                                                                                   |
