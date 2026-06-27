@@ -6,10 +6,10 @@ import {
   collectEnvIssues,
   envRaw,
   resolve,
+  sanitizeFileConfig,
   validateConfig,
-  validateFileConfig,
 } from './config.ts';
-import type { RawConfig } from './config.ts';
+import type { ConfigIssue, RawConfig } from './config.ts';
 
 test('resolve applies cloud defaults', () => {
   const c = resolve({});
@@ -185,34 +185,41 @@ test('collectEnvIssues is silent for recognized values, unset vars, and valid me
   }
 });
 
-test('validateFileConfig drops type-mismatched boolean fields and warns (global file)', () => {
+test('sanitizeFileConfig drops type-mismatched boolean fields and warns (global file)', () => {
   const raw = { enabled: 'false', token: 'ok', captureToolIo: 1 } as unknown as RawConfig;
-  const issues = validateFileConfig(raw, '/cfg.json');
-  const record = raw as Record<string, unknown>;
+  const { sanitized, issues } = sanitizeFileConfig(raw, '/cfg.json');
+  const record = sanitized as Record<string, unknown>;
   assert.equal('enabled' in record, false, 'string "false" is dropped from a boolean field');
   assert.equal('captureToolIo' in record, false, 'a number is dropped from a boolean field');
   assert.equal(record.token, 'ok', 'a valid string field is kept');
-  assert.ok(issues.some((i) => i.path.includes('enabled') && i.severity === 'warning'));
-  assert.ok(issues.some((i) => i.path.includes('captureToolIo')));
+  assert.equal(
+    'enabled' in (raw as Record<string, unknown>),
+    true,
+    'the input is not mutated (pure)',
+  );
+  assert.ok(
+    issues.some((i: ConfigIssue) => i.path.includes('enabled') && i.severity === 'warning'),
+  );
+  assert.ok(issues.some((i: ConfigIssue) => i.path.includes('captureToolIo')));
 });
 
-test('validateFileConfig drops non-object additionalMetadata and warns', () => {
+test('sanitizeFileConfig drops non-object additionalMetadata and warns', () => {
   const raw = { additionalMetadata: [1, 2] } as unknown as RawConfig;
-  const issues = validateFileConfig(raw, '/cfg.json');
-  assert.equal('additionalMetadata' in (raw as Record<string, unknown>), false);
-  assert.ok(issues.some((i) => i.path.includes('additionalMetadata')));
+  const { sanitized, issues } = sanitizeFileConfig(raw, '/cfg.json');
+  assert.equal('additionalMetadata' in (sanitized as Record<string, unknown>), false);
+  assert.ok(issues.some((i: ConfigIssue) => i.path.includes('additionalMetadata')));
 });
 
-test('validateFileConfig keeps well-typed values and emits no issues', () => {
+test('sanitizeFileConfig keeps well-typed values and emits no issues', () => {
   const raw = {
     enabled: true,
     debug: false,
     token: 'k',
     additionalMetadata: { a: 1 },
   } as unknown as RawConfig;
-  const issues = validateFileConfig(raw, '/cfg.json');
+  const { sanitized, issues } = sanitizeFileConfig(raw, '/cfg.json');
   assert.deepEqual(issues, []);
-  assert.equal((raw as Record<string, unknown>).enabled, true);
+  assert.equal((sanitized as Record<string, unknown>).enabled, true);
 });
 
 test('validateConfig errors on a malformed url', () => {

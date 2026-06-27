@@ -125,14 +125,18 @@ function strEnv(name: string): string | undefined {
   return v === undefined || v === '' ? undefined : v;
 }
 
+// A non-null, non-array object — the shape required for a JSON config layer and for
+// additional_metadata. The single source of truth for "is this a plain object".
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 function jsonObjectEnv(name: string): Record<string, unknown> | undefined {
   const v = strEnv(name);
   if (v === undefined) return undefined;
   try {
-    const parsed = JSON.parse(v);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : undefined;
+    const parsed: unknown = JSON.parse(v);
+    return isPlainObject(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
@@ -187,10 +191,8 @@ export function envRaw(): RawConfig {
 export function readJsonConfig(file: string): RawConfig | null {
   try {
     if (!existsSync(file)) return null;
-    const parsed = JSON.parse(readFileSync(file, 'utf8'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as RawConfig)
-      : null;
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    return isPlainObject(parsed) ? (parsed as RawConfig) : null;
   } catch {
     return null;
   }
@@ -297,8 +299,7 @@ export function collectEnvIssues(): ConfigIssue[] {
   if (meta !== undefined && meta.trim() !== '') {
     let valid = false;
     try {
-      const parsed = JSON.parse(meta);
-      valid = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+      valid = isPlainObject(JSON.parse(meta));
     } catch {
       valid = false;
     }
@@ -322,13 +323,17 @@ const BOOLEAN_CONFIG_FIELDS = [
   'showUiIndicator',
 ] as const;
 
-// File-sourced config (the global ~/.pi/agent/traceroot.json) is untrusted JSON: drop
-// type-mismatched values with a warning instead of letting e.g. "enabled": "false"
-// propagate as a truthy STRING into a boolean field, or a non-object additional_metadata
-// slip through. Mutates `raw` to drop bad fields so they fall back to defaults.
-export function validateFileConfig(raw: RawConfig, sourcePath: string): ConfigIssue[] {
+// File-sourced config (the global ~/.pi/agent/traceroot.json) is untrusted JSON: return a
+// copy with type-mismatched values dropped (and a warning for each), instead of letting
+// e.g. "enabled": "false" propagate as a truthy STRING into a boolean field, or a
+// non-object additional_metadata slip through. Dropped fields fall back to their defaults.
+export function sanitizeFileConfig(
+  raw: RawConfig,
+  sourcePath: string,
+): { sanitized: RawConfig; issues: ConfigIssue[] } {
   const issues: ConfigIssue[] = [];
-  const record = raw as Record<string, unknown>;
+  const sanitized: RawConfig = { ...raw };
+  const record = sanitized as Record<string, unknown>;
   for (const field of BOOLEAN_CONFIG_FIELDS) {
     const value = record[field];
     if (value !== undefined && typeof value !== 'boolean') {
@@ -340,8 +345,7 @@ export function validateFileConfig(raw: RawConfig, sourcePath: string): ConfigIs
       delete record[field];
     }
   }
-  const meta = record.additionalMetadata;
-  if (meta !== undefined && (!meta || typeof meta !== 'object' || Array.isArray(meta))) {
+  if (record.additionalMetadata !== undefined && !isPlainObject(record.additionalMetadata)) {
     issues.push({
       path: `${sourcePath} (additionalMetadata)`,
       message: 'additionalMetadata must be a JSON object; ignored',
@@ -349,21 +353,23 @@ export function validateFileConfig(raw: RawConfig, sourcePath: string): ConfigIs
     });
     delete record.additionalMetadata;
   }
-  return issues;
+  return { sanitized, issues };
 }
 
 export function loadConfig(): ConfigBundle {
   const globalFile = join(homedir(), '.pi', 'agent', 'traceroot.json');
-  const globalLayer = readJsonConfig(globalFile);
-  // Validate the untrusted global file before it is merged, dropping bad-typed fields.
-  const globalIssues = globalLayer ? validateFileConfig(globalLayer, globalFile) : [];
+  const rawGlobal = readJsonConfig(globalFile);
+  // Sanitize the untrusted global file before it is merged, dropping bad-typed fields.
+  const { sanitized: globalLayer, issues: globalIssues } = rawGlobal
+    ? sanitizeFileConfig(rawGlobal, globalFile)
+    : { sanitized: null as RawConfig | null, issues: [] as ConfigIssue[] };
   const env = envRaw();
   const merged = mergeRaw(globalLayer, env);
   const config = resolve(merged);
   const envProvided = new Set(Object.keys(env) as Array<keyof TracerootPiConfig>);
 
   const configIssues: ConfigIssue[] = [];
-  if (globalLayer === null && existsSync(globalFile)) {
+  if (rawGlobal === null && existsSync(globalFile)) {
     configIssues.push({
       path: globalFile,
       message: 'config file is not valid JSON; ignored',
