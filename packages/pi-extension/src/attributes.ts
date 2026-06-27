@@ -13,7 +13,7 @@ export function setAttr(span: Span, key: string, value: AttrValue | null | undef
 
 // Best-effort span end. Ending a span must never throw into pi, so any error is
 // swallowed. The guarded-span-op sibling of setAttr — use it everywhere a span is
-// closed so the try/catch lives in exactly one place.
+// closed so the try/catch around .end() lives in exactly one place.
 export function endSpan(span: Span): void {
   try {
     span.end();

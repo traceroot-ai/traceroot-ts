@@ -1,10 +1,9 @@
-// Regression + spec tests surfaced by the PR #106 deep review.
+// Regression + behavioral tests surfaced by the PR #106 deep review.
 //
-// Two kinds of tests live here:
-//   - GUARDS: assert behavior that is correct today, to lock it against regressions.
-//   - todo SPECS: assert the desired post-fix behavior for a CONFIRMED defect. They are
-//     marked `{ todo }` so the suite stays green while documenting the gap; flip to a
-//     plain test once the underlying issue is fixed. Each cites the finding it pins.
+// Every fix from that review has a named test here asserting the observable behavior
+// (privacy gates, provider lifecycle, per-session reset, tool/LLM error reporting,
+// config validation, command handling). These began as `{ todo }` specs for then-unfixed
+// defects and were flipped to plain guards as each fix landed; no todo tests remain.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ROOT_CONTEXT, SpanStatusCode, type Span, type Tracer } from '@opentelemetry/api';

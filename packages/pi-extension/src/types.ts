@@ -1,9 +1,9 @@
 // Minimal, self-contained view of the pi extension API surface this extension uses.
 //
-// These shapes are transcribed from the pi coding agent extension types
-// (verified against the installed runtime, v0.79.x). Keeping a local copy means
-// the package does not import pi internals at runtime; pi injects the live objects
-// when it loads the extension. Only fields this extension reads are declared.
+// These shapes are transcribed from the pi coding agent extension types (checked
+// against pi's published types as of v0.79.x — re-verify on pi upgrades). Keeping a
+// local copy means the package does not import pi internals at runtime; pi injects the
+// live objects when it loads the extension. Only fields this extension reads are declared.
 
 export type ExtensionMode = 'tui' | 'rpc' | 'json' | 'print';
 

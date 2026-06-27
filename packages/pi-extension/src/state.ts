@@ -191,7 +191,9 @@ export function resetForNewSession(state: SpanState): void {
 // last output, and project-finalized flag bleed into the next one. Close anything still
 // open first (defensive — session_shutdown normally already did), then clear per-session
 // state. providerShutdown is process-scoped and deliberately preserved.
-export function beginNewSession(state: SpanState, reason: string): void {
-  closeAllOpenSpans(state, reason);
+export function beginNewSession(state: SpanState, closeReason: string): void {
+  // closeReason is the shutdown reason recorded on the spans being CLOSED, not the new
+  // session's reason — the new session has no spans yet.
+  closeAllOpenSpans(state, closeReason);
   resetForNewSession(state);
 }
