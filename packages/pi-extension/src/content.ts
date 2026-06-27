@@ -2,7 +2,7 @@
 // input/output panels in Traceroot. pi content is `string | (TextContent | toolCall
 // | image)[]`; tool results are `{ content: TextContent[] }`. We flatten text blocks
 // and summarize tool-call/image blocks rather than dumping raw JSON.
-import { safeJsonTruncate } from './json.ts';
+import { safeJsonTruncate, safeSlice } from './json.ts';
 
 // Default character budgets for each input/output surface.
 export const IO_LIMITS = {
@@ -24,7 +24,7 @@ interface ContentBlock {
 }
 
 function truncate(value: string, maxChars: number): string {
-  return value.length > maxChars ? value.slice(0, maxChars) + '…' : value;
+  return value.length > maxChars ? safeSlice(value, maxChars) + '…' : value;
 }
 
 // content: string | (TextContent | toolCall | image)[] -> readable string.
