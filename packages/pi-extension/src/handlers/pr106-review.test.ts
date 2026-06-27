@@ -12,6 +12,8 @@ import { createSpanState } from '../state.ts';
 import { registerLlm } from './llm.ts';
 import { registerTool } from './tool.ts';
 import { registerSession } from './session.ts';
+import { registerTurn } from './turn.ts';
+import { registerCommand } from './command.ts';
 import type { Runtime } from '../runtime.ts';
 
 interface SpanRecord {
@@ -333,4 +335,194 @@ test('session reset: providerShutdown is process-scoped and survives a new sessi
     true,
     'providerShutdown must not be reset across sessions',
   );
+});
+
+// ---------------------------------------------------------------------------
+// after_provider_response — HTTP status, rate-limit headers, error events
+// ---------------------------------------------------------------------------
+
+test('after_provider_response records status, rate-limit headers, and a rate_limited event on 429', async () => {
+  const { rt, handlers, spans } = fakeRuntime();
+  registerLlm(rt);
+  await fire(handlers, 'turn_start', { turnIndex: 0 }, MODEL_CTX);
+  await fire(handlers, 'after_provider_response', {
+    status: 429,
+    headers: {
+      'x-ratelimit-remaining': '0',
+      'Retry-After': '30',
+      'content-type': 'application/json',
+    },
+  });
+  const span = firstSpan(spans);
+  assert.equal(span.attrs['http.status_code'], 429);
+  assert.equal(span.attrs['traceroot.pi.x_ratelimit_remaining'], '0');
+  assert.equal(
+    span.attrs['traceroot.pi.retry_after'],
+    '30',
+    'Retry-After is captured case-insensitively with the key normalized',
+  );
+  assert.equal(
+    span.attrs['traceroot.pi.content_type'],
+    undefined,
+    'non-ratelimit headers are not captured',
+  );
+  assert.ok(span.events.includes('rate_limited'), 'a rate_limited event is added on 429');
+});
+
+test('after_provider_response adds a provider_error event on a 5xx status', async () => {
+  const { rt, handlers, spans } = fakeRuntime();
+  registerLlm(rt);
+  await fire(handlers, 'turn_start', { turnIndex: 0 }, MODEL_CTX);
+  await fire(handlers, 'after_provider_response', { status: 503, headers: {} });
+  const span = firstSpan(spans);
+  assert.equal(span.attrs['http.status_code'], 503);
+  assert.ok(span.events.includes('provider_error'));
+});
+
+test('after_provider_response ignores a non-numeric status', async () => {
+  const { rt, handlers, spans } = fakeRuntime();
+  registerLlm(rt);
+  await fire(handlers, 'turn_start', { turnIndex: 0 }, MODEL_CTX);
+  await fire(handlers, 'after_provider_response', { status: 'oops', headers: {} });
+  assert.equal(firstSpan(spans).attrs['http.status_code'], undefined);
+});
+
+test('before_provider_request records the full request payload only under captureFullPayload', async () => {
+  const off = fakeRuntime({ captureFullPayload: false });
+  registerLlm(off.rt);
+  await fire(off.handlers, 'turn_start', { turnIndex: 0 }, MODEL_CTX);
+  await fire(off.handlers, 'before_provider_request', {
+    payload: { messages: [{ role: 'user', content: 'hi' }] },
+  });
+  assert.equal(
+    firstSpan(off.spans).attrs['traceroot.pi.full_request_payload'],
+    undefined,
+    'full payload suppressed by default',
+  );
+
+  const on = fakeRuntime({ captureFullPayload: true });
+  registerLlm(on.rt);
+  await fire(on.handlers, 'turn_start', { turnIndex: 0 }, MODEL_CTX);
+  await fire(on.handlers, 'before_provider_request', {
+    payload: { messages: [{ role: 'user', content: 'hi' }] },
+  });
+  assert.notEqual(
+    firstSpan(on.spans).attrs['traceroot.pi.full_request_payload'],
+    undefined,
+    'full payload captured on opt-in',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// agent_start — opens the session+turn spans; raw-input privacy gate
+// ---------------------------------------------------------------------------
+
+test('agent_start buffers input metadata onto the turn span and gates raw input off by default', async () => {
+  const { rt, handlers, spans } = fakeRuntime({ captureFullPayload: false });
+  registerTurn(rt);
+  await fire(handlers, 'input', { source: 'interactive', text: 'my secret prompt', images: [] });
+  await fire(handlers, 'agent_start', {}, UI_CTX);
+  // spans[0] is the session span (opened lazily), spans[1] is the turn span.
+  const turn = spans[1];
+  assert.ok(turn, 'a turn span was opened');
+  assert.equal(
+    turn.attrs['traceroot.pi.input_source'],
+    'interactive',
+    'input metadata is recorded',
+  );
+  assert.equal(
+    turn.attrs['traceroot.pi.raw_input'],
+    undefined,
+    'raw user input is suppressed by default',
+  );
+});
+
+test('agent_start records raw input only when captureFullPayload is on', async () => {
+  const { rt, handlers, spans } = fakeRuntime({ captureFullPayload: true });
+  registerTurn(rt);
+  await fire(handlers, 'input', { source: 'interactive', text: 'my secret prompt' });
+  await fire(handlers, 'agent_start', {}, UI_CTX);
+  const turn = spans[1];
+  assert.ok(turn);
+  assert.ok(
+    String(turn.attrs['traceroot.pi.raw_input'] ?? '').includes('my secret prompt'),
+    'raw input is captured on opt-in',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// /traceroot command — flush liveness, disable/enable
+// ---------------------------------------------------------------------------
+
+function commandRuntime(stateOverrides: Record<string, unknown> = {}) {
+  let commandHandler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+  const notifications: Array<{ message: string; level?: string }> = [];
+  const providerCalls = { flush: 0, shutdown: 0 };
+  const rt = {
+    pi: {
+      on: () => {},
+      registerCommand: (
+        _name: string,
+        opts: { handler: (args: string, ctx: unknown) => Promise<void> },
+      ) => {
+        commandHandler = opts.handler;
+      },
+    },
+    state: createSpanState(),
+    config: {
+      project: 'pi',
+      otlpEndpoint: 'http://localhost:8000',
+      enabled: true,
+      uiUrl: 'http://localhost:3000',
+    },
+    provider: {
+      forceFlush: async () => {
+        providerCalls.flush += 1;
+      },
+      shutdown: async () => {
+        providerCalls.shutdown += 1;
+      },
+    },
+    debug: () => {},
+  } as unknown as Runtime;
+  Object.assign(rt.state, stateOverrides);
+  registerCommand(rt);
+  const ctx = {
+    ui: {
+      notify: (message: string, level?: string) => notifications.push({ message, level }),
+      setStatus() {},
+      setWidget() {},
+    },
+    mode: 'tui',
+  };
+  const run = async (args: string) => {
+    if (!commandHandler) throw new Error('command handler not registered');
+    await commandHandler(args, ctx);
+  };
+  return { rt, run, notifications, providerCalls };
+}
+
+test('/traceroot flush reports nothing-to-flush once the provider is shut down', async () => {
+  const { run, notifications, providerCalls } = commandRuntime({ providerShutdown: true });
+  await run('flush');
+  assert.equal(providerCalls.flush, 0, 'no flush is attempted against a dead provider');
+  assert.ok(
+    notifications.some((n) => /shut down|nothing to flush/i.test(n.message)),
+    'the user is told tracing has shut down',
+  );
+});
+
+test('/traceroot flush forwards to the provider when it is live', async () => {
+  const { run, notifications, providerCalls } = commandRuntime({ providerShutdown: false });
+  await run('flush');
+  assert.equal(providerCalls.flush, 1);
+  assert.ok(notifications.some((n) => /flushed/i.test(n.message)));
+});
+
+test('/traceroot disable then enable toggles sessionDisabled (disable still works after the reset change)', async () => {
+  const { rt, run } = commandRuntime();
+  await run('disable');
+  assert.equal(rt.state.sessionDisabled, true, 'disable turns tracing off for the session');
+  await run('enable');
+  assert.equal(rt.state.sessionDisabled, false, 'enable turns it back on');
 });
