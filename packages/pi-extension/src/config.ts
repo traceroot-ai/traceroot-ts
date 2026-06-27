@@ -90,16 +90,33 @@ function mergeRaw(...layers: Array<RawConfig | null | undefined>): RawConfig {
   return out;
 }
 
+const TRUE_SPELLINGS = ['true', '1', 'yes', 'y', 'on'];
+const FALSE_SPELLINGS = ['false', '0', 'no', 'n', 'off'];
+
+// Every env var this extension parses as a boolean. Kept as one list so collectEnvIssues
+// can warn when any is set to an unrecognized spelling (a typo would otherwise be
+// silently treated as unset). Update alongside any new boolEnv(...) call in envRaw.
+const BOOLEAN_ENV_KEYS = [
+  'TRACEROOT_ENABLED',
+  'TRACEROOT_PI_ENABLED',
+  'TRACEROOT_LOCAL_MODE',
+  'TRACEROOT_PI_DEBUG',
+  'TRACEROOT_CAPTURE_FULL_PAYLOAD',
+  'TRACEROOT_CAPTURE_TOOL_IO',
+  'TRACEROOT_SHOW_UI',
+];
+
 // Accept the common truthy/falsey spellings (case-insensitive, trimmed) so an env
 // boolean is not silently treated as false when set to "1"/"yes"/"on" etc. An unset,
-// empty, or unrecognized value falls through to the lower-precedence layer / default.
+// empty, or unrecognized value falls through to the lower-precedence layer / default
+// (collectEnvIssues separately warns about the set-but-unrecognized case).
 function boolEnv(name: string): boolean | undefined {
   const v = process.env[name];
   if (v === undefined) return undefined;
   const normalized = v.trim().toLowerCase();
   if (normalized === '') return undefined;
-  if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
-  if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+  if (TRUE_SPELLINGS.includes(normalized)) return true;
+  if (FALSE_SPELLINGS.includes(normalized)) return false;
   return undefined;
 }
 
@@ -256,6 +273,44 @@ export function validateConfig(config: TracerootPiConfig): ConfigIssue[] {
   return issues;
 }
 
+// Surface env values that were SET but not understood, so a typo (TRACEROOT_ENABLED=ture)
+// or a malformed TRACEROOT_ADDITIONAL_METADATA is reported instead of silently falling
+// back to the default — matching the warning the global config file already gets.
+export function collectEnvIssues(): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  for (const key of BOOLEAN_ENV_KEYS) {
+    const v = process.env[key];
+    if (v === undefined) continue;
+    const normalized = v.trim().toLowerCase();
+    if (normalized === '') continue;
+    if (!TRUE_SPELLINGS.includes(normalized) && !FALSE_SPELLINGS.includes(normalized)) {
+      issues.push({
+        path: key,
+        message: `${key} is set to an unrecognized boolean ("${v}"); ignored`,
+        severity: 'warning',
+      });
+    }
+  }
+  const meta = process.env.TRACEROOT_ADDITIONAL_METADATA;
+  if (meta !== undefined && meta.trim() !== '') {
+    let valid = false;
+    try {
+      const parsed = JSON.parse(meta);
+      valid = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+    } catch {
+      valid = false;
+    }
+    if (!valid) {
+      issues.push({
+        path: 'TRACEROOT_ADDITIONAL_METADATA',
+        message: 'TRACEROOT_ADDITIONAL_METADATA is not a JSON object; ignored',
+        severity: 'warning',
+      });
+    }
+  }
+  return issues;
+}
+
 export function loadConfig(): ConfigBundle {
   const globalFile = join(homedir(), '.pi', 'agent', 'traceroot.json');
   const globalLayer = readJsonConfig(globalFile);
@@ -272,6 +327,7 @@ export function loadConfig(): ConfigBundle {
       severity: 'warning',
     });
   }
+  configIssues.push(...collectEnvIssues());
   configIssues.push(...validateConfig(config));
 
   return { config, envProvided, configIssues };

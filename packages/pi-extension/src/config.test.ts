@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { envRaw, resolve, validateConfig } from './config.ts';
+import { collectEnvIssues, envRaw, resolve, validateConfig } from './config.ts';
 
 test('resolve applies cloud defaults', () => {
   const c = resolve({});
@@ -115,6 +115,43 @@ test('validateConfig warns on a non-https cloud endpoint', () => {
     resolve({ enabled: true, token: 't', apiUrl: 'http://example.com' }),
   );
   assert.ok(issues.some((i) => i.path === 'otlpEndpoint' && i.severity === 'warning'));
+});
+
+test('collectEnvIssues warns on a set-but-unrecognized boolean and on malformed metadata', () => {
+  const saved = { ...process.env };
+  try {
+    for (const k of Object.keys(process.env)) {
+      if (k.startsWith('TRACEROOT_')) delete process.env[k];
+    }
+    process.env.TRACEROOT_ENABLED = 'ture'; // typo — would otherwise be silently "off"
+    process.env.TRACEROOT_ADDITIONAL_METADATA = '[1,2]'; // valid JSON but not an object
+    const issues = collectEnvIssues();
+    assert.ok(
+      issues.some((i) => i.path === 'TRACEROOT_ENABLED' && i.severity === 'warning'),
+      'unrecognized boolean is flagged',
+    );
+    assert.ok(
+      issues.some((i) => i.path === 'TRACEROOT_ADDITIONAL_METADATA' && i.severity === 'warning'),
+      'non-object metadata is flagged',
+    );
+  } finally {
+    process.env = saved;
+  }
+});
+
+test('collectEnvIssues is silent for recognized values, unset vars, and valid metadata', () => {
+  const saved = { ...process.env };
+  try {
+    for (const k of Object.keys(process.env)) {
+      if (k.startsWith('TRACEROOT_')) delete process.env[k];
+    }
+    process.env.TRACEROOT_ENABLED = 'yes';
+    process.env.TRACEROOT_CAPTURE_TOOL_IO = 'off';
+    process.env.TRACEROOT_ADDITIONAL_METADATA = '{"a":1}';
+    assert.deepEqual(collectEnvIssues(), []);
+  } finally {
+    process.env = saved;
+  }
 });
 
 test('validateConfig errors on a malformed url', () => {
