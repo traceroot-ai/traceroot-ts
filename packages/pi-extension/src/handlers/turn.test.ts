@@ -1,13 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ROOT_CONTEXT } from '@opentelemetry/api';
 import { registerTurn } from './turn.ts';
 import { repoSlug } from '../attribution.ts';
-import { fakeRuntime, fire, UI_CTX } from '../test-support.ts';
+import { fakeRuntime, fire, initGitRepo, UI_CTX, withTempDir } from '../test-support.ts';
 
 // ---------------------------------------------------------------------------
 // before_agent_start / input — buffering
@@ -83,12 +79,8 @@ test('agent_start is skipped while the session is disabled (but still consumes t
 // Going beyond: the repo slug is now attached asynchronously (off the hot path), so it
 // lands on the session span after the git lookup settles — verify the end-to-end wiring.
 test('agent_start attaches the repo slug to the session span asynchronously', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-turn-git-'));
-  try {
-    execFileSync('git', ['init', '-q'], { cwd: dir });
-    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], {
-      cwd: dir,
-    });
+  await withTempDir(async (dir) => {
+    initGitRepo(dir, 'git@github.com:acme/widgets.git');
     const { rt, handlers, spans } = fakeRuntime();
     registerTurn(rt);
     await fire(handlers, 'agent_start', {}, { ...UI_CTX, cwd: dir });
@@ -97,9 +89,7 @@ test('agent_start attaches the repo slug to the session span asynchronously', as
     await repoSlug(dir); // same cached promise the handler awaited — wait for git to settle
     await new Promise((resolve) => setImmediate(resolve)); // flush the handler's then(setAttr)
     assert.equal(spans[0]?.attrs['traceroot.pi.repo'], 'acme/widgets');
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 // ---------------------------------------------------------------------------

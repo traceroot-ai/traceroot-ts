@@ -1,29 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { parseRepoSlug, repoSlug, sessionAttributes, workspaceName } from './attribution.ts';
-
-function withTempDir(fn: (dir: string) => void | Promise<void>): Promise<void> | void {
-  const dir = mkdtempSync(join(tmpdir(), 'tr-attr-'));
-  const cleanup = () => rmSync(dir, { recursive: true, force: true });
-  let result: void | Promise<void>;
-  try {
-    result = fn(dir);
-  } catch (err) {
-    cleanup();
-    throw err;
-  }
-  if (result instanceof Promise) return result.finally(cleanup);
-  cleanup();
-}
-
-function initGitRepo(dir: string, remoteUrl?: string): void {
-  execFileSync('git', ['init', '-q'], { cwd: dir });
-  if (remoteUrl) execFileSync('git', ['remote', 'add', 'origin', remoteUrl], { cwd: dir });
-}
+import { initGitRepo, withTempDir } from './test-support.ts';
 
 // ---------------------------------------------------------------------------
 // parseRepoSlug — remote-URL shapes

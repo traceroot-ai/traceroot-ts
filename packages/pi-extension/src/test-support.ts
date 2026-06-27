@@ -2,8 +2,45 @@
 // `files`). A tracer whose spans record every attribute / event / status so tests can
 // assert on exported values, plus fake pi runtimes for the event and command handlers.
 import { ROOT_CONTEXT, SpanStatusCode, type Span, type Tracer } from '@opentelemetry/api';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createSpanState } from './state.ts';
 import type { Runtime } from './runtime.ts';
+
+// A fake OTLP provider that counts the flush/shutdown calls the lifecycle handlers make.
+function fakeProvider(): {
+  provider: { forceFlush: () => Promise<void>; shutdown: () => Promise<void> };
+  providerCalls: { flush: number; shutdown: number };
+} {
+  const providerCalls = { flush: 0, shutdown: 0 };
+  const provider = {
+    forceFlush: async () => {
+      providerCalls.flush += 1;
+    },
+    shutdown: async () => {
+      providerCalls.shutdown += 1;
+    },
+  };
+  return { provider, providerCalls };
+}
+
+// Run `fn` against a throwaway temp directory, always cleaning it up afterwards.
+export async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'tr-test-'));
+  try {
+    await fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Initialize a git repo in `dir`, optionally with an origin remote.
+export function initGitRepo(dir: string, remoteUrl?: string): void {
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  if (remoteUrl) execFileSync('git', ['remote', 'add', 'origin', remoteUrl], { cwd: dir });
+}
 
 export interface SpanRecord {
   name: string;
@@ -58,7 +95,7 @@ export function recordingTracer(): { tracer: Tracer; spans: SpanRecord[] } {
 export function fakeRuntime(config: Record<string, unknown> = {}) {
   const handlers = new Map<string, (raw: unknown, ctx?: unknown) => unknown>();
   const { tracer, spans } = recordingTracer();
-  const providerCalls = { flush: 0, shutdown: 0 };
+  const { provider, providerCalls } = fakeProvider();
   const rt = {
     pi: {
       on: (event: string, handler: (raw: unknown, ctx?: unknown) => unknown) =>
@@ -73,14 +110,7 @@ export function fakeRuntime(config: Record<string, unknown> = {}) {
     },
     envProvided: {},
     configIssues: [],
-    provider: {
-      forceFlush: async () => {
-        providerCalls.flush += 1;
-      },
-      shutdown: async () => {
-        providerCalls.shutdown += 1;
-      },
-    },
+    provider,
     tracer,
     debug: () => {},
   } as unknown as Runtime;
@@ -120,7 +150,7 @@ export function firstSpan(spans: SpanRecord[]): SpanRecord {
 export function commandRuntime(stateOverrides: Record<string, unknown> = {}) {
   let commandHandler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
   const notifications: Array<{ message: string; level?: string }> = [];
-  const providerCalls = { flush: 0, shutdown: 0 };
+  const { provider, providerCalls } = fakeProvider();
   const rt = {
     pi: {
       on: () => {},
@@ -138,14 +168,7 @@ export function commandRuntime(stateOverrides: Record<string, unknown> = {}) {
       enabled: true,
       uiUrl: 'http://localhost:3000',
     },
-    provider: {
-      forceFlush: async () => {
-        providerCalls.flush += 1;
-      },
-      shutdown: async () => {
-        providerCalls.shutdown += 1;
-      },
-    },
+    provider,
     debug: () => {},
   } as unknown as Runtime;
   Object.assign(rt.state, stateOverrides);
