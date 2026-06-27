@@ -18,7 +18,7 @@ import type { Runtime } from '../runtime.ts';
 interface SpanRecord {
   name: string;
   attrs: Record<string, unknown>;
-  events: string[];
+  events: Array<{ name: string; attrs: Record<string, unknown> }>;
   status?: { code: SpanStatusCode; message?: string };
   ended: boolean;
 }
@@ -39,8 +39,8 @@ function recordingTracer(): { tracer: Tracer; spans: SpanRecord[] } {
           Object.assign(rec.attrs, obj);
           return span;
         },
-        addEvent(eventName: string) {
-          rec.events.push(eventName);
+        addEvent(eventName: string, attrs?: Record<string, unknown>) {
+          rec.events.push({ name: eventName, attrs: attrs ?? {} });
           return span;
         },
         setStatus(status: { code: SpanStatusCode; message?: string }) {
@@ -390,7 +390,13 @@ test('after_provider_response records status, rate-limit headers, and a rate_lim
     undefined,
     'non-ratelimit headers are not captured',
   );
-  assert.ok(span.events.includes('rate_limited'), 'a rate_limited event is added on 429');
+  const rateLimited = span.events.find((e) => e.name === 'rate_limited');
+  assert.ok(rateLimited, 'a rate_limited event is added on 429');
+  assert.equal(
+    rateLimited.attrs['http.retry_after'],
+    '30',
+    'the rate_limited event carries the retry-after value, matched case-insensitively',
+  );
 });
 
 test('after_provider_response adds a provider_error event on a 5xx status', async () => {
@@ -400,7 +406,10 @@ test('after_provider_response adds a provider_error event on a 5xx status', asyn
   await fire(handlers, 'after_provider_response', { status: 503, headers: {} });
   const span = firstSpan(spans);
   assert.equal(span.attrs['http.status_code'], 503);
-  assert.ok(span.events.includes('provider_error'));
+  assert.ok(
+    span.events.some((e) => e.name === 'provider_error'),
+    'a provider_error event is added on 5xx',
+  );
 });
 
 test('after_provider_response ignores a non-numeric status', async () => {

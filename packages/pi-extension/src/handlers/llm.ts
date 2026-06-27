@@ -208,18 +208,23 @@ export function registerLlm(rt: Runtime): void {
     if (typeof status !== 'number') return;
     setAttr(entry.span, 'http.status_code', status);
     // Record rate-limit / retry-after headers as queryable attributes on every
-    // response (not only at 429), so throttling is debuggable over time.
+    // response (not only at 429), so throttling is debuggable over time. Header names
+    // are matched case-insensitively; capture retry-after here so the rate_limited
+    // event below uses the same value — a raw headers['retry-after'] lookup would miss
+    // a capitalized "Retry-After".
+    let retryAfter: string | undefined;
     const headers = event?.headers;
     if (headers) {
       for (const key of Object.keys(headers)) {
         const lower = key.toLowerCase();
         if (lower.startsWith('x-ratelimit-') || lower === 'retry-after') {
           setAttr(entry.span, `traceroot.pi.${lower.replace(/-/g, '_')}`, headers[key]);
+          if (lower === 'retry-after') retryAfter = headers[key];
         }
       }
     }
     if (status === 429) {
-      addEvent(entry.span, 'rate_limited', { 'http.retry_after': event?.headers?.['retry-after'] });
+      addEvent(entry.span, 'rate_limited', { 'http.retry_after': retryAfter });
     } else if (status >= 500) {
       addEvent(entry.span, 'provider_error', { 'http.status_code': status });
     }
