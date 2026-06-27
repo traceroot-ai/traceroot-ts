@@ -2,7 +2,7 @@
 // assistant message_end. Model name comes from the live per-turn ctx.model,
 // falling back to the last model_select only when the context omits it (model_select
 // fires on interactive model changes, not on a CLI --model flag — verified empirically).
-import { context, SpanKind, trace } from '@opentelemetry/api';
+import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import { addEvent, endSpan, setAttr } from '../attributes.ts';
 import { IO_LIMITS, renderMessageContent } from '../content.ts';
 import { safeJsonTruncate } from '../json.ts';
@@ -140,6 +140,18 @@ export function registerLlm(rt: Runtime): void {
     }
     if (message.stopReason != null)
       setAttr(entry.span, 'traceroot.pi.finish_reason', message.stopReason);
+    // Surface an error/aborted finish as a queryable OTel error status. Keep the status
+    // message generic unless full-payload capture is on, so a provider error string
+    // (which can echo request content) is not exported by default.
+    if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+      const detail =
+        config.captureFullPayload &&
+        typeof message.errorMessage === 'string' &&
+        message.errorMessage.trim()
+          ? message.errorMessage.slice(0, 256)
+          : `LLM turn ${message.stopReason}`;
+      entry.span.setStatus({ code: SpanStatusCode.ERROR, message: detail });
+    }
 
     // The assistant message is this LLM span's Output; cache it as the session output.
     const outputText = renderMessageContent(

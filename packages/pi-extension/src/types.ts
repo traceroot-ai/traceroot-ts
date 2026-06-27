@@ -61,6 +61,8 @@ export interface AgentMessageLike {
   role: string;
   usage?: UsageLike | null;
   stopReason?: string | null;
+  /** Provider error text on an error/aborted finish, when pi supplies it. */
+  errorMessage?: string;
 }
 
 // Event payloads — only the fields this extension reads.

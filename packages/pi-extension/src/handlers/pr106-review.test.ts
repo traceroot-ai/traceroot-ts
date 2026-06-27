@@ -444,6 +444,43 @@ test('after_provider_response ignores a non-numeric status', async () => {
   assert.equal(firstSpan(spans).attrs['http.status_code'], undefined);
 });
 
+test('message_end with an error/aborted stopReason sets the span ERROR status (generic by default)', async () => {
+  const { rt, handlers, spans } = fakeRuntime({ captureFullPayload: false });
+  registerLlm(rt);
+  await fire(handlers, 'turn_start', { turnIndex: 0 }, MODEL_CTX);
+  await fire(handlers, 'message_end', {
+    message: { role: 'assistant', stopReason: 'error', errorMessage: 'rate limit exceeded' },
+  });
+  assert.equal(firstSpan(spans).status?.code, SpanStatusCode.ERROR);
+  assert.equal(
+    firstSpan(spans).status?.message,
+    'LLM turn error',
+    'the provider error string is not exported by default',
+  );
+  assert.equal(firstSpan(spans).attrs['traceroot.pi.finish_reason'], 'error');
+});
+
+test('message_end error status includes the provider detail only under captureFullPayload', async () => {
+  const { rt, handlers, spans } = fakeRuntime({ captureFullPayload: true });
+  registerLlm(rt);
+  await fire(handlers, 'turn_start', { turnIndex: 0 }, MODEL_CTX);
+  await fire(handlers, 'message_end', {
+    message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'user cancelled' },
+  });
+  assert.equal(firstSpan(spans).status?.code, SpanStatusCode.ERROR);
+  assert.equal(firstSpan(spans).status?.message, 'user cancelled');
+});
+
+test('message_end with a normal stopReason does not set an error status', async () => {
+  const { rt, handlers, spans } = fakeRuntime();
+  registerLlm(rt);
+  await fire(handlers, 'turn_start', { turnIndex: 0 }, MODEL_CTX);
+  await fire(handlers, 'message_end', {
+    message: { role: 'assistant', stopReason: 'stop', usage: { input: 1, output: 1 } },
+  });
+  assert.equal(firstSpan(spans).status, undefined, 'no error status on a clean finish');
+});
+
 test('before_provider_request records the full request payload only under captureFullPayload', async () => {
   const off = fakeRuntime({ captureFullPayload: false });
   registerLlm(off.rt);
