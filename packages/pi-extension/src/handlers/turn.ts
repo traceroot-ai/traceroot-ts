@@ -16,7 +16,7 @@ import { sweepTurnScoped } from '../state.ts';
 import { applyProjectLocal, readProjectLocalConfig } from '../project-config.ts';
 import { persistSessionTrace } from '../fork-link.ts';
 import { remoteParentContext } from '../remote-parent.ts';
-import { sessionAttributes } from '../attribution.ts';
+import { repoSlug, sessionAttributes } from '../attribution.ts';
 import { buildTraceUrl } from '../url.ts';
 import { setConfigIssue, setStatus, setTraceWidget, STATUS_ACTIVE } from '../ui.ts';
 import type { MetadataValue, TracerootPiConfig } from '../config.ts';
@@ -108,6 +108,9 @@ function openSessionSpan(
   for (const key of Object.keys(attributes)) {
     setAttr(sessionSpan, key, attributes[key]);
   }
+  // The repo slug is a git lookup; resolve it off the hot path and attach it to the
+  // long-lived session span when it settles, so the first prompt is never blocked on git.
+  void repoSlug(cwd).then((slug) => setAttr(sessionSpan, 'traceroot.pi.repo', slug));
   if (state.forkedFromSessionFile) {
     setAttr(sessionSpan, 'traceroot.pi.forked_from_session', state.forkedFromSessionFile);
   }

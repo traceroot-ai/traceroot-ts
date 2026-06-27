@@ -1,13 +1,15 @@
 // Source attribution for the session span: machine, user, OS, workspace, and the
 // git repo slug (derived from the origin remote). All best-effort — a failure
 // yields undefined and the attribute is simply omitted, never an error.
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { hostname, userInfo } from 'node:os';
 import { basename } from 'node:path';
 import { EXTENSION_VERSION } from './version.ts';
 
 const GIT_TIMEOUT_MS = 500;
-const repoSlugCache = new Map<string, string | undefined>();
+// Cache the in-flight/resolved promise per cwd, so the git lookup runs at most once per
+// directory and concurrent callers share the same result.
+const repoSlugCache = new Map<string, Promise<string | undefined>>();
 
 export function hostName(): string | undefined {
   try {
@@ -54,33 +56,35 @@ export function parseRepoSlug(remoteUrl: string): string | undefined {
   return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
 }
 
-// owner/repo from `git config --get remote.origin.url`, cached per cwd.
-export function repoSlug(cwd: string): string | undefined {
+// owner/repo from `git config --get remote.origin.url`, resolved ASYNCHRONOUSLY so the
+// git subprocess never blocks the event loop (and thus pi's first prompt). Cached per
+// cwd. Best-effort: any error or timeout resolves to undefined.
+export function repoSlug(cwd: string): Promise<string | undefined> {
   const key = cwd || process.cwd();
   const cached = repoSlugCache.get(key);
-  if (cached !== undefined || repoSlugCache.has(key)) return cached;
-  let slug: string | undefined;
-  try {
-    const result = spawnSync('git', ['-C', key, 'config', '--get', 'remote.origin.url'], {
-      encoding: 'utf8',
-      timeout: GIT_TIMEOUT_MS,
-      windowsHide: true,
-    });
-    if (result.status === 0 && typeof result.stdout === 'string')
-      slug = parseRepoSlug(result.stdout);
-  } catch {
-    slug = undefined;
-  }
-  repoSlugCache.set(key, slug);
-  return slug;
+  if (cached) return cached;
+  const pending = new Promise<string | undefined>((resolve) => {
+    execFile(
+      'git',
+      ['-C', key, 'config', '--get', 'remote.origin.url'],
+      { timeout: GIT_TIMEOUT_MS, windowsHide: true },
+      (error, stdout) => {
+        resolve(error || typeof stdout !== 'string' ? undefined : parseRepoSlug(stdout));
+      },
+    );
+  });
+  repoSlugCache.set(key, pending);
+  return pending;
 }
 
-// The session span's source-attribution attributes, keyed exactly as emitted on
-// the span. Best-effort values may be undefined, leaving the attribute omitted.
+// The session span's SYNCHRONOUS source-attribution attributes, keyed exactly as emitted
+// on the span. Best-effort values may be undefined, leaving the attribute omitted. The
+// repo slug is intentionally NOT here — it is a git lookup, resolved asynchronously via
+// repoSlug() and attached by openSessionSpan when ready, so the first prompt is never
+// blocked on git.
 export function sessionAttributes(cwd: string): Record<string, string | undefined> {
   return {
     'traceroot.pi.workspace': workspaceName(cwd),
-    'traceroot.pi.repo': repoSlug(cwd),
     'traceroot.pi.hostname': hostName(),
     'traceroot.pi.username': userName(),
     'traceroot.pi.os': process.platform,
