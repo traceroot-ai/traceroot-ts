@@ -97,6 +97,34 @@ describe('updateCurrentSpan()', () => {
     assert.equal(span.attributes['traceroot.llm.usage'], JSON.stringify(usage));
   });
 
+  it('omits undefined usage fields before writing traceroot.llm.usage', async () => {
+    await observe({ name: 'x' }, async () => {
+      updateCurrentSpan({
+        model: 'gemini-2.5-flash',
+        usage: {
+          inputTokens: 100,
+          outputTokens: undefined,
+        },
+      });
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['traceroot.llm.model'], 'gemini-2.5-flash');
+    assert.equal(span.attributes['traceroot.llm.usage'], JSON.stringify({ inputTokens: 100 }));
+  });
+
+  it('does not set traceroot.llm.usage when all usage fields are undefined', async () => {
+    await observe({ name: 'x' }, async () => {
+      updateCurrentSpan({
+        usage: {
+          inputTokens: undefined,
+          outputTokens: undefined,
+        },
+      });
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['traceroot.llm.usage'], undefined);
+  });
+
   it('sets traceroot.llm.prompt as JSON on the active span', async () => {
     const prompt = [{ role: 'user', content: 'hello' }];
     await observe({ name: 'x' }, async () => {

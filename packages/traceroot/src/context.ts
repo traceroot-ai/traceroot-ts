@@ -15,6 +15,17 @@ import {
   SPAN_TAGS,
   TRACE_METADATA,
 } from './constants';
+import type { SpanUsage } from './types';
+
+function definedUsageEntries(usage: SpanUsage): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const [key, value] of Object.entries(usage)) {
+    if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
 
 /**
  * Sets attributes on the currently active span.
@@ -33,8 +44,8 @@ export function updateCurrentSpan(attrs: {
   model?: string;
   /** LLM model parameters (e.g. { temperature: 0.7, max_tokens: 1024 }). */
   modelParameters?: Record<string, unknown>;
-  /** Token usage (e.g. { inputTokens: 100, outputTokens: 50 }). */
-  usage?: Record<string, number>;
+  /** Token usage (e.g. { inputTokens: 100, outputTokens: 50 }). Undefined fields are omitted. */
+  usage?: SpanUsage;
   /** Prompt / messages sent to the LLM. */
   prompt?: unknown;
 }): void {
@@ -76,10 +87,13 @@ export function updateCurrentSpan(attrs: {
     }
   }
   if (attrs.usage !== undefined) {
-    try {
-      span.setAttribute(LLM_USAGE, JSON.stringify(attrs.usage));
-    } catch {
-      /* non-serializable */
+    const usage = definedUsageEntries(attrs.usage);
+    if (Object.keys(usage).length > 0) {
+      try {
+        span.setAttribute(LLM_USAGE, JSON.stringify(usage));
+      } catch {
+        /* non-serializable */
+      }
     }
   }
   if (attrs.prompt !== undefined) {
