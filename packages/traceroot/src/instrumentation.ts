@@ -1,8 +1,10 @@
 // src/instrumentation.ts
 import { registerInstrumentations, type Instrumentation } from '@opentelemetry/instrumentation';
+import type { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import type { InitializeOptions } from './types';
 import { wireOpenAIAgentsProcessor } from './openai-agents';
 import { wireClaudeAgentSDKInstrumentation } from './claude-agent-sdk';
+import { wireLiveKitInstrumentation } from './livekit';
 
 type InstrumentationWithManualPatch = Instrumentation & {
   manuallyInstrument(moduleRef: unknown): void;
@@ -43,6 +45,7 @@ function loadInstrumentation(pkg: string, exportName: string): InstrumentationCt
  */
 export function wireInstrumentations(
   instrumentModules: InitializeOptions['instrumentModules'],
+  tracerProvider?: NodeTracerProvider,
 ): void {
   if (instrumentModules === undefined) {
     // Auto-instrumentation via require-in-the-middle (CJS only).
@@ -77,6 +80,9 @@ export function wireInstrumentations(
   }
   if (instrumentModules.openaiAgents) {
     wireOpenAIAgentsProcessor(instrumentModules.openaiAgents);
+  }
+  if (instrumentModules.livekitAgents) {
+    wireLiveKitInstrumentation(instrumentModules.livekitAgents, tracerProvider);
   }
 
   if (instrs.length > 0) {

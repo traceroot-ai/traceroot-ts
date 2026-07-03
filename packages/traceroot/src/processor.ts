@@ -1,6 +1,8 @@
 // src/processor.ts
-import { trace as otelTrace, Context, Span } from '@opentelemetry/api';
+import { trace as otelTrace, AttributeValue, Context, Span } from '@opentelemetry/api';
 import { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { getAttributesFromContext } from '@arizeai/openinference-core';
+import { getLiveKitAttributeOverlay } from './livekit';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json') as { version: string };
@@ -12,6 +14,21 @@ export interface TraceRootSpanProcessorOptions {
   environment?: string;
   gitRepo?: string;
   gitRef?: string;
+}
+
+function withAttributeOverlay(
+  span: ReadableSpan,
+  overlay: Record<string, AttributeValue>,
+): ReadableSpan {
+  if (Object.keys(overlay).length === 0) return span;
+
+  const spanView = Object.create(span) as ReadableSpan;
+  Object.defineProperty(spanView, 'attributes', {
+    value: { ...span.attributes, ...overlay },
+    enumerable: true,
+    configurable: true,
+  });
+  return spanView;
 }
 
 /**
@@ -54,6 +71,12 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     }
     if (this._gitRef !== undefined) {
       span.setAttribute('traceroot.git.ref', this._gitRef);
+    }
+    if (typeof (parentContext as { getValue?: unknown })?.getValue === 'function') {
+      const contextAttributes = getAttributesFromContext(parentContext);
+      if (Object.keys(contextAttributes).length > 0) {
+        span.setAttributes(contextAttributes);
+      }
     }
 
     // Enrich every span with its full name path from root to current span.
@@ -117,13 +140,15 @@ export class TraceRootSpanProcessor implements SpanProcessor {
   }
 
   onEnd(span: ReadableSpan): void {
+    const spanForExport = withAttributeOverlay(span, getLiveKitAttributeOverlay(span));
+
     // Invariant: children must be started before their parent ends. A child span
     // started after onEnd runs here loses the map-based ancestry lookup for
     // NonRecordingSpan parents (no attribute fallback exists for those).
     const spanId = span.spanContext().spanId;
     this._idsPathBySpanId.delete(spanId);
     this._namePathBySpanId.delete(spanId);
-    this.inner.onEnd(span);
+    this.inner.onEnd(spanForExport);
   }
 
   forceFlush(): Promise<void> {

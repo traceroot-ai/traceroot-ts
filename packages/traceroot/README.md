@@ -11,6 +11,35 @@
 
 Please see the [TypeScript SDK Docs](https://traceroot.ai/docs/tracing/get-started) for details.
 
+## LiveKit Agents
+
+LiveKit Agents can use the existing TraceRoot SDK primitives. Pass the LiveKit
+Agents module into `initialize`, bind the room to TraceRoot context inside the
+job, and flush when the job shuts down.
+
+```ts
+import { TraceRoot, usingAttributes } from '@traceroot-ai/traceroot';
+import * as livekitAgents from '@livekit/agents';
+
+TraceRoot.initialize({
+  instrumentModules: { livekitAgents },
+});
+
+export async function entrypoint(ctx: livekitAgents.JobContext) {
+  ctx.addShutdownCallback(() => TraceRoot.flush());
+
+  await usingAttributes(
+    {
+      sessionId: ctx.room.name,
+      tags: ['livekit', 'voice-agent'],
+    },
+    async () => {
+      // Start the LiveKit AgentSession here.
+    },
+  );
+}
+```
+
 <!-- Links -->
 
 [discord-image]: https://img.shields.io/discord/1395844148568920114?logo=discord&labelColor=%235462eb&logoColor=%23f5f5f5&color=%235462eb

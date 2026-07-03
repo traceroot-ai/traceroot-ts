@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { trace } from '@opentelemetry/api';
 import { observe } from '../src/observe';
+import { TraceRootSpanProcessor } from '../src/processor';
 import { _resetForTesting } from '../src/traceroot';
+import { usingAttributes } from '../src/usingAttributes';
 
 describe('async context propagation', () => {
   let exporter: InMemorySpanExporter;
@@ -68,5 +71,28 @@ describe('async context propagation', () => {
     // Cross-bleed check
     assert.notEqual(childA.parentSpanId, parentB.spanContext().spanId);
     assert.notEqual(childB.parentSpanId, parentA.spanContext().spanId);
+  });
+
+  it('usingAttributes() applies to native OpenTelemetry spans', async () => {
+    await provider.shutdown();
+    exporter.reset();
+    _resetForTesting();
+
+    exporter = new InMemorySpanExporter();
+    provider = new NodeTracerProvider();
+    provider.addSpanProcessor(new TraceRootSpanProcessor(new SimpleSpanProcessor(exporter)));
+    provider.register();
+
+    await usingAttributes({ sessionId: 'room-123', userId: 'user-456' }, async () => {
+      const tracer = trace.getTracer('native-integration-test');
+      tracer.startActiveSpan('livekit-native-span', (span) => {
+        span.end();
+      });
+    });
+
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.name, 'livekit-native-span');
+    assert.equal(span.attributes['session.id'], 'room-123');
+    assert.equal(span.attributes['user.id'], 'user-456');
   });
 });
