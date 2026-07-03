@@ -3,6 +3,7 @@ import { context, trace, SpanStatusCode, Span as OtelSpan } from '@opentelemetry
 import { applyCommonAttributes, applyModel, applyUsage, applyIO, trySerialize } from './attributes';
 import { SPAN_METADATA } from './constants';
 import { StartSpanOptions, SpanUpdate } from './types';
+import { TraceRoot } from './traceroot';
 
 export interface Span {
   readonly spanId: string;
@@ -57,14 +58,15 @@ export function wrapSpan(otel: OtelSpan): Span {
 }
 
 let _tracer: ReturnType<typeof trace.getTracer> | undefined;
+let _hasWarnedUninit = false;
 
 export function startSpan(options: StartSpanOptions): Span {
-  if (process.env['TRACEROOT_API_KEY']) {
-    // Lazy sync init guard — mirrors observe(). Safe to call repeatedly.
-    // (import kept dynamic to avoid a load-order cycle with traceroot.ts)
-    void import('./traceroot').then(({ TraceRoot }) => {
-      if (!TraceRoot.isInitialized()) TraceRoot.initialize();
-    });
+  // Synchronous init guard — mirrors observe(). Unlike observe() (which is async
+  // and can await a dynamic import), startSpan() is synchronous, so it must init
+  // BEFORE creating the span or the first span would be dropped. initialize() is
+  // synchronous and safe to call repeatedly.
+  if (process.env['TRACEROOT_API_KEY'] && !TraceRoot.isInitialized()) {
+    TraceRoot.initialize();
   }
   _tracer ??= trace.getTracer('traceroot-ts');
 
@@ -72,6 +74,12 @@ export function startSpan(options: StartSpanOptions): Span {
   const ctx = parentOtel ? trace.setSpan(context.active(), parentOtel) : context.active();
 
   const otel = _tracer.startSpan(options.name, undefined, ctx);
+  if (!otel.isRecording() && !_hasWarnedUninit) {
+    _hasWarnedUninit = true;
+    console.warn(
+      '[TraceRoot] startSpan() called but TraceRoot.initialize() was not called. Spans will not be recorded.',
+    );
+  }
   if (otel.isRecording()) {
     applyCommonAttributes(
       otel,
@@ -101,4 +109,5 @@ export function usingSpan<T>(span: Span, fn: () => T): T {
 /** @internal test reset */
 export function _resetSpansState(): void {
   _tracer = undefined;
+  _hasWarnedUninit = false;
 }
