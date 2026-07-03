@@ -90,3 +90,52 @@ export interface InitializeOptions {
    */
   gitRef?: string;
 }
+
+/** LLM token usage. Known fields map to OpenInference token-count keys;
+ *  extra keys are preserved in the traceroot.llm.usage blob. */
+export interface TokenUsage {
+  /** Uncached prompt tokens. */
+  input?: number;
+  /** Completion tokens. */
+  output?: number;
+  /** Cache-read (Anthropic cache_read_input_tokens). */
+  cacheRead?: number;
+  /** Cache-write / creation (Anthropic cache_creation_input_tokens). */
+  cacheWrite?: number;
+  /** Total; derived from prompt+completion if omitted. */
+  total?: number;
+  [key: string]: number | undefined;
+}
+
+export interface StartSpanOptions {
+  name: string;
+  type?: SpanType;
+  input?: unknown;
+  metadata?: Record<string, unknown>;
+  tags?: string[];
+  sessionId?: string;
+  userId?: string;
+  model?: string;
+  modelParameters?: Record<string, unknown>;
+  /** Arbitrary span attributes (see {@link SpanUpdate.attributes}). */
+  attributes?: Record<string, string | number | boolean>;
+  /** Explicit parent handle. Default: the current active span. */
+  parent?: import('./spans').Span;
+}
+
+export interface SpanUpdate {
+  name?: string;
+  input?: unknown;
+  output?: unknown;
+  metadata?: Record<string, unknown>;
+  model?: string;
+  modelParameters?: Record<string, unknown>;
+  usage?: TokenUsage;
+  /**
+   * Arbitrary span attributes for keys the typed fields above don't cover
+   * (e.g. `gen_ai.*` semconv keys, domain-specific tags). Set through to the
+   * underlying span verbatim — the escape hatch so callers never need raw
+   * OpenTelemetry for a one-off attribute.
+   */
+  attributes?: Record<string, string | number | boolean>;
+}

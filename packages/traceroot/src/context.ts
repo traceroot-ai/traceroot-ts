@@ -1,20 +1,10 @@
 // src/context.ts
 import { trace } from '@opentelemetry/api';
-import {
-  INPUT_VALUE,
-  OUTPUT_VALUE,
-  SESSION_ID,
-  USER_ID,
-} from '@arizeai/openinference-semantic-conventions';
-import {
-  LLM_MODEL,
-  LLM_MODEL_PARAMETERS,
-  LLM_USAGE,
-  LLM_PROMPT,
-  SPAN_METADATA,
-  SPAN_TAGS,
-  TRACE_METADATA,
-} from './constants';
+import { SESSION_ID, USER_ID } from '@arizeai/openinference-semantic-conventions';
+import { LLM_PROMPT, SPAN_METADATA, SPAN_TAGS, TRACE_METADATA } from './constants';
+import { wrapSpan, type Span } from './spans';
+import { applyUsage, applyModel, applyIO } from './attributes';
+import type { TokenUsage } from './types';
 
 /**
  * Sets attributes on the currently active span.
@@ -33,10 +23,12 @@ export function updateCurrentSpan(attrs: {
   model?: string;
   /** LLM model parameters (e.g. { temperature: 0.7, max_tokens: 1024 }). */
   modelParameters?: Record<string, unknown>;
-  /** Token usage (e.g. { inputTokens: 100, outputTokens: 50 }). */
-  usage?: Record<string, number>;
+  /** Token usage (e.g. { input: 100, output: 50 }). */
+  usage?: TokenUsage;
   /** Prompt / messages sent to the LLM. */
   prompt?: unknown;
+  /** Arbitrary span attributes for keys the typed fields don't cover. */
+  attributes?: Record<string, string | number | boolean>;
 }): void {
   const span = trace.getActiveSpan();
   if (!span) return;
@@ -44,20 +36,7 @@ export function updateCurrentSpan(attrs: {
   if (attrs.name !== undefined) {
     span.updateName(attrs.name);
   }
-  if (attrs.input !== undefined) {
-    try {
-      span.setAttribute(INPUT_VALUE, JSON.stringify(attrs.input));
-    } catch {
-      /* non-serializable */
-    }
-  }
-  if (attrs.output !== undefined) {
-    try {
-      span.setAttribute(OUTPUT_VALUE, JSON.stringify(attrs.output));
-    } catch {
-      /* non-serializable */
-    }
-  }
+  applyIO(span, { input: attrs.input, output: attrs.output });
   if (attrs.metadata !== undefined) {
     try {
       span.setAttribute(SPAN_METADATA, JSON.stringify(attrs.metadata));
@@ -65,23 +44,10 @@ export function updateCurrentSpan(attrs: {
       /* non-serializable */
     }
   }
-  if (attrs.model !== undefined) {
-    span.setAttribute(LLM_MODEL, attrs.model);
+  if (attrs.model !== undefined || attrs.modelParameters !== undefined) {
+    applyModel(span, attrs.model, attrs.modelParameters);
   }
-  if (attrs.modelParameters !== undefined) {
-    try {
-      span.setAttribute(LLM_MODEL_PARAMETERS, JSON.stringify(attrs.modelParameters));
-    } catch {
-      /* non-serializable */
-    }
-  }
-  if (attrs.usage !== undefined) {
-    try {
-      span.setAttribute(LLM_USAGE, JSON.stringify(attrs.usage));
-    } catch {
-      /* non-serializable */
-    }
-  }
+  if (attrs.usage !== undefined) applyUsage(span, attrs.usage);
   if (attrs.prompt !== undefined) {
     try {
       span.setAttribute(LLM_PROMPT, JSON.stringify(attrs.prompt));
@@ -89,6 +55,7 @@ export function updateCurrentSpan(attrs: {
       /* non-serializable */
     }
   }
+  if (attrs.attributes !== undefined) span.setAttributes(attrs.attributes);
 }
 
 /**
@@ -124,6 +91,12 @@ export function updateCurrentTrace(attrs: {
       /* non-serializable */
     }
   }
+}
+
+/** The active span as a TraceRoot handle, or undefined outside a span. */
+export function getCurrentSpan(): Span | undefined {
+  const otel = trace.getActiveSpan();
+  return otel ? wrapSpan(otel) : undefined;
 }
 
 function activeSpanContext() {
