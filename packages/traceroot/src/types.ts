@@ -55,6 +55,11 @@ export interface InitializeOptions {
     claudeAgentSDK?: unknown;
     bedrock?: unknown;
     /**
+     * LiveKit Agents module ref. Pass `import * as livekitAgents from '@livekit/agents'`
+     * or the package's agents module that exposes `telemetry.setTracerProvider`.
+     */
+    livekitAgents?: unknown;
+    /**
      * @openai/agents module ref. Pass `import * as agents from '@openai/agents'`.
      *
      * Replaces the SDK's default OpenAI tracing processor with TraceRoot's —

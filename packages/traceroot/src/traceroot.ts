@@ -159,7 +159,7 @@ export class TraceRoot {
     );
     _provider.register();
 
-    wireInstrumentations(options.instrumentModules);
+    wireInstrumentations(options.instrumentModules, _provider);
 
     _isInitialized = true;
     process.once('beforeExit', () => {
