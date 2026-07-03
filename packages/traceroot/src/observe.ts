@@ -1,25 +1,8 @@
 // src/observe.ts
-import { context, Span, SpanStatusCode, trace } from '@opentelemetry/api';
-import { getAttributesFromContext } from '@arizeai/openinference-core';
-import {
-  INPUT_VALUE,
-  OUTPUT_VALUE,
-  SemanticConventions,
-  SESSION_ID,
-  USER_ID,
-} from '@arizeai/openinference-semantic-conventions';
-import { SPAN_METADATA, SPAN_TAGS } from './constants';
-import { ObserveOptions, SpanType } from './types';
-import { captureSourceLocation } from './git_context';
-
-const OPENINFERENCE_SPAN_KIND = SemanticConventions.OPENINFERENCE_SPAN_KIND;
-
-const SPAN_KIND_MAP: Record<SpanType, string> = {
-  agent: 'AGENT',
-  tool: 'TOOL',
-  llm: 'LLM',
-  span: 'CHAIN',
-};
+import { context, SpanStatusCode, trace } from '@opentelemetry/api';
+import { OUTPUT_VALUE } from '@arizeai/openinference-semantic-conventions';
+import { applyCommonAttributes, trySerialize } from './attributes';
+import { ObserveOptions } from './types';
 
 // Cached once after the first call; the tracer name never changes.
 let _tracer: ReturnType<typeof trace.getTracer> | undefined;
@@ -31,15 +14,6 @@ const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {})
 /** Returns true if fn is declared as `async function*` — without calling it. */
 function isAsyncGeneratorFunction(fn: unknown): boolean {
   return typeof fn === 'function' && fn instanceof AsyncGeneratorFunction;
-}
-
-/** Serialize a value for a span attribute, returning undefined on failure. */
-function trySerialize(value: unknown): string | undefined {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -127,7 +101,7 @@ async function _observeRegular<A extends unknown[], T>(
     }
 
     try {
-      _applyCommonAttributes(span, options, args);
+      applyCommonAttributes(span, options, args);
 
       const result = await fn(...args);
 
@@ -174,7 +148,7 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
     return;
   }
 
-  _applyCommonAttributes(span, options, args);
+  applyCommonAttributes(span, options, args);
 
   // Activate the span in the OTel context so that updateCurrentSpan() and
   // nested observe() calls inside the generator body target the correct span.
@@ -203,45 +177,6 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
   } finally {
     span.end();
   }
-}
-
-/**
- * Apply attributes common to all span types: kind, ambient context, session/user,
- * input from args, metadata, tags, git source location.
- */
-function _applyCommonAttributes(span: Span, options: ObserveOptions, args: unknown[]): void {
-  span.setAttribute(OPENINFERENCE_SPAN_KIND, SPAN_KIND_MAP[options.type ?? 'span']);
-
-  // Propagate any ambient attributes set by usingAttributes() in the call stack.
-  const ctxAttrs = getAttributesFromContext(context.active());
-  if (ctxAttrs && Object.keys(ctxAttrs).length > 0) {
-    span.setAttributes(ctxAttrs);
-  }
-
-  if (options.sessionId !== undefined) span.setAttribute(SESSION_ID, options.sessionId);
-  if (options.userId !== undefined) span.setAttribute(USER_ID, options.userId);
-
-  // Auto-capture input from args. Single arg → use directly; multiple → array.
-  if (options.captureInput !== false && args.length > 0) {
-    const inputValue = args.length === 1 ? args[0] : args;
-    const serialized = trySerialize(inputValue);
-    if (serialized !== undefined) span.setAttribute(INPUT_VALUE, serialized);
-  }
-
-  if (options.metadata !== undefined) {
-    const s = trySerialize(options.metadata);
-    if (s !== undefined) span.setAttribute(SPAN_METADATA, s);
-  }
-  if (options.tags !== undefined) {
-    const s = trySerialize(options.tags);
-    if (s !== undefined) span.setAttribute(SPAN_TAGS, s);
-  }
-
-  const loc = captureSourceLocation();
-  if (loc.file !== undefined) span.setAttribute('traceroot.git.source_file', loc.file);
-  if (loc.line !== undefined) span.setAttribute('traceroot.git.source_line', loc.line);
-  if (loc.functionName !== undefined)
-    span.setAttribute('traceroot.git.source_function', loc.functionName);
 }
 
 /** @internal — reset module state between tests */
