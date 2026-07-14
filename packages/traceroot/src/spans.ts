@@ -1,9 +1,10 @@
 // src/spans.ts — imperative span handle API
-import { context, trace, SpanStatusCode, Span as OtelSpan } from '@opentelemetry/api';
+import { context, trace, SpanStatusCode, Span as OtelSpan, ROOT_CONTEXT } from '@opentelemetry/api';
 import { applyCommonAttributes, applyModel, applyUsage, applyIO, trySerialize } from './attributes';
 import { SPAN_METADATA } from './constants';
 import { StartSpanOptions, SpanUpdate } from './types';
 import { TraceRoot } from './traceroot';
+import { shouldForceTraceId, withForcedTraceId } from './trace-id';
 
 export interface Span {
   readonly spanId: string;
@@ -70,10 +71,26 @@ export function startSpan(options: StartSpanOptions): Span {
   }
   _tracer ??= trace.getTracer('traceroot-ts');
 
-  const parentOtel = options.parent ? (options.parent as TracerootSpan).otelSpan : undefined;
-  const ctx = parentOtel ? trace.setSpan(context.active(), parentOtel) : context.active();
+  if (options.traceId !== undefined && options.parent !== undefined) {
+    throw new TypeError(
+      '[TraceRoot] startSpan: traceId forces a new root and is mutually exclusive with parent.',
+    );
+  }
+  const tracer = _tracer;
+  const forcedId = options.traceId;
 
-  const otel = _tracer.startSpan(options.name, undefined, ctx);
+  let otel: OtelSpan;
+  if (forcedId !== undefined && shouldForceTraceId(forcedId)) {
+    // ROOT_CONTEXT, not context.active(): an ambient active span would parent this
+    // span and the generator would never be asked for a trace id.
+    otel = withForcedTraceId(forcedId, () =>
+      tracer.startSpan(options.name, undefined, ROOT_CONTEXT),
+    );
+  } else {
+    const parentOtel = options.parent ? (options.parent as TracerootSpan).otelSpan : undefined;
+    const ctx = parentOtel ? trace.setSpan(context.active(), parentOtel) : context.active();
+    otel = tracer.startSpan(options.name, undefined, ctx);
+  }
   if (!otel.isRecording() && !_hasWarnedUninit) {
     _hasWarnedUninit = true;
     console.warn(

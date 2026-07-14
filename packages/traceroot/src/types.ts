@@ -140,6 +140,13 @@ export interface StartSpanOptions {
   modelParameters?: Record<string, unknown>;
   /** Arbitrary span attributes (see {@link SpanUpdate.attributes}). */
   attributes?: Record<string, string | number | boolean>;
+  /**
+   * Force this root span's trace id to an explicit lowercase 32-hex string.
+   * Honored ONLY in internal export mode; ignored (with a warning) otherwise.
+   * Starts a root — mutually exclusive with `parent` (throws if both are given).
+   * Malformed ids throw.
+   */
+  traceId?: string;
   /** Explicit parent handle. Default: the current active span. */
   parent?: import('./spans').Span;
 }
