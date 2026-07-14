@@ -32,6 +32,12 @@ export interface ObserveOptions {
    * Equivalent to calling updateCurrentTrace({ userId }) inside fn.
    */
   userId?: string;
+  /**
+   * Force this root span's trace id to an explicit lowercase 32-hex string.
+   * Honored ONLY in internal export mode; ignored (with a warning) otherwise.
+   * Malformed ids throw synchronously.
+   */
+  traceId?: string;
 }
 
 export interface InitializeOptions {

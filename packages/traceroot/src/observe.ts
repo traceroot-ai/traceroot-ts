@@ -1,8 +1,9 @@
 // src/observe.ts
-import { context, SpanStatusCode, trace } from '@opentelemetry/api';
+import { context, ROOT_CONTEXT, Span as OtelSpan, SpanStatusCode, trace } from '@opentelemetry/api';
 import { OUTPUT_VALUE } from '@arizeai/openinference-semantic-conventions';
 import { applyCommonAttributes, trySerialize } from './attributes';
 import { ObserveOptions } from './types';
+import { shouldForceTraceId, withForcedTraceId, assertValidTraceId } from './trace-id';
 
 // Cached once after the first call; the tracer name never changes.
 let _tracer: ReturnType<typeof trace.getTracer> | undefined;
@@ -63,6 +64,7 @@ export function observe<A extends unknown[], T>(
   ...args: A
 ): Promise<T> | AsyncGenerator<T> {
   const name = options.name ?? (fn.name || 'anonymous');
+  if (options.traceId !== undefined) assertValidTraceId(options.traceId);
   _tracer ??= trace.getTracer('traceroot-ts');
 
   if (isAsyncGeneratorFunction(fn)) {
@@ -84,8 +86,10 @@ async function _observeRegular<A extends unknown[], T>(
     if (!TraceRoot.isInitialized()) TraceRoot.initialize();
   }
   _tracer ??= trace.getTracer('traceroot-ts');
+  const tracer = _tracer;
+  const forcedId = options.traceId;
 
-  return _tracer.startActiveSpan(name, async (span) => {
+  const run = async (span: OtelSpan) => {
     if (!span.isRecording()) {
       if (!_hasWarnedUninit) {
         _hasWarnedUninit = true;
@@ -117,7 +121,14 @@ async function _observeRegular<A extends unknown[], T>(
     } finally {
       span.end();
     }
-  });
+  };
+
+  if (forcedId !== undefined && shouldForceTraceId(forcedId)) {
+    // ROOT_CONTEXT: an ambient active span would otherwise parent this span and the
+    // generator would never be asked for a trace id.
+    return withForcedTraceId(forcedId, () => tracer.startActiveSpan(name, {}, ROOT_CONTEXT, run));
+  }
+  return tracer.startActiveSpan(name, run);
 }
 
 /**
@@ -135,7 +146,12 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
     if (!TraceRoot.isInitialized()) TraceRoot.initialize();
   }
   _tracer ??= trace.getTracer('traceroot-ts');
-  const span = _tracer.startSpan(name);
+  const tracer = _tracer;
+  const forcedId = options.traceId;
+  const span =
+    forcedId !== undefined && shouldForceTraceId(forcedId)
+      ? withForcedTraceId(forcedId, () => tracer.startSpan(name, undefined, ROOT_CONTEXT))
+      : tracer.startSpan(name);
 
   if (!span.isRecording()) {
     if (!_hasWarnedUninit) {
