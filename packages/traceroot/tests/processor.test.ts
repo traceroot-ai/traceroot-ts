@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import {
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+  BatchSpanProcessor,
+  SpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { context, propagation, trace, TraceFlags } from '@opentelemetry/api';
 import { TraceRootSpanProcessor, SDK_VERSION } from '../src/processor';
@@ -262,5 +267,62 @@ describe('TraceRootSpanProcessor', () => {
       assert.deepEqual(c1.attributes['traceroot.span.ids_path'], [rootId!, midId!]);
       assert.deepEqual(c2.attributes['traceroot.span.ids_path'], [rootId!, midId!]);
     });
+  });
+});
+
+describe('TraceRootSpanProcessor globalAttributes (integration)', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+
+  function setup(makeInner: (e: InMemorySpanExporter) => SpanProcessor): void {
+    exporter = new InMemorySpanExporter();
+    provider = new NodeTracerProvider();
+    provider.addSpanProcessor(
+      new TraceRootSpanProcessor(makeInner(exporter), {
+        globalAttributes: { 'traceroot.source': 'detector' },
+      }),
+    );
+    provider.register();
+  }
+
+  afterEach(async () => {
+    await provider.shutdown();
+    exporter.reset();
+    trace.disable();
+    context.disable();
+    propagation.disable();
+  });
+
+  it('stamps globalAttributes on both root and child spans (simple processor)', async () => {
+    setup((e) => new SimpleSpanProcessor(e));
+    const tracer = trace.getTracer('test');
+    await new Promise<void>((resolve) => {
+      tracer.startActiveSpan('root', (root) => {
+        tracer.startActiveSpan('child', (child) => {
+          child.end();
+          root.end();
+          resolve();
+        });
+      });
+    });
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 2);
+    for (const s of spans) {
+      assert.equal(s.attributes['traceroot.source'], 'detector');
+    }
+  });
+
+  it('stamps globalAttributes on every span across batches (batch processor)', async () => {
+    setup((e) => new BatchSpanProcessor(e, { maxExportBatchSize: 2, scheduledDelayMillis: 5 }));
+    const tracer = trace.getTracer('test');
+    for (let i = 0; i < 5; i++) {
+      tracer.startSpan(`span-${i}`).end();
+    }
+    await provider.forceFlush();
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 5);
+    for (const s of spans) {
+      assert.equal(s.attributes['traceroot.source'], 'detector');
+    }
   });
 });

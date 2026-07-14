@@ -12,6 +12,7 @@ export interface TraceRootSpanProcessorOptions {
   environment?: string;
   gitRepo?: string;
   gitRef?: string;
+  globalAttributes?: Record<string, string | number | boolean>;
 }
 
 /**
@@ -25,6 +26,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
   private readonly _environment: string | undefined;
   private readonly _gitRepo: string | undefined;
   private readonly _gitRef: string | undefined;
+  private readonly _globalAttributes: Record<string, string | number | boolean> | undefined;
   // Keyed by spanId. Allows children to inherit paths even when the parent
   // is a NonRecordingSpan (remote context) with no attributes — which is
   // what OpenInference produces for LangGraph-instrumented node spans.
@@ -39,6 +41,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     this._environment = opts.environment;
     this._gitRepo = opts.gitRepo;
     this._gitRef = opts.gitRef;
+    this._globalAttributes = opts.globalAttributes;
   }
 
   onStart(span: Span, parentContext: Context): void {
@@ -47,13 +50,19 @@ export class TraceRootSpanProcessor implements SpanProcessor {
       'traceroot.sdk.version': SDK_VERSION,
     });
     if (this._environment !== undefined) {
-      span.setAttribute('deployment.environment', this._environment);
+      span.setAttribute('deployment.environment', this._environment); // back-compat
+      span.setAttribute('traceroot.environment', this._environment); // key the backend transform reads
     }
     if (this._gitRepo !== undefined) {
       span.setAttribute('traceroot.git.repo', this._gitRepo);
     }
     if (this._gitRef !== undefined) {
       span.setAttribute('traceroot.git.ref', this._gitRef);
+    }
+    // Caller-supplied globals may override the sdk/environment/git keys above, but the
+    // structural traceroot.span.* keys computed below stay SDK-owned.
+    if (this._globalAttributes !== undefined) {
+      span.setAttributes(this._globalAttributes);
     }
 
     // Enrich every span with its full name path from root to current span.

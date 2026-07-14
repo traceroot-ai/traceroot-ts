@@ -89,6 +89,12 @@ export interface InitializeOptions {
    * then auto-detected via `git rev-parse HEAD`.
    */
   gitRef?: string;
+  /**
+   * Attributes stamped on EVERY span (root and children), applied at span start so
+   * they survive any batch composition. Reserve the `traceroot.*` namespace.
+   * e.g. { 'traceroot.source': 'detector' }.
+   */
+  globalAttributes?: Record<string, string | number | boolean>;
 }
 
 /** LLM token usage. Known fields map to OpenInference token-count keys;

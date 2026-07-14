@@ -244,4 +244,36 @@ describe('TraceRootSpanProcessor', () => {
     processor.onStart(span, ctx);
     assert.equal(Object.prototype.hasOwnProperty.call(attributes, 'deployment.environment'), false);
   });
+
+  it('stamps traceroot.environment alongside deployment.environment when environment is set', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner, { environment: 'prod' });
+    processor.onStart(span, ctx);
+    assert.equal(attributes['deployment.environment'], 'prod');
+    assert.equal(attributes['traceroot.environment'], 'prod');
+  });
+
+  it('does not stamp traceroot.environment when environment is not set', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner);
+    processor.onStart(span, ctx);
+    assert.equal(Object.prototype.hasOwnProperty.call(attributes, 'traceroot.environment'), false);
+  });
+
+  it('stamps every key of globalAttributes on the span', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner, {
+      globalAttributes: { 'traceroot.source': 'detector', 'traceroot.tier': 1 },
+    });
+    processor.onStart(span, ctx);
+    assert.equal(attributes['traceroot.source'], 'detector');
+    assert.equal(attributes['traceroot.tier'], 1);
+  });
+
+  it('does not stamp global attributes when globalAttributes is not set', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner);
+    processor.onStart(span, ctx);
+    assert.equal(Object.prototype.hasOwnProperty.call(attributes, 'traceroot.source'), false);
+  });
 });

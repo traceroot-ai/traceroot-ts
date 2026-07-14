@@ -155,7 +155,12 @@ export class TraceRoot {
 
     _provider = new NodeTracerProvider();
     _provider.addSpanProcessor(
-      new TraceRootSpanProcessor(innerProcessor, { environment, gitRepo, gitRef }),
+      new TraceRootSpanProcessor(innerProcessor, {
+        environment,
+        gitRepo,
+        gitRef,
+        globalAttributes: options.globalAttributes,
+      }),
     );
     _provider.register();
 
