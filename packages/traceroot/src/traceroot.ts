@@ -25,11 +25,49 @@ import {
   gitContextFromFiles,
   _resetGitContextCache,
 } from './git_context';
+import { ContextIdGenerator, _setInternalMode } from './trace-id';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
 let _isInitialized = false;
 let _provider: NodeTracerProvider | undefined;
+let _exportTarget: ExportTarget | undefined;
+
+export interface ExportTarget {
+  url: string;
+  headers: Record<string, string>;
+  internal: boolean;
+}
+
+/**
+ * Resolve the OTLP export URL + headers. Public mode targets the public traces route
+ * with Bearer auth; internal mode targets baseUrl+path with project_id as a query
+ * parameter and auth-only headers (no Authorization). SDK identity headers always win
+ * on collision with caller-supplied headers.
+ */
+export function resolveExportTarget(
+  baseUrl: string,
+  apiKey: string | undefined,
+  sdkHeaders: Record<string, string>,
+  internalExport: InitializeOptions['internalExport'],
+): ExportTarget {
+  if (internalExport) {
+    const sep = internalExport.path.includes('?') ? '&' : '?';
+    return {
+      url: `${baseUrl}${internalExport.path}${sep}project_id=${encodeURIComponent(internalExport.projectId)}`,
+      headers: { ...(internalExport.headers ?? {}), ...sdkHeaders },
+      internal: true,
+    };
+  }
+  const headers = { ...sdkHeaders };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+  return { url: `${baseUrl}/api/v1/public/traces`, headers, internal: false };
+}
+
+/** @internal — the target resolved by the last initialize(); for tests only. */
+export function _getExportTargetForTesting(): ExportTarget | undefined {
+  return _exportTarget;
+}
 
 export class TraceRoot {
   private constructor() {}
@@ -50,7 +88,7 @@ export class TraceRoot {
     }
 
     const apiKey = options.apiKey ?? process.env['TRACEROOT_API_KEY'];
-    if (!apiKey) {
+    if (!apiKey && !options.internalExport) {
       console.warn(
         '[TraceRoot] No API key provided. Set TRACEROOT_API_KEY env var or pass apiKey to initialize(). ' +
           'Spans will be emitted but export will fail.',
@@ -74,15 +112,17 @@ export class TraceRoot {
       DEFAULT_BASE_URL
     ).replace(/\/$/, '');
 
-    const headers: Record<string, string> = {
+    const sdkHeaders: Record<string, string> = {
       'x-traceroot-sdk-name': SDK_NAME,
       'x-traceroot-sdk-version': SDK_VERSION,
     };
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    const target = resolveExportTarget(baseUrl, apiKey, sdkHeaders, options.internalExport);
+    _exportTarget = target;
+    _setInternalMode(target.internal);
 
     const exporter = new OTLPTraceExporter({
-      url: `${baseUrl}/api/v1/public/traces`,
-      headers,
+      url: target.url,
+      headers: target.headers,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       compression: 'gzip' as any,
     });
@@ -153,7 +193,9 @@ export class TraceRoot {
           },
         });
 
-    _provider = new NodeTracerProvider();
+    _provider = new NodeTracerProvider(
+      target.internal ? { idGenerator: new ContextIdGenerator() } : {},
+    );
     _provider.addSpanProcessor(
       new TraceRootSpanProcessor(innerProcessor, {
         environment,
@@ -180,6 +222,8 @@ export class TraceRoot {
     await _provider?.shutdown();
     _isInitialized = false;
     _provider = undefined;
+    _exportTarget = undefined;
+    _setInternalMode(false);
     _resetObserveState();
   }
 }
@@ -188,6 +232,8 @@ export class TraceRoot {
 export function _resetForTesting(): void {
   _isInitialized = false;
   _provider = undefined;
+  _exportTarget = undefined;
+  _setInternalMode(false);
   _resetObserveState();
   _resetGitContextCache();
   trace.disable();

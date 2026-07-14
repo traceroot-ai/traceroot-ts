@@ -95,6 +95,21 @@ export interface InitializeOptions {
    * e.g. { 'traceroot.source': 'detector' }.
    */
   globalAttributes?: Record<string, string | number | boolean>;
+  /**
+   * Internal / trusted export mode. When set, spans export to `baseUrl + path` with
+   * `project_id=<projectId>` appended as a query parameter and the given headers,
+   * instead of the public route + Bearer apiKey. Presence of this option also unlocks
+   * deterministic trace-id forcing (see `traceId` on ObserveOptions/StartSpanOptions).
+   * Leave unset for normal (public) operation.
+   */
+  internalExport?: {
+    /** Ingest path appended to baseUrl, e.g. '/api/v1/internal/traces'. Must start with '/'. */
+    path: string;
+    /** Project id; sent as the `project_id` query parameter (URL-encoded). Required. */
+    projectId: string;
+    /** Extra headers, e.g. { 'X-Internal-Secret': '...' }. Auth-only by convention. */
+    headers?: Record<string, string>;
+  };
 }
 
 /** LLM token usage. Known fields map to OpenInference token-count keys;

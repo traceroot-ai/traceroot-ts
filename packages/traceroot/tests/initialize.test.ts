@@ -3,8 +3,15 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { TraceRoot, _resetForTesting } from '../src/traceroot';
+import {
+  TraceRoot,
+  _resetForTesting,
+  resolveExportTarget,
+  _getExportTargetForTesting,
+} from '../src/traceroot';
 import { TraceRootSpanProcessor } from '../src/processor';
+import { isInternalMode, withForcedTraceId } from '../src/trace-id';
+import { trace } from '@opentelemetry/api';
 
 describe('TraceRoot.initialize()', () => {
   afterEach(() => {
@@ -275,5 +282,142 @@ describe('TraceRootSpanProcessor', () => {
     const processor = new TraceRootSpanProcessor(inner);
     processor.onStart(span, ctx);
     assert.equal(Object.prototype.hasOwnProperty.call(attributes, 'traceroot.source'), false);
+  });
+});
+
+describe('resolveExportTarget()', () => {
+  const sdkHeaders = { 'x-traceroot-sdk-name': 'traceroot-ts', 'x-traceroot-sdk-version': '9.9.9' };
+
+  it('public mode: public traces path + Bearer auth', () => {
+    const t = resolveExportTarget('https://app.traceroot.ai', 'key-123', sdkHeaders, undefined);
+    assert.equal(t.url, 'https://app.traceroot.ai/api/v1/public/traces');
+    assert.equal(t.headers['Authorization'], 'Bearer key-123');
+    assert.equal(t.internal, false);
+  });
+
+  it('public mode without an apiKey: no Authorization header', () => {
+    const t = resolveExportTarget('https://app.traceroot.ai', undefined, sdkHeaders, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(t.headers, 'Authorization'), false);
+    assert.equal(t.internal, false);
+  });
+
+  it('internal mode: baseUrl+path with project_id query param, auth-only headers, no Authorization', () => {
+    const t = resolveExportTarget('https://internal.example', 'ignored', sdkHeaders, {
+      path: '/api/v1/internal/traces',
+      projectId: 'proj_123',
+      headers: { 'X-Internal-Secret': 's3cr3t' },
+    });
+    assert.equal(t.url, 'https://internal.example/api/v1/internal/traces?project_id=proj_123');
+    assert.equal(t.headers['X-Internal-Secret'], 's3cr3t');
+    assert.equal(t.headers['x-traceroot-sdk-name'], 'traceroot-ts');
+    assert.equal(Object.prototype.hasOwnProperty.call(t.headers, 'Authorization'), false);
+    assert.equal(t.internal, true);
+  });
+
+  it('URL-encodes the projectId', () => {
+    const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
+      path: '/i',
+      projectId: 'p 1/2',
+    });
+    assert.equal(t.url, 'https://h/i?project_id=p%201%2F2');
+  });
+
+  it('appends with & when the path already carries a query string', () => {
+    const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
+      path: '/i?tenant=t1',
+      projectId: 'p',
+    });
+    assert.equal(t.url, 'https://h/i?tenant=t1&project_id=p');
+  });
+
+  it('SDK identity headers win over caller-supplied collisions', () => {
+    const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
+      path: '/i',
+      projectId: 'p',
+      headers: { 'x-traceroot-sdk-name': 'imposter' },
+    });
+    assert.equal(t.headers['x-traceroot-sdk-name'], 'traceroot-ts');
+  });
+});
+
+describe('internal export mode init', () => {
+  const FORCED = '11111111111111111111111111111111';
+
+  afterEach(() => {
+    _resetForTesting();
+  });
+
+  it('isInternalMode() is false in public mode', () => {
+    TraceRoot.initialize({ apiKey: 'k', disableBatch: true });
+    assert.equal(isInternalMode(), false);
+  });
+
+  it('isInternalMode() is true after internal init, false after reset', () => {
+    TraceRoot.initialize({
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'proj_1' },
+    });
+    assert.equal(isInternalMode(), true);
+    _resetForTesting();
+    assert.equal(isInternalMode(), false);
+  });
+
+  it('wires the resolved target into the exporter config (public regression + internal)', () => {
+    TraceRoot.initialize({ apiKey: 'k', disableBatch: true });
+    let t = _getExportTargetForTesting();
+    assert.ok(t);
+    assert.ok(t.url.endsWith('/api/v1/public/traces'));
+    assert.equal(t.headers['Authorization'], 'Bearer k');
+    _resetForTesting();
+
+    TraceRoot.initialize({
+      internalExport: {
+        path: '/api/v1/internal/traces',
+        projectId: 'proj_1',
+        headers: { 'X-Internal-Secret': 's' },
+      },
+    });
+    t = _getExportTargetForTesting();
+    assert.ok(t);
+    assert.ok(t.url.endsWith('/api/v1/internal/traces?project_id=proj_1'));
+    assert.equal(t.headers['X-Internal-Secret'], 's');
+    assert.equal(Object.prototype.hasOwnProperty.call(t.headers, 'Authorization'), false);
+  });
+
+  it('does not warn about a missing API key in internal mode', () => {
+    const messages: string[] = [];
+    const restore = console.warn;
+    console.warn = (...a: unknown[]) => {
+      messages.push(a.map(String).join(' '));
+    };
+    try {
+      TraceRoot.initialize({
+        internalExport: { path: '/api/v1/internal/traces', projectId: 'proj_1' },
+      });
+    } finally {
+      console.warn = restore;
+    }
+    assert.equal(
+      messages.some((m) => m.includes('No API key')),
+      false,
+    );
+  });
+
+  it('installs the forcing generator in internal mode only (defense in depth)', () => {
+    // Internal init: the globally registered provider carries ContextIdGenerator,
+    // so a root created inside a forced scope gets the forced id. Default batching
+    // means these spans are buffered and never exported — no network.
+    TraceRoot.initialize({
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    const forced = withForcedTraceId(FORCED, () => trace.getTracer('t').startSpan('root'));
+    assert.equal(forced.spanContext().traceId, FORCED);
+    forced.end();
+    _resetForTesting();
+
+    // Public init: no ContextIdGenerator — even a bypassed gate cannot force.
+    TraceRoot.initialize({ apiKey: 'k' });
+    const unforced = withForcedTraceId(FORCED, () => trace.getTracer('t').startSpan('root'));
+    assert.notEqual(unforced.spanContext().traceId, FORCED);
+    unforced.end();
   });
 });
