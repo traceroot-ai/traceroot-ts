@@ -243,6 +243,49 @@ describe('forcing lifecycle across shutdown()', () => {
   });
 });
 
+describe('forcing failure detection (foreign global provider)', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+
+  before(() => {
+    exporter = new InMemorySpanExporter();
+    // A provider the APPLICATION registered first — default id generator, no
+    // ContextIdGenerator — so TraceRoot's provider never becomes global and
+    // forced ids cannot be applied.
+    provider = new NodeTracerProvider();
+    provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+    provider.register();
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+  });
+
+  after(async () => {
+    await teardownHarness(provider);
+  });
+
+  it('warns once when the forced id is not applied, and spans still record', async () => {
+    const messages: string[] = [];
+    const restore = console.warn;
+    console.warn = (...a: unknown[]) => {
+      messages.push(a.map(String).join(' '));
+    };
+    let root;
+    try {
+      root = startSpan({ name: 'run', traceId: RUN_A });
+      root.end();
+      await observe({ name: 'run2', traceId: RUN_B }, async () => 'ok');
+    } finally {
+      console.warn = restore;
+    }
+    assert.notEqual(root.traceId, RUN_A);
+    const warned = messages.filter((m) => m.includes('forced traceId was not applied'));
+    assert.equal(warned.length, 1, 'warn-once across both entry points');
+    assert.equal(exporter.getFinishedSpans().length, 2, 'spans still recorded');
+  });
+});
+
 describe('globalAttributes precedence', () => {
   let exporter: InMemorySpanExporter;
   let provider: NodeTracerProvider;

@@ -3,7 +3,12 @@ import { context, ROOT_CONTEXT, Span as OtelSpan, SpanStatusCode, trace } from '
 import { OUTPUT_VALUE } from '@arizeai/openinference-semantic-conventions';
 import { applyCommonAttributes, trySerialize } from './attributes';
 import { ObserveOptions } from './types';
-import { shouldForceTraceId, withForcedTraceId, assertValidTraceId } from './trace-id';
+import {
+  assertValidTraceId,
+  shouldForceTraceId,
+  warnIfForcingFailed,
+  withForcedTraceId,
+} from './trace-id';
 
 // Cached once after the first call; the tracer name never changes.
 let _tracer: ReturnType<typeof trace.getTracer> | undefined;
@@ -126,7 +131,12 @@ async function _observeRegular<A extends unknown[], T>(
   if (forcedId !== undefined && shouldForceTraceId(forcedId)) {
     // ROOT_CONTEXT: an ambient active span would otherwise parent this span and the
     // generator would never be asked for a trace id.
-    return withForcedTraceId(forcedId, () => tracer.startActiveSpan(name, {}, ROOT_CONTEXT, run));
+    return withForcedTraceId(forcedId, () =>
+      tracer.startActiveSpan(name, {}, ROOT_CONTEXT, (span) => {
+        warnIfForcingFailed(forcedId, span);
+        return run(span);
+      }),
+    );
   }
   return tracer.startActiveSpan(name, run);
 }
@@ -148,10 +158,11 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
   _tracer ??= trace.getTracer('traceroot-ts');
   const tracer = _tracer;
   const forcedId = options.traceId;
-  const span =
-    forcedId !== undefined && shouldForceTraceId(forcedId)
-      ? withForcedTraceId(forcedId, () => tracer.startSpan(name, undefined, ROOT_CONTEXT))
-      : tracer.startSpan(name);
+  const force = forcedId !== undefined && shouldForceTraceId(forcedId);
+  const span = force
+    ? withForcedTraceId(forcedId, () => tracer.startSpan(name, undefined, ROOT_CONTEXT))
+    : tracer.startSpan(name);
+  if (force) warnIfForcingFailed(forcedId, span);
 
   if (!span.isRecording()) {
     if (!_hasWarnedUninit) {

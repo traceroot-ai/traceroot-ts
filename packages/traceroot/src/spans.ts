@@ -4,14 +4,16 @@ import { applyCommonAttributes, applyModel, applyUsage, applyIO, trySerialize } 
 import { SPAN_METADATA } from './constants';
 import { StartSpanOptions, SpanUpdate } from './types';
 import { TraceRoot } from './traceroot';
-import { shouldForceTraceId, withForcedTraceId } from './trace-id';
+import { shouldForceTraceId, warnIfForcingFailed, withForcedTraceId } from './trace-id';
 
 export interface Span {
   readonly spanId: string;
   readonly traceId: string;
   update(attrs: SpanUpdate): this;
   end(): void;
-  startSpan(options: Omit<StartSpanOptions, 'parent'>): Span;
+  // traceId is excluded: a child handle always parents to `this`, so forcing a
+  // trace id through it can never work — reject it at the type level.
+  startSpan(options: Omit<StartSpanOptions, 'parent' | 'traceId'>): Span;
   setError(err: unknown): this;
 }
 
@@ -40,7 +42,7 @@ class TracerootSpan implements Span {
   end(): void {
     this.otelSpan.end();
   }
-  startSpan(options: Omit<StartSpanOptions, 'parent'>): Span {
+  startSpan(options: Omit<StartSpanOptions, 'parent' | 'traceId'>): Span {
     return startSpan({ ...options, parent: this });
   }
   setError(err: unknown): this {
@@ -86,6 +88,7 @@ export function startSpan(options: StartSpanOptions): Span {
     otel = withForcedTraceId(forcedId, () =>
       tracer.startSpan(options.name, undefined, ROOT_CONTEXT),
     );
+    warnIfForcingFailed(forcedId, otel);
   } else {
     const parentOtel = options.parent ? (options.parent as TracerootSpan).otelSpan : undefined;
     const ctx = parentOtel ? trace.setSpan(context.active(), parentOtel) : context.active();

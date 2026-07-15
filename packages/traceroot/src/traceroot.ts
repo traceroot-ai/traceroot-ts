@@ -25,7 +25,7 @@ import {
   gitContextFromFiles,
   _resetGitContextCache,
 } from './git_context';
-import { ContextIdGenerator, _setInternalMode } from './trace-id';
+import { ContextIdGenerator, _resetTraceIdState, _setInternalMode } from './trace-id';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
@@ -246,6 +246,7 @@ export function _resetForTesting(): void {
   _provider = undefined;
   _exportTarget = undefined;
   _setInternalMode(false);
+  _resetTraceIdState();
   _resetObserveState();
   _resetGitContextCache();
   trace.disable();

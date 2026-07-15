@@ -6,6 +6,7 @@
 // traceroot.ts — because observe.ts must read it and traceroot.ts already imports
 // from observe.ts; a static import in the other direction would be a require cycle.
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { Span } from '@opentelemetry/api';
 import { IdGenerator, RandomIdGenerator } from '@opentelemetry/sdk-trace-base';
 
 const HEX32 = /^[0-9a-f]{32}$/;
@@ -13,6 +14,7 @@ const INVALID_TRACE_ID = '00000000000000000000000000000000';
 
 const _forcedTraceId = new AsyncLocalStorage<string>();
 let _internalMode = false;
+let _hasWarnedForceFailed = false;
 
 /** Throws TypeError unless `traceId` is a lowercase 32-hex string (not the zero sentinel). */
 export function assertValidTraceId(traceId: string): void {
@@ -63,6 +65,23 @@ export function shouldForceTraceId(traceId: string): boolean {
   return true;
 }
 
+/**
+ * Warn (once per process) when a span that should carry a forced trace id came out
+ * with a different one. This happens when the globally registered tracer provider
+ * does not use ContextIdGenerator — e.g. the application registered its own OTel
+ * provider before TraceRoot.initialize(), whose register() then lost the race.
+ * Spans are still recorded, just with random trace ids.
+ */
+export function warnIfForcingFailed(expected: string, span: Span): void {
+  if (span.spanContext().traceId === expected || _hasWarnedForceFailed) return;
+  _hasWarnedForceFailed = true;
+  console.warn(
+    '[TraceRoot] forced traceId was not applied: the global tracer provider does not use ' +
+      "TraceRoot's id generator (was another provider registered before TraceRoot.initialize()?). " +
+      'Spans will get random trace ids.',
+  );
+}
+
 export function isInternalMode(): boolean {
   return _internalMode;
 }
@@ -70,4 +89,9 @@ export function isInternalMode(): boolean {
 /** @internal — set by TraceRoot.initialize()/shutdown() and test resets. */
 export function _setInternalMode(v: boolean): void {
   _internalMode = v;
+}
+
+/** @internal — reset warn-once state between tests. */
+export function _resetTraceIdState(): void {
+  _hasWarnedForceFailed = false;
 }

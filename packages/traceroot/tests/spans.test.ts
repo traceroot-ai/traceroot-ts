@@ -445,6 +445,20 @@ describe('startSpan() trace-id forcing', () => {
     parent.end();
   });
 
+  it('child handles reject traceId at the type level (and at runtime)', () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    const parent = startSpan({ name: 'parent' });
+    assert.throws(
+      // @ts-expect-error traceId is excluded from child-handle startSpan options
+      () => parent.startSpan({ name: 'child', traceId: FORCED }),
+      TypeError,
+    );
+    parent.end();
+  });
+
   it('throws on a malformed forced id', () => {
     TraceRoot.initialize({
       disableBatch: true,
