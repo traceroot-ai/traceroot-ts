@@ -9,7 +9,7 @@ import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-tr
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
 import { TraceRootSpanProcessor } from '../src/processor';
-import { ContextIdGenerator } from '../src/trace-id';
+import { ContextIdGenerator, _resetTraceIdState } from '../src/trace-id';
 import { startSpan, usingSpan, _resetSpansState } from '../src/spans';
 import { observe } from '../src/observe';
 
@@ -225,6 +225,7 @@ describe('forcing lifecycle across shutdown()', () => {
 
   it('forcing stops being honored after shutdown()', async () => {
     await TraceRoot.shutdown();
+    _resetTraceIdState(); // order-independence: the warn-once flag may be set by earlier tests
     const messages: string[] = [];
     const restore = console.warn;
     console.warn = (...a: unknown[]) => {

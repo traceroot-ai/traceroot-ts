@@ -6,6 +6,7 @@ import {
   isInternalMode,
   shouldForceTraceId,
   withForcedTraceId,
+  _resetTraceIdState,
   _setInternalMode,
 } from '../src/trace-id';
 
@@ -75,6 +76,7 @@ describe('ContextIdGenerator', () => {
 describe('shouldForceTraceId() gating', () => {
   afterEach(() => {
     _setInternalMode(false);
+    _resetTraceIdState();
   });
 
   it('returns true in internal mode', () => {
@@ -100,6 +102,22 @@ describe('shouldForceTraceId() gating', () => {
 
   it('validates before gating: malformed id throws even outside internal mode', () => {
     assert.throws(() => shouldForceTraceId('nope'), TypeError);
+  });
+
+  it('warns only once for repeated ignored forced ids', () => {
+    const messages: string[] = [];
+    const restore = console.warn;
+    console.warn = (...a: unknown[]) => {
+      messages.push(a.map(String).join(' '));
+    };
+    try {
+      shouldForceTraceId(VALID);
+      shouldForceTraceId(VALID);
+      shouldForceTraceId(VALID);
+    } finally {
+      console.warn = restore;
+    }
+    assert.equal(messages.filter((m) => m.includes('internal export mode')).length, 1);
   });
 
   it('isInternalMode() reflects the setter', () => {

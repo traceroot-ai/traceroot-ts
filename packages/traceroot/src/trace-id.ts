@@ -15,6 +15,7 @@ const INVALID_TRACE_ID = '00000000000000000000000000000000';
 const _forcedTraceId = new AsyncLocalStorage<string>();
 let _internalMode = false;
 let _hasWarnedForceFailed = false;
+let _hasWarnedPublicIgnore = false;
 
 /** Throws TypeError unless `traceId` is a lowercase 32-hex string (not the zero sentinel). */
 export function assertValidTraceId(traceId: string): void {
@@ -57,9 +58,14 @@ export function withForcedTraceId<T>(traceId: string, fn: () => T): T {
 export function shouldForceTraceId(traceId: string): boolean {
   assertValidTraceId(traceId);
   if (!_internalMode) {
-    console.warn(
-      '[TraceRoot] traceId forcing is only honored in internal export mode; ignoring forced id.',
-    );
+    // Warn once per process: a misconfigured caller passing traceId on every
+    // span would otherwise spam the log with an identical message.
+    if (!_hasWarnedPublicIgnore) {
+      _hasWarnedPublicIgnore = true;
+      console.warn(
+        '[TraceRoot] traceId forcing is only honored in internal export mode; ignoring forced id.',
+      );
+    }
     return false;
   }
   return true;
@@ -94,4 +100,5 @@ export function _setInternalMode(v: boolean): void {
 /** @internal — reset warn-once state between tests. */
 export function _resetTraceIdState(): void {
   _hasWarnedForceFailed = false;
+  _hasWarnedPublicIgnore = false;
 }
