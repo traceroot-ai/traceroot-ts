@@ -335,6 +335,18 @@ describe('resolveExportTarget()', () => {
     });
     assert.equal(t.headers['x-traceroot-sdk-name'], 'traceroot-ts');
   });
+
+  it('preserves multiple custom headers alongside SDK headers', () => {
+    const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
+      path: '/i',
+      projectId: 'p',
+      headers: { 'X-Internal-Secret': 's', 'X-Trace-Origin': 'worker', 'X-Region': 'us-east-1' },
+    });
+    assert.equal(t.headers['X-Internal-Secret'], 's');
+    assert.equal(t.headers['X-Trace-Origin'], 'worker');
+    assert.equal(t.headers['X-Region'], 'us-east-1');
+    assert.equal(t.headers['x-traceroot-sdk-version'], '9.9.9');
+  });
 });
 
 describe('internal export mode init', () => {

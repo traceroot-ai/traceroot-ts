@@ -108,3 +108,34 @@ describe('shouldForceTraceId() gating', () => {
     assert.equal(isInternalMode(), true);
   });
 });
+
+describe('assertValidTraceId() edge cases', () => {
+  it('rejects ids with surrounding whitespace', () => {
+    assert.throws(() => assertValidTraceId(` ${'a'.repeat(31)}`), TypeError);
+    assert.throws(() => assertValidTraceId(`${'a'.repeat(31)} `), TypeError);
+  });
+
+  it('rejects 0x-prefixed ids', () => {
+    assert.throws(() => assertValidTraceId(`0x${'a'.repeat(30)}`), TypeError);
+  });
+});
+
+describe('withForcedTraceId() nesting', () => {
+  const A = 'a'.repeat(32);
+  const B = 'b'.repeat(32);
+
+  it('innermost nested forced scope wins', () => {
+    const g = new ContextIdGenerator();
+    const got = withForcedTraceId(A, () => withForcedTraceId(B, () => g.generateTraceId()));
+    assert.equal(got, B);
+  });
+
+  it('outer forced scope is restored after the inner scope exits', () => {
+    const g = new ContextIdGenerator();
+    const got = withForcedTraceId(A, () => {
+      withForcedTraceId(B, () => g.generateTraceId());
+      return g.generateTraceId();
+    });
+    assert.equal(got, A);
+  });
+});
