@@ -301,33 +301,30 @@ describe('resolveExportTarget()', () => {
     assert.equal(t.internal, false);
   });
 
-  it('internal mode: baseUrl+path with project_id query param, auth-only headers, no Authorization', () => {
+  it('internal mode: bare baseUrl+path with X-Project-Id header, no Authorization', () => {
+    // The OTLP exporter strips query strings from its endpoint URL, so the URL
+    // must stay query-free and the project id must ride as a header.
     const t = resolveExportTarget('https://internal.example', 'ignored', sdkHeaders, {
       path: '/api/v1/internal/traces',
       projectId: 'proj_123',
       headers: { 'X-Internal-Secret': 's3cr3t' },
     });
-    assert.equal(t.url, 'https://internal.example/api/v1/internal/traces?project_id=proj_123');
+    assert.equal(t.url, 'https://internal.example/api/v1/internal/traces');
+    assert.equal(t.url.includes('?'), false);
+    assert.equal(t.headers['X-Project-Id'], 'proj_123');
     assert.equal(t.headers['X-Internal-Secret'], 's3cr3t');
     assert.equal(t.headers['x-traceroot-sdk-name'], 'traceroot-ts');
     assert.equal(Object.prototype.hasOwnProperty.call(t.headers, 'Authorization'), false);
     assert.equal(t.internal, true);
   });
 
-  it('URL-encodes the projectId', () => {
+  it('caller-supplied X-Project-Id overrides the projectId option (pinned ordering)', () => {
     const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
       path: '/i',
-      projectId: 'p 1/2',
+      projectId: 'from-option',
+      headers: { 'X-Project-Id': 'from-headers' },
     });
-    assert.equal(t.url, 'https://h/i?project_id=p%201%2F2');
-  });
-
-  it('appends with & when the path already carries a query string', () => {
-    const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
-      path: '/i?tenant=t1',
-      projectId: 'p',
-    });
-    assert.equal(t.url, 'https://h/i?tenant=t1&project_id=p');
+    assert.equal(t.headers['X-Project-Id'], 'from-headers');
   });
 
   it('SDK identity headers win over caller-supplied collisions', () => {
@@ -378,7 +375,8 @@ describe('internal export mode init', () => {
     });
     t = _getExportTargetForTesting();
     assert.ok(t);
-    assert.ok(t.url.endsWith('/api/v1/internal/traces?project_id=proj_1'));
+    assert.ok(t.url.endsWith('/api/v1/internal/traces'));
+    assert.equal(t.headers['X-Project-Id'], 'proj_1');
     assert.equal(t.headers['X-Internal-Secret'], 's');
     assert.equal(Object.prototype.hasOwnProperty.call(t.headers, 'Authorization'), false);
   });

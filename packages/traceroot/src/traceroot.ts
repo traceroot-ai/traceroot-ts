@@ -41,9 +41,9 @@ export interface ExportTarget {
 
 /**
  * Resolve the OTLP export URL + headers. Public mode targets the public traces route
- * with Bearer auth; internal mode targets baseUrl+path with project_id as a query
- * parameter and auth-only headers (no Authorization). SDK identity headers always win
- * on collision with caller-supplied headers.
+ * with Bearer auth; internal mode targets the bare baseUrl+path with the project id in
+ * an X-Project-Id header (no Authorization; a caller-supplied X-Project-Id overrides
+ * the option). SDK identity headers always win on collision with caller-supplied headers.
  */
 export function resolveExportTarget(
   baseUrl: string,
@@ -52,10 +52,15 @@ export function resolveExportTarget(
   internalExport: InitializeOptions['internalExport'],
 ): ExportTarget {
   if (internalExport) {
-    const sep = internalExport.path.includes('?') ? '&' : '?';
+    // The OTLP exporter strips query strings from its endpoint URL, so the
+    // project id travels as a header (the route accepts X-Project-Id).
     return {
-      url: `${baseUrl}${internalExport.path}${sep}project_id=${encodeURIComponent(internalExport.projectId)}`,
-      headers: { ...(internalExport.headers ?? {}), ...sdkHeaders },
+      url: `${baseUrl}${internalExport.path}`,
+      headers: {
+        'X-Project-Id': internalExport.projectId,
+        ...(internalExport.headers ?? {}),
+        ...sdkHeaders,
+      },
       internal: true,
     };
   }
@@ -214,6 +219,13 @@ export class TraceRoot {
     });
   }
 
+  /**
+   * Flush buffered spans to the exporter. In batched mode (the default) this rejects
+   * if an in-flight export failed (e.g. the ingest route returned an error status) —
+   * callers whose work must never fail on a bad emit should catch the rejection
+   * themselves. With `disableBatch` the simple processor routes export failures to
+   * the OTel global error handler instead, and flush() resolves.
+   */
   static async flush(): Promise<void> {
     await _provider?.forceFlush();
   }
