@@ -41,6 +41,7 @@ const TR_ATTRIBUTES = {
   // Span path keys must match TraceRootSpanProcessor (packages/traceroot/src/processor.ts).
   SPAN_PATH: 'traceroot.span.path',
   SPAN_IDS_PATH: 'traceroot.span.ids_path',
+  SPAN_STARTS_PATH: 'traceroot.span.starts_path',
   SDK_NAME: 'traceroot.sdk.name',
   SDK_VERSION: 'traceroot.sdk.version',
   METADATA_PREFIX: 'traceroot.metadata',
@@ -145,6 +146,16 @@ export class TraceRootExporter extends BaseExporter {
   private _namePathBySpanId = new Map<string, string[]>();
   private _idsPathBySpanId = new Map<string, string[]>();
 
+  // Span start times map: M[X] stores the start times of the chain root→X INCLUDING X itself.
+  // Unlike idsPathBySpanId (which stores ancestors only), this map stores including self,
+  // so emitted starts_path(S) = M[parentSpanId] (ancestors), stored M[S] = [...M[parent], S.ownStartNs].
+  // This asymmetry is necessary because trackSpanStart(span) only receives the current span
+  // and has no direct access to the parent object, so it cannot read the parent's startTime.
+  // Mastra's Date provides millisecond precision; we encode as ms→ns: `${ms * 1000000}` via
+  // string concatenation to avoid Number.MAX_SAFE_INTEGER overflow (epoch-ns ≈ 1.7e18 > 9e15).
+  // Keyed by spanId; populated on SPAN_STARTED, consumed on SPAN_ENDED, deleted after export.
+  private _startsPathBySpanId = new Map<string, string[]>();
+
   private resource?: Resource;
   private scope?: InstrumentationScope;
   private processor?: BatchSpanProcessor | SimpleSpanProcessor;
@@ -232,6 +243,7 @@ export class TraceRootExporter extends BaseExporter {
     const parentSpanId = span.parentSpanId;
     const parentNamePath = parentSpanId ? this._namePathBySpanId.get(parentSpanId) : undefined;
     const parentIdsPath = parentSpanId ? this._idsPathBySpanId.get(parentSpanId) : undefined;
+    const parentStartsPath = parentSpanId ? this._startsPathBySpanId.get(parentSpanId) : undefined;
 
     const namePath: string[] = parentNamePath ? [...parentNamePath, span.name] : [span.name];
     const normalizedParentSpanId =
@@ -242,8 +254,27 @@ export class TraceRootExporter extends BaseExporter {
         : [normalizedParentSpanId]
       : [];
 
+    // Compute start times path: M[X] = start times of chain root→X INCLUDING X itself.
+    // The map stores including self (asymmetric with idsPath which stores ancestors only),
+    // so emitted starts_path(S) = M[S].slice(0, -1) (ancestors), stored M[S] = [...M[parent], S.ownStartNs].
+    // We store including self so children can access the parent's time when constructing their chain.
+    // Gate on parentNamePath to match the ids_path logic exactly:
+    // if parent is untracked (parentNamePath undefined), store only self.
+    // Mastra Date is millisecond precision; encode as nanoseconds via string concatenation:
+    // ms→ns = ms * 1_000_000, expressed as `${ms}000000` to avoid overflow.
+    const ownStartNs = `${span.startTime.getTime()}000000`;
+    // Store the full chain including self: [...M[parent], self]
+    // For root (parentNamePath falsy): store [ownStartNs]
+    // For child (parentNamePath truthy): store [...parentStartsPath, ownStartNs]
+    const startsPathWithSelf: string[] = parentNamePath
+      ? parentStartsPath
+        ? [...parentStartsPath, ownStartNs]
+        : [ownStartNs]
+      : [ownStartNs];
+
     this._namePathBySpanId.set(span.id, namePath);
     this._idsPathBySpanId.set(span.id, idsPath);
+    this._startsPathBySpanId.set(span.id, startsPathWithSelf);
   }
 
   private async handleSpanEnded(span: AnyExportedSpan): Promise<void> {
@@ -257,11 +288,15 @@ export class TraceRootExporter extends BaseExporter {
     state.lastTouched = Date.now();
 
     // Capture paths before the finally block cleans the maps.
+    // startsPathFull stores the full chain including self; we emit ancestors only.
     const namePath = this._namePathBySpanId.get(span.id);
     const idsPath = this._idsPathBySpanId.get(span.id);
+    const startsPathFull = this._startsPathBySpanId.get(span.id);
+    // Emit ancestors only (drop the last element which is self)
+    const startsPath = startsPathFull ? startsPathFull.slice(0, -1) : undefined;
 
     try {
-      const otelSpan = this.convertToOtelSpan(span, namePath, idsPath);
+      const otelSpan = this.convertToOtelSpan(span, namePath, idsPath, startsPath);
       this.processor.onEnd(otelSpan);
 
       if (this.resolvedConfig.realtime) {
@@ -281,6 +316,7 @@ export class TraceRootExporter extends BaseExporter {
       }
       this._namePathBySpanId.delete(span.id);
       this._idsPathBySpanId.delete(span.id);
+      this._startsPathBySpanId.delete(span.id);
     }
   }
 
@@ -295,6 +331,7 @@ export class TraceRootExporter extends BaseExporter {
         for (const orphanId of state.knownSpanIds) {
           this._namePathBySpanId.delete(orphanId);
           this._idsPathBySpanId.delete(orphanId);
+          this._startsPathBySpanId.delete(orphanId);
         }
         this.traceMap.delete(traceId);
       }
@@ -325,6 +362,7 @@ export class TraceRootExporter extends BaseExporter {
     span: AnyExportedSpan,
     namePath?: string[],
     idsPath?: string[],
+    startsPath?: string[],
   ): ReadableSpan {
     const resource = this.getResource();
     const instrumentationScope = this.getScope();
@@ -356,7 +394,7 @@ export class TraceRootExporter extends BaseExporter {
       startTime,
       endTime,
       status,
-      attributes: buildTraceRootAttributes(span, namePath, idsPath),
+      attributes: buildTraceRootAttributes(span, namePath, idsPath, startsPath),
       links,
       events,
       duration,
@@ -420,6 +458,7 @@ export class TraceRootExporter extends BaseExporter {
       this.traceMap.clear();
       this._namePathBySpanId.clear();
       this._idsPathBySpanId.clear();
+      this._startsPathBySpanId.clear();
       await super.shutdown();
     }
   }
@@ -433,6 +472,7 @@ function buildTraceRootAttributes(
   span: AnyExportedSpan,
   namePath?: string[],
   idsPath?: string[],
+  startsPath?: string[],
 ): Attributes {
   const attrs: Attributes = {};
 
@@ -486,6 +526,7 @@ function buildTraceRootAttributes(
   // Mirrors the Map-based path propagation in TraceRootSpanProcessor (PR #71).
   if (namePath !== undefined) attrs[TR_ATTRIBUTES.SPAN_PATH] = namePath;
   if (idsPath !== undefined) attrs[TR_ATTRIBUTES.SPAN_IDS_PATH] = idsPath;
+  if (startsPath !== undefined) attrs[TR_ATTRIBUTES.SPAN_STARTS_PATH] = startsPath;
 
   return attrs;
 }

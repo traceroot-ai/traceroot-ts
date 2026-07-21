@@ -30,6 +30,11 @@ export class TraceRootSpanProcessor implements SpanProcessor {
   // what OpenInference produces for LangGraph-instrumented node spans.
   private readonly _idsPathBySpanId = new Map<string, string[]>();
   private readonly _namePathBySpanId = new Map<string, string[]>();
+  // Keyed by spanId. Stores the full ancestor chain start times INCLUDING self.
+  // Used to emit starts_path on children (ancestors only), mirroring ids_path behavior.
+  // Unlike ids_path, this must store self because parent may be a NonRecordingSpan
+  // with no reachable startTime attribute — map-based lookup is the only path to root.
+  private readonly _startsPathBySpanId = new Map<string, string[]>();
 
   constructor(
     inner: SpanProcessor, // ← WIDENED
@@ -87,6 +92,64 @@ export class TraceRootSpanProcessor implements SpanProcessor {
       (parentSpanId && this._idsPathBySpanId.get(parentSpanId)) ||
       (parentSpan?.attributes?.['traceroot.span.ids_path'] as string[] | undefined);
 
+    // Read startTime (OTel HrTime = [seconds, nanoseconds]). Like name and parentSpanId,
+    // startTime is a stable internal SDK field not on the public @opentelemetry/api interface.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const spanStartTime: [number, number] | undefined = (span as any).startTime as
+      | [number, number]
+      | undefined;
+
+    // Encode HrTime to epoch nanoseconds as a string to avoid Number precision loss.
+    // MAX_SAFE_INTEGER (~9.0e15) < current epoch-ns (~1.7e18), so arithmetic is unsafe.
+    // STRING concatenation preserves all 19 digits: seconds (10 digits) + nanos (9 digits).
+    let spanStartTimeNs: string = '';
+    if (spanStartTime && spanStartTime.length >= 2) {
+      const [seconds, nanos] = spanStartTime;
+      spanStartTimeNs = `${seconds}${String(nanos).padStart(9, '0')}`;
+    }
+
+    // Fetch parent's full start chain (root→parent, INCLUDING parent's own start).
+    // Prefer the map (for NonRecordingSpan parents) over span attributes.
+    // CRITICAL: map and attribute values are asymmetric:
+    //   - map[P] = [root_start, ..., parent_start]         (incl-self)
+    //   - attribute = [root_start, ...]                     (ancestors only, excl-self)
+    // If attribute fallback fires (parent ended/deleted from map), reconstruct the
+    // incl-self value by appending the parent's own encoded start time.
+    // If parent's startTime is not readable, treat fallback as unavailable to avoid
+    // emitting a misaligned array that would break frontend index-pairing with ids_path.
+    let parentStartsPath: string[] | undefined = parentSpanId
+      ? this._startsPathBySpanId.get(parentSpanId)
+      : undefined;
+    if (!parentStartsPath && parentSpan) {
+      // Validate at runtime: `attributes` is an untrusted boundary. Any instrumented
+      // application can set `traceroot.span.starts_path` to any AttributeValue, and the
+      // `as string[]` cast that used to sit here is erased at compile time — it checks
+      // nothing. Spreading a non-iterable (number, null, object) throws a TypeError
+      // inside onStart, which runs synchronously within the caller's startSpan(), so the
+      // exception surfaces as a crash in application code rather than a dropped span.
+      // Require a homogeneous string array so we also never propagate a value that
+      // violates the emitted contract downstream.
+      const rawAncestors = parentSpan.attributes?.['traceroot.span.starts_path'];
+      const attributeAncestors: string[] | undefined =
+        Array.isArray(rawAncestors) && rawAncestors.every((entry) => typeof entry === 'string')
+          ? (rawAncestors as string[])
+          : undefined;
+      if (attributeAncestors !== undefined) {
+        // Reconstruct full chain by appending parent's own start time
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const parentStartTime: [number, number] | undefined = (parentSpan as any).startTime as
+          | [number, number]
+          | undefined;
+        if (parentStartTime && parentStartTime.length >= 2) {
+          const [parentSeconds, parentNanos] = parentStartTime;
+          const parentStartTimeNs = `${parentSeconds}${String(parentNanos).padStart(9, '0')}`;
+          parentStartsPath = [...attributeAncestors, parentStartTimeNs];
+        }
+        // If parent's startTime is not readable, treat fallback as unavailable (safer than
+        // emitting a misaligned array that would pair wrong starts with wrong ancestor ids)
+      }
+    }
+
     const spanPath: string[] = parentPath ? [...parentPath, spanName] : [spanName];
     // Gate on parentPath (not just parentSpanId) so path and ids_path stay in sync:
     // if path resolution failed (map miss + NonRecordingSpan), treat this span as a
@@ -98,8 +161,23 @@ export class TraceRootSpanProcessor implements SpanProcessor {
           : [parentSpanId]
         : [];
 
+    // Build starts_path for emission (ancestors only, matching ids_path gating exactly).
+    // Invariant: starts_path.length must equal ids_path.length. This means:
+    // - If ids_path is [], emit []. If parent resolution failed and ids_path = [], emit [].
+    // - If ids_path has items, emit parentStartsPath (which has len(parentIds) items).
+    // We store the full chain (root→self) in the map for descendants, but emit ancestors only.
+    let spanStartsPath: string[] = parentPath && parentSpanId ? parentStartsPath || [] : [];
+
+    // EXPLICIT ALIGNMENT GUARD: defend the frontend's index-pairing assumption against
+    // any future divergence between ids_path and starts_path code paths. If lengths don't
+    // match, degrade to [] to prevent applying wrong starts to wrong ancestor ids.
+    if (spanStartsPath.length !== spanIdsPath.length) {
+      spanStartsPath = [];
+    }
+
     span.setAttribute('traceroot.span.path', spanPath);
     span.setAttribute('traceroot.span.ids_path', spanIdsPath);
+    span.setAttribute('traceroot.span.starts_path', spanStartsPath);
 
     // Store paths so descendant spans can inherit them via map lookup.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -108,6 +186,12 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     if (spanId) {
       this._namePathBySpanId.set(spanId, spanPath);
       this._idsPathBySpanId.set(spanId, spanIdsPath);
+      // Append this span's start time to get the full chain (root→self) for descendant lookup.
+      // If start time encoding failed (unlikely), store just the ancestors so map still works.
+      const fullStartsChain: string[] = spanStartTimeNs
+        ? [...spanStartsPath, spanStartTimeNs]
+        : spanStartsPath;
+      this._startsPathBySpanId.set(spanId, fullStartsChain);
     }
 
     // Cast required: inner processor expects the internal sdk-trace-base Span,
@@ -123,6 +207,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     const spanId = span.spanContext().spanId;
     this._idsPathBySpanId.delete(spanId);
     this._namePathBySpanId.delete(spanId);
+    this._startsPathBySpanId.delete(spanId);
     this.inner.onEnd(span);
   }
 
