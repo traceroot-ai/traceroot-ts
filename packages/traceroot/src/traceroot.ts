@@ -122,8 +122,6 @@ export class TraceRoot {
       'x-traceroot-sdk-version': SDK_VERSION,
     };
     const target = resolveExportTarget(baseUrl, apiKey, sdkHeaders, options.internalExport);
-    _exportTarget = target;
-    _setInternalMode(target.internal);
 
     const exporter = new OTLPTraceExporter({
       url: target.url,
@@ -213,6 +211,11 @@ export class TraceRoot {
 
     wireInstrumentations(options.instrumentModules);
 
+    // Flip trusted-mode state only now that every fallible step above has
+    // succeeded — a failed init must not leave forced-trace-id behavior
+    // (or a stale _exportTarget) enabled while isInitialized() is false.
+    _exportTarget = target;
+    _setInternalMode(target.internal);
     _isInitialized = true;
     process.once('beforeExit', () => {
       void _provider?.forceFlush();
@@ -231,12 +234,17 @@ export class TraceRoot {
   }
 
   static async shutdown(): Promise<void> {
-    await _provider?.shutdown();
-    _isInitialized = false;
-    _provider = undefined;
-    _exportTarget = undefined;
-    _setInternalMode(false);
-    _resetObserveState();
+    try {
+      await _provider?.shutdown();
+    } finally {
+      // Reset even when shutdown() rejects (e.g. a flush failure) — otherwise
+      // the SDK is left claiming to be initialized with internal mode still on.
+      _isInitialized = false;
+      _provider = undefined;
+      _exportTarget = undefined;
+      _setInternalMode(false);
+      _resetObserveState();
+    }
   }
 }
 
