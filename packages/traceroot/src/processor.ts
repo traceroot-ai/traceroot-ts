@@ -1,6 +1,7 @@
 // src/processor.ts
 import { trace as otelTrace, Context, Span } from '@opentelemetry/api';
 import { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { PROJECT_ID_ATTR, projectIdFromContext } from './project-id';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json') as { version: string };
@@ -32,6 +33,11 @@ export class TraceRootSpanProcessor implements SpanProcessor {
   // what OpenInference produces for LangGraph-instrumented node spans.
   private readonly _idsPathBySpanId = new Map<string, string[]>();
   private readonly _namePathBySpanId = new Map<string, string[]>();
+
+  // Project id by spanId, so children created from an explicit parent handle —
+  // where the active context does not carry the root's value — still inherit
+  // their root's project id.
+  private readonly _projectIdBySpanId = new Map<string, string>();
 
   constructor(
     inner: SpanProcessor, // ← WIDENED
@@ -85,6 +91,18 @@ export class TraceRootSpanProcessor implements SpanProcessor {
       ((span as any).parentSpanId as string | undefined) ||
       (parentSpan?.spanContext?.()?.spanId as string | undefined);
 
+    // Project attribution: the OTel context the span was started under is primary
+    // (descendants — including auto-instrumented spans — inherit it); the in-process
+    // map covers children created from an explicit parent handle.
+    const projectId =
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (typeof (parentContext as any)?.getValue === 'function'
+        ? projectIdFromContext(parentContext)
+        : undefined) ?? (parentSpanId ? this._projectIdBySpanId.get(parentSpanId) : undefined);
+    if (projectId !== undefined) {
+      span.setAttribute(PROJECT_ID_ATTR, projectId);
+    }
+
     // Prefer the in-process map over span attributes: OpenInference creates
     // LangGraph node spans with a remote/NonRecordingSpan parent that carries
     // no attributes, so reading parentSpan.attributes would give undefined and
@@ -117,6 +135,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     if (spanId) {
       this._namePathBySpanId.set(spanId, spanPath);
       this._idsPathBySpanId.set(spanId, spanIdsPath);
+      if (projectId !== undefined) this._projectIdBySpanId.set(spanId, projectId);
     }
 
     // Cast required: inner processor expects the internal sdk-trace-base Span,
@@ -132,6 +151,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     const spanId = span.spanContext().spanId;
     this._idsPathBySpanId.delete(spanId);
     this._namePathBySpanId.delete(spanId);
+    this._projectIdBySpanId.delete(spanId);
     this.inner.onEnd(span);
   }
 
