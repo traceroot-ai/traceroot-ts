@@ -55,6 +55,16 @@ export function projectIdFromContext(ctx: Context): string | undefined {
   return ctx.getValue(PROJECT_ID_CONTEXT_KEY) as string | undefined;
 }
 
+/**
+ * Return `ctx` with any carried project id removed. Used when a span is created
+ * against an explicit parent handle: an ambient scope from a DIFFERENT root must
+ * not leak its project onto the child — the processor's parent map supplies the
+ * parent's own project id instead.
+ */
+export function contextWithoutProjectId(ctx: Context): Context {
+  return ctx.deleteValue(PROJECT_ID_CONTEXT_KEY);
+}
+
 /** @internal — reset warn-once state between tests. */
 export function _resetProjectIdState(): void {
   _hasWarnedPublicIgnore = false;

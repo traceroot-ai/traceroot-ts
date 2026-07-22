@@ -91,22 +91,21 @@ describe('processor stamping from context', () => {
     assert.equal(childSpan.attributes[PROJECT_ID_ATTR], 'proj-1');
   });
 
-  it('context value wins over the parent map (no cross-stamping between roots)', () => {
+  it('context value wins over the parent map when both are present', () => {
     const tracer = trace.getTracer('t');
-    const rootA = tracer.startSpan('root-a', undefined, contextWithProjectId(ROOT_CONTEXT, 'proj-a'));
-    const rootB = tracer.startSpan('root-b', undefined, contextWithProjectId(ROOT_CONTEXT, 'proj-b'));
-    const childB = tracer.startSpan(
-      'child-b',
+    const root = tracer.startSpan('root', undefined, contextWithProjectId(ROOT_CONTEXT, 'proj-map'));
+    // Child context carries the parent span (map says proj-map) AND an explicit
+    // conflicting value — the context value must win.
+    const child = tracer.startSpan(
+      'child',
       undefined,
-      contextWithProjectId(trace.setSpan(ROOT_CONTEXT, rootB), 'proj-b'),
+      contextWithProjectId(trace.setSpan(ROOT_CONTEXT, root), 'proj-ctx'),
     );
-    childB.end();
-    rootB.end();
-    rootA.end();
+    child.end();
+    root.end();
     const spans = exporter.getFinishedSpans();
-    assert.equal(spans.find((s) => s.name === 'root-a')?.attributes[PROJECT_ID_ATTR], 'proj-a');
-    assert.equal(spans.find((s) => s.name === 'root-b')?.attributes[PROJECT_ID_ATTR], 'proj-b');
-    assert.equal(spans.find((s) => s.name === 'child-b')?.attributes[PROJECT_ID_ATTR], 'proj-b');
+    assert.equal(spans.find((s) => s.name === 'root')?.attributes[PROJECT_ID_ATTR], 'proj-map');
+    assert.equal(spans.find((s) => s.name === 'child')?.attributes[PROJECT_ID_ATTR], 'proj-ctx');
   });
 });
 
@@ -248,6 +247,25 @@ describe('startSpan() multi-project attribution (adapter shape)', () => {
     assert.equal(childSpan.attributes[PROJECT_ID_ATTR], 'proj-1');
     assert.equal(rootSpan.spanContext().traceId, RUN_A);
     assert.equal(rootSpan.parentSpanId, undefined);
+  });
+
+  it('explicit-parent child keeps its own project even inside another project scope', async () => {
+    const rootB = startSpan({ name: 'root-b', traceId: RUN_B, projectId: 'proj-b' });
+    await observe({ name: 'root-a', traceId: RUN_A, projectId: 'proj-a' }, async () => {
+      // A handle from another root, used while proj-a's scope is ambiently active:
+      // the child must stay proj-b — never inherit the ambient proj-a.
+      const child = rootB.startSpan({ name: 'child-b' });
+      child.end();
+    });
+    rootB.end();
+
+    const spans = exporter.getFinishedSpans();
+    const childB = spans.find((s) => s.name === 'child-b');
+    const rootA = spans.find((s) => s.name === 'root-a');
+    assert.ok(childB && rootA);
+    assert.equal(childB.attributes[PROJECT_ID_ATTR], 'proj-b');
+    assert.equal(childB.spanContext().traceId, RUN_B);
+    assert.equal(rootA.attributes[PROJECT_ID_ATTR], 'proj-a');
   });
 });
 

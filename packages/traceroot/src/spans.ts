@@ -12,7 +12,7 @@ import { SPAN_METADATA } from './constants';
 import { StartSpanOptions, SpanUpdate } from './types';
 import { TraceRoot } from './traceroot';
 import { shouldForceTraceId, warnIfForcingFailed, withForcedTraceId } from './trace-id';
-import { contextWithProjectId, shouldAttachProjectId } from './project-id';
+import { contextWithoutProjectId, contextWithProjectId, shouldAttachProjectId } from './project-id';
 
 export interface Span {
   readonly spanId: string;
@@ -111,7 +111,12 @@ export function startSpan(options: StartSpanOptions): Span {
     warnIfForcingFailed(forcedId, otel);
   } else {
     const parentOtel = options.parent ? (options.parent as TracerootSpan).otelSpan : undefined;
-    const ctx = parentOtel ? trace.setSpan(context.active(), parentOtel) : context.active();
+    // Strip any ambient project id when parenting explicitly: a different root's
+    // active scope must not leak onto this child — the processor's parent map
+    // attributes it from the parent's own project id instead.
+    const ctx = parentOtel
+      ? contextWithoutProjectId(trace.setSpan(context.active(), parentOtel))
+      : context.active();
     otel = tracer.startSpan(options.name, undefined, withProjectId(ctx));
   }
   if (!otel.isRecording() && !_hasWarnedUninit) {
