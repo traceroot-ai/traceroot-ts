@@ -92,6 +92,12 @@ export class TraceRoot {
       return;
     }
 
+    if (options.internalExport && !options.internalExport.path.startsWith('/')) {
+      throw new TypeError(
+        `[TraceRoot] internalExport.path must start with '/', got: ${JSON.stringify(options.internalExport.path)}`,
+      );
+    }
+
     const apiKey = options.apiKey ?? process.env['TRACEROOT_API_KEY'];
     if (!apiKey && !options.internalExport) {
       console.warn(
