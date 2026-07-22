@@ -38,6 +38,16 @@ export interface ObserveOptions {
    * Malformed ids throw synchronously.
    */
   traceId?: string;
+  /**
+   * Attribute this span's whole subtree to a project: every descendant span —
+   * including third-party auto-instrumented spans started in the active context —
+   * is stamped with `traceroot.project_id`. Intended for roots (pair with `traceId`);
+   * under an ambient active span the value applies from this span downward, which
+   * splits the trace's project routing — avoid that unless it is exactly what you
+   * mean. Honored ONLY in internal export mode; ignored (with a warning) otherwise.
+   * Malformed values throw synchronously.
+   */
+  projectId?: string;
 }
 
 export interface InitializeOptions {

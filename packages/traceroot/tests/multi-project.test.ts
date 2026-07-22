@@ -12,6 +12,10 @@ import { TraceRootSpanProcessor } from '../src/processor';
 import { ContextIdGenerator, _setInternalMode } from '../src/trace-id';
 import { contextWithProjectId, PROJECT_ID_ATTR } from '../src/project-id';
 import { _resetSpansState } from '../src/spans';
+import { observe } from '../src/observe';
+
+const RUN_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const RUN_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 /**
  * Register an in-memory pipeline mirroring initialize()'s stack, without any real
@@ -103,5 +107,115 @@ describe('processor stamping from context', () => {
     assert.equal(spans.find((s) => s.name === 'root-a')?.attributes[PROJECT_ID_ATTR], 'proj-a');
     assert.equal(spans.find((s) => s.name === 'root-b')?.attributes[PROJECT_ID_ATTR], 'proj-b');
     assert.equal(spans.find((s) => s.name === 'child-b')?.attributes[PROJECT_ID_ATTR], 'proj-b');
+  });
+});
+
+describe('observe() multi-project attribution', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+
+  before(() => {
+    ({ exporter, provider } = registerHarness());
+  });
+  afterEach(() => {
+    exporter.reset();
+  });
+  after(async () => {
+    await teardownHarness(provider);
+  });
+
+  it('stamps every span in the tree, including plain-OTel spans in the active context', async () => {
+    await observe({ name: 'detector-run', traceId: RUN_A, projectId: 'proj-1' }, async () => {
+      // Auto-instrumentation stand-in: a third-party tracer that never sees our API.
+      const plain = trace.getTracer('third-party').startSpan('auto-instr');
+      plain.end();
+      return observe({ name: 'judge-llm', type: 'llm' }, async () => 'verdict');
+    });
+
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 3);
+    for (const s of spans) {
+      assert.equal(s.attributes[PROJECT_ID_ATTR], 'proj-1', `span ${s.name} unattributed`);
+      assert.equal(s.spanContext().traceId, RUN_A);
+    }
+  });
+
+  it('two concurrent roots with different projectIds never cross-stamp', async () => {
+    const run = (runId: string, projectId: string) =>
+      observe({ name: 'detector-run', traceId: runId, projectId }, async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        return observe({ name: 'child' }, async () => 'x');
+      });
+    await Promise.all([run(RUN_A, 'proj-a'), run(RUN_B, 'proj-b')]);
+
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 4);
+    for (const [runId, projectId] of [
+      [RUN_A, 'proj-a'],
+      [RUN_B, 'proj-b'],
+    ] as const) {
+      const group = spans.filter((s) => s.spanContext().traceId === runId);
+      assert.equal(group.length, 2);
+      for (const s of group) assert.equal(s.attributes[PROJECT_ID_ATTR], projectId);
+    }
+  });
+
+  it('projectId works without a forced traceId', async () => {
+    await observe({ name: 'run', projectId: 'proj-1' }, async () => 'ok');
+    const [s] = exporter.getFinishedSpans();
+    assert.equal(s.attributes[PROJECT_ID_ATTR], 'proj-1');
+  });
+
+  it('generator roots attribute their children too', async () => {
+    const gen = observe({ name: 'stream', traceId: RUN_A, projectId: 'proj-1' }, async function* () {
+      yield await observe({ name: 'step' }, async () => 1);
+    });
+    for await (const _ of gen) {
+      void _;
+    }
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 2);
+    for (const s of spans) assert.equal(s.attributes[PROJECT_ID_ATTR], 'proj-1');
+  });
+});
+
+describe('observe() projectId gating and validation', () => {
+  it('public mode: warns once, exports the span without the attribute', async () => {
+    // Harness WITHOUT internal mode: register the pipeline, never flip the flag.
+    const exporter = new InMemorySpanExporter();
+    const provider = new NodeTracerProvider({ idGenerator: new ContextIdGenerator() });
+    provider.addSpanProcessor(
+      new TraceRootSpanProcessor(new SimpleSpanProcessor(exporter), {}),
+    );
+    provider.register();
+    const { mock } = await import('node:test');
+    const warn = mock.method(console, 'warn', () => {});
+    try {
+      await observe({ name: 'run', projectId: 'proj-1' }, async () => 'ok');
+      await observe({ name: 'run2', projectId: 'proj-1' }, async () => 'ok');
+      const spans = exporter.getFinishedSpans();
+      assert.equal(spans.length, 2);
+      for (const s of spans) assert.equal(s.attributes[PROJECT_ID_ATTR], undefined);
+      assert.equal(warn.mock.callCount(), 1);
+    } finally {
+      warn.mock.restore();
+      await teardownHarness(provider);
+    }
+  });
+
+  it('malformed projectId throws synchronously, generator or not', () => {
+    assert.throws(() => observe({ name: 'x', projectId: '' }, async () => 1), TypeError);
+    assert.throws(
+      () => observe({ name: 'x', projectId: 123 as unknown as string }, async () => 1),
+      TypeError,
+    );
+    // Generator body must not need to run for validation to fire.
+    assert.throws(
+      () =>
+        observe({ name: 'x', projectId: '' }, async function* () {
+          yield 1;
+        }),
+      TypeError,
+    );
   });
 });
