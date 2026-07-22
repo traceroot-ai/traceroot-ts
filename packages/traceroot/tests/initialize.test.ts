@@ -8,6 +8,7 @@ import {
   _resetForTesting,
   resolveExportTarget,
   _getExportTargetForTesting,
+  shouldDropUnattributed,
 } from '../src/traceroot';
 import { TraceRootSpanProcessor } from '../src/processor';
 import { isInternalMode, withForcedTraceId } from '../src/trace-id';
@@ -386,6 +387,32 @@ describe('resolveExportTarget()', () => {
       );
       assert.equal(target.headers['X-Project-Id'], 'proj-default');
     });
+  });
+});
+
+describe('shouldDropUnattributed()', () => {
+  it('true when internal, no process-default projectId, and no fallback header', () => {
+    assert.equal(shouldDropUnattributed(true, { path: '/i' }), true);
+  });
+
+  it('false when a process-default projectId is configured', () => {
+    assert.equal(shouldDropUnattributed(true, { path: '/i', projectId: 'proj-1' }), false);
+  });
+
+  it('false when the caller supplies an X-Project-Id fallback header (any casing)', () => {
+    assert.equal(
+      shouldDropUnattributed(true, { path: '/i', headers: { 'X-Project-Id': 'proj-1' } }),
+      false,
+    );
+    assert.equal(
+      shouldDropUnattributed(true, { path: '/i', headers: { 'x-project-id': 'proj-1' } }),
+      false,
+    );
+  });
+
+  it('false when not in internal mode', () => {
+    assert.equal(shouldDropUnattributed(false, { path: '/i' }), false);
+    assert.equal(shouldDropUnattributed(false, undefined), false);
   });
 });
 

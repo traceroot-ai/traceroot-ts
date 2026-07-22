@@ -29,6 +29,20 @@ describe('assertValidProjectId', () => {
     assert.throws(() => assertValidProjectId(undefined), TypeError);
     assert.throws(() => assertValidProjectId(null), TypeError);
   });
+
+  it('throws TypeError (not the underlying error) for a non-string whose toJSON throws', () => {
+    // JSON.stringify() must never be invoked on the raw value for non-strings —
+    // otherwise a poisoned toJSON surfaces as the thrown error instead of TypeError.
+    assert.throws(
+      () =>
+        assertValidProjectId({
+          toJSON() {
+            throw new Error('boom');
+          },
+        }),
+      TypeError,
+    );
+  });
 });
 
 describe('shouldAttachProjectId', () => {

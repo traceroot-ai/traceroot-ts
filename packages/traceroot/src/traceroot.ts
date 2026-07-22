@@ -80,6 +80,26 @@ export function _getExportTargetForTesting(): ExportTarget | undefined {
   return _exportTarget;
 }
 
+/**
+ * Decide whether unattributed spans should be dropped at export. Only when internal
+ * mode has no request-level fallback at all: no process-default projectId AND no
+ * caller-supplied X-Project-Id header (matched case-insensitively — HTTP header
+ * names are case-insensitive, and a caller may spell it however they like via
+ * `internalExport.headers`) — that header is exactly the same fallback the
+ * process-default projectId would have produced, so it must gate the drop the
+ * same way.
+ */
+export function shouldDropUnattributed(
+  internal: boolean,
+  internalExport: InitializeOptions['internalExport'],
+): boolean {
+  if (!internal || internalExport?.projectId !== undefined) return false;
+  const hasCallerProjectHeader = Object.keys(internalExport?.headers ?? {}).some(
+    (h) => h.toLowerCase() === 'x-project-id',
+  );
+  return !hasCallerProjectHeader;
+}
+
 export class TraceRoot {
   private constructor() {}
 
@@ -221,8 +241,7 @@ export class TraceRoot {
         gitRepo,
         gitRef,
         globalAttributes: options.globalAttributes,
-        dropSpansWithoutProjectId:
-          target.internal && options.internalExport?.projectId === undefined,
+        dropSpansWithoutProjectId: shouldDropUnattributed(target.internal, options.internalExport),
       }),
     );
     _provider.register();

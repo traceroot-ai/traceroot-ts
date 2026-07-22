@@ -19,9 +19,13 @@ let _hasWarnedPublicIgnore = false;
 /** Throws TypeError unless `projectId` is a non-empty string. */
 export function assertValidProjectId(projectId: unknown): asserts projectId is string {
   if (typeof projectId !== 'string' || projectId.length === 0) {
-    throw new TypeError(
-      `[TraceRoot] projectId must be a non-empty string, got: ${JSON.stringify(projectId)}`,
-    );
+    // JSON.stringify() only for strings (the empty-string case) — for non-strings,
+    // describe by type instead of stringifying: a caller-controlled object with a
+    // poisoned toJSON()/toString() must never be able to throw a foreign error out
+    // of a synchronous validation helper.
+    const description =
+      typeof projectId === 'string' ? JSON.stringify(projectId) : `a value of type ${typeof projectId}`;
+    throw new TypeError(`[TraceRoot] projectId must be a non-empty string, got: ${description}`);
   }
 }
 
