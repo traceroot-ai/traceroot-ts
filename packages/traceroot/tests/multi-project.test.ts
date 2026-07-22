@@ -11,7 +11,7 @@ import { _resetForTesting } from '../src/traceroot';
 import { TraceRootSpanProcessor } from '../src/processor';
 import { ContextIdGenerator, _setInternalMode } from '../src/trace-id';
 import { contextWithProjectId, PROJECT_ID_ATTR } from '../src/project-id';
-import { _resetSpansState } from '../src/spans';
+import { _resetSpansState, startSpan } from '../src/spans';
 import { observe } from '../src/observe';
 
 const RUN_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -217,5 +217,36 @@ describe('observe() projectId gating and validation', () => {
         }),
       TypeError,
     );
+  });
+});
+
+describe('startSpan() multi-project attribution (adapter shape)', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+
+  before(() => {
+    ({ exporter, provider } = registerHarness());
+  });
+  afterEach(() => {
+    exporter.reset();
+  });
+  after(async () => {
+    await teardownHarness(provider);
+  });
+
+  it('root with forced id + projectId, child handle inherits the attribution', () => {
+    const root = startSpan({ name: 'run', traceId: RUN_A, projectId: 'proj-1' });
+    const child = root.startSpan({ name: 'judge' });
+    child.end();
+    root.end();
+
+    const spans = exporter.getFinishedSpans();
+    const rootSpan = spans.find((s) => s.name === 'run');
+    const childSpan = spans.find((s) => s.name === 'judge');
+    assert.ok(rootSpan && childSpan);
+    assert.equal(rootSpan.attributes[PROJECT_ID_ATTR], 'proj-1');
+    assert.equal(childSpan.attributes[PROJECT_ID_ATTR], 'proj-1');
+    assert.equal(rootSpan.spanContext().traceId, RUN_A);
+    assert.equal(rootSpan.parentSpanId, undefined);
   });
 });

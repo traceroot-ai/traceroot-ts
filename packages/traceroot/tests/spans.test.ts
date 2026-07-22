@@ -467,3 +467,22 @@ describe('startSpan() trace-id forcing', () => {
     assert.throws(() => startSpan({ name: 'run', traceId: 'bad' }), TypeError);
   });
 });
+
+describe('startSpan projectId validation', () => {
+  it('projectId is mutually exclusive with parent', () => {
+    const parent = startSpan({ name: 'p' });
+    assert.throws(
+      () => startSpan({ name: 'c', projectId: 'proj-1', parent }),
+      TypeError,
+    );
+    parent.end();
+  });
+
+  it('malformed projectId throws synchronously', () => {
+    assert.throws(() => startSpan({ name: 'x', projectId: '' }), TypeError);
+    assert.throws(
+      () => startSpan({ name: 'x', projectId: 42 as unknown as string }),
+      TypeError,
+    );
+  });
+});
