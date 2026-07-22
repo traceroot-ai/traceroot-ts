@@ -250,3 +250,58 @@ describe('startSpan() multi-project attribution (adapter shape)', () => {
     assert.equal(rootSpan.parentSpanId, undefined);
   });
 });
+
+describe('drop-guard for unattributed spans (internal mode, no default project)', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+
+  before(() => {
+    ({ exporter, provider } = registerHarness({ dropSpansWithoutProjectId: true }));
+  });
+  afterEach(() => {
+    exporter.reset();
+  });
+  after(async () => {
+    await teardownHarness(provider);
+  });
+
+  it('drops a stray span, keeps attributed spans, warns once', async () => {
+    const { mock } = await import('node:test');
+    const warn = mock.method(console, 'warn', () => {});
+    try {
+      await observe({ name: 'run', traceId: RUN_A, projectId: 'proj-1' }, async () => 'ok');
+      // Stray background span outside any project scope — must go nowhere.
+      const stray = trace.getTracer('bg').startSpan('stray');
+      stray.end();
+      const stray2 = trace.getTracer('bg').startSpan('stray-2');
+      stray2.end();
+
+      const names = exporter.getFinishedSpans().map((s) => s.name);
+      assert.deepEqual(names, ['run']);
+      assert.equal(warn.mock.callCount(), 1);
+    } finally {
+      warn.mock.restore();
+    }
+  });
+});
+
+describe('no drop-guard when a process default exists', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+
+  before(() => {
+    ({ exporter, provider } = registerHarness({ dropSpansWithoutProjectId: false }));
+  });
+  afterEach(() => {
+    exporter.reset();
+  });
+  after(async () => {
+    await teardownHarness(provider);
+  });
+
+  it('exports unattributed spans (the header fallback covers them)', () => {
+    const stray = trace.getTracer('bg').startSpan('stray');
+    stray.end();
+    assert.equal(exporter.getFinishedSpans().length, 1);
+  });
+});

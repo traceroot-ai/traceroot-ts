@@ -9,11 +9,26 @@ const { version } = require('../package.json') as { version: string };
 export const SDK_NAME = 'traceroot-ts';
 export const SDK_VERSION = version;
 
+let _hasWarnedUnattributedDrop = false;
+
+/** @internal — reset warn-once state between tests. */
+export function _resetProcessorState(): void {
+  _hasWarnedUnattributedDrop = false;
+}
+
 export interface TraceRootSpanProcessorOptions {
   environment?: string;
   gitRepo?: string;
   gitRef?: string;
   globalAttributes?: Record<string, string | number | boolean>;
+  /**
+   * Drop spans that carry no traceroot.project_id attribute instead of exporting
+   * them. Enabled in internal export mode when no process-default project id is
+   * configured: an unroutable span must go nowhere — exporting it would either
+   * poison the whole batch server-side or land it in a project it doesn't belong
+   * to (cross-tenant safety).
+   */
+  dropSpansWithoutProjectId?: boolean;
 }
 
 /**
@@ -39,6 +54,8 @@ export class TraceRootSpanProcessor implements SpanProcessor {
   // their root's project id.
   private readonly _projectIdBySpanId = new Map<string, string>();
 
+  private readonly _dropSpansWithoutProjectId: boolean;
+
   constructor(
     inner: SpanProcessor, // ← WIDENED
     opts: TraceRootSpanProcessorOptions = {},
@@ -48,6 +65,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     this._gitRepo = opts.gitRepo;
     this._gitRef = opts.gitRef;
     this._globalAttributes = opts.globalAttributes;
+    this._dropSpansWithoutProjectId = opts.dropSpansWithoutProjectId ?? false;
   }
 
   onStart(span: Span, parentContext: Context): void {
@@ -152,6 +170,17 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     this._idsPathBySpanId.delete(spanId);
     this._namePathBySpanId.delete(spanId);
     this._projectIdBySpanId.delete(spanId);
+    if (this._dropSpansWithoutProjectId && span.attributes[PROJECT_ID_ATTR] === undefined) {
+      if (!_hasWarnedUnattributedDrop) {
+        _hasWarnedUnattributedDrop = true;
+        console.warn(
+          `[TraceRoot] dropping span "${span.name}": no traceroot.project_id and no ` +
+            'process-default project is configured, so it cannot be routed. ' +
+            'Further drops will not be logged.',
+        );
+      }
+      return;
+    }
     this.inner.onEnd(span);
   }
 

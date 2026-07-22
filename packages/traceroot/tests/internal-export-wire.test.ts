@@ -7,10 +7,12 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { gunzipSync } from 'node:zlib';
+import { trace } from '@opentelemetry/api';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
 import { startSpan, _resetSpansState } from '../src/spans';
 
 const FORCED = 'feedfacefeedfacefeedfacefeedface';
+const FORCED_B = 'beefbeefbeefbeefbeefbeefbeefbeef';
 
 // The OTLP protobuf request decoder is not exported by the exporter package;
 // reach the transformer's generated root through the exporter's own module
@@ -25,13 +27,22 @@ const protoRoot = transformerRequire('@opentelemetry/otlp-transformer/build/src/
 const ExportTraceServiceRequest =
   protoRoot.opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest;
 
+interface ProtoAttribute {
+  key: string;
+  value: { stringValue?: string };
+}
 interface ProtoSpan {
   name: string;
   traceId: Uint8Array;
   parentSpanId?: Uint8Array;
+  attributes?: ProtoAttribute[];
 }
 interface DecodedRequest {
   resourceSpans: { scopeSpans?: { spans?: ProtoSpan[] }[] }[];
+}
+
+function stringAttr(span: ProtoSpan, key: string): string | undefined {
+  return span.attributes?.find((a) => a.key === key)?.value?.stringValue;
 }
 
 interface CapturedRequest {
@@ -149,13 +160,58 @@ describe('internal export wire contract', () => {
           headers: { 'X-Internal-Secret': 'sekrit' },
         },
       });
-      const root = startSpan({ name: 'run', traceId: FORCED });
+      const root = startSpan({ name: 'run', traceId: FORCED, projectId: 'proj-a' });
       root.end();
       await TraceRoot.flush();
 
       const req = await nextRequest();
       assert.equal(Object.prototype.hasOwnProperty.call(req.headers, 'x-project-id'), false);
       assert.equal(req.headers['x-internal-secret'], 'sekrit');
+    } finally {
+      // Shut the provider down (flushing may fail against the closing server — ignore)
+      // so no batch timer holds buffered spans aimed at a closed port.
+      await TraceRoot.shutdown().catch(() => {});
+      _resetForTesting();
+      _resetSpansState(); // drop the cached module tracer so the next test re-resolves it
+      server.close();
+      server.closeAllConnections?.();
+    }
+  });
+
+  it('a mixed batch carries per-span project attributes and drops the stray', async () => {
+    const { port, server, nextRequest } = await startCaptureServer(200);
+    try {
+      TraceRoot.initialize({
+        baseUrl: `http://127.0.0.1:${port}`,
+        internalExport: {
+          path: '/api/v1/internal/traces',
+          headers: { 'X-Internal-Secret': 'sekrit' },
+        },
+      });
+      const a = startSpan({ name: 'run-a', traceId: FORCED, projectId: 'proj-a' });
+      a.end();
+      const b = startSpan({ name: 'run-b', traceId: FORCED_B, projectId: 'proj-b' });
+      b.end();
+      // Stray span outside any project scope: must not reach the wire.
+      const stray = trace.getTracer('bg').startSpan('stray');
+      stray.end();
+      await TraceRoot.flush();
+
+      const req = await nextRequest();
+      assert.equal(Object.prototype.hasOwnProperty.call(req.headers, 'x-project-id'), false);
+      const decoded = ExportTraceServiceRequest.decode(
+        gunzipSync(req.body),
+      ) as unknown as DecodedRequest;
+      const spans = decoded.resourceSpans.flatMap((rs) =>
+        (rs.scopeSpans ?? []).flatMap((ss) => ss.spans ?? []),
+      );
+      assert.deepEqual(spans.map((s) => s.name).sort(), ['run-a', 'run-b']);
+      const runA = spans.find((s) => s.name === 'run-a') as ProtoSpan;
+      const runB = spans.find((s) => s.name === 'run-b') as ProtoSpan;
+      assert.equal(stringAttr(runA, 'traceroot.project_id'), 'proj-a');
+      assert.equal(stringAttr(runB, 'traceroot.project_id'), 'proj-b');
+      assert.equal(Buffer.from(runA.traceId).toString('hex'), FORCED);
+      assert.equal(Buffer.from(runB.traceId).toString('hex'), FORCED_B);
     } finally {
       // Shut the provider down (flushing may fail against the closing server — ignore)
       // so no batch timer holds buffered spans aimed at a closed port.

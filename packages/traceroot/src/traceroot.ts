@@ -14,7 +14,7 @@ import {
   OpenInferenceSimpleSpanProcessor,
 } from '@arizeai/openinference-vercel';
 import { InitializeOptions } from './types';
-import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
+import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor, _resetProcessorState } from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
@@ -216,6 +216,8 @@ export class TraceRoot {
         gitRepo,
         gitRef,
         globalAttributes: options.globalAttributes,
+        dropSpansWithoutProjectId:
+          target.internal && options.internalExport?.projectId === undefined,
       }),
     );
     _provider.register();
@@ -257,6 +259,7 @@ export function _resetForTesting(): void {
   _setInternalMode(false);
   _resetTraceIdState();
   _resetProjectIdState();
+  _resetProcessorState();
   _resetObserveState();
   _resetGitContextCache();
   trace.disable();
