@@ -206,14 +206,17 @@ describe('TraceRoot.initialize()', () => {
 
 describe('initialize() internalExport projectId validation', () => {
   it('throws TypeError on an empty-string projectId', () => {
-    assert.throws(
-      () =>
-        TraceRoot.initialize({
-          internalExport: { path: '/api/v1/internal/traces', projectId: '' },
-        }),
-      TypeError,
-    );
-    _resetForTesting();
+    try {
+      assert.throws(
+        () =>
+          TraceRoot.initialize({
+            internalExport: { path: '/api/v1/internal/traces', projectId: '' },
+          }),
+        TypeError,
+      );
+    } finally {
+      _resetForTesting();
+    }
   });
 });
 

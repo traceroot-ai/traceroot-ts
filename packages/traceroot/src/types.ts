@@ -174,7 +174,9 @@ export interface StartSpanOptions {
    * Attribute this root and its descendants to a project (`traceroot.project_id`
    * on every span). Honored ONLY in internal export mode; ignored (with a warning)
    * otherwise. Applies to a new root — mutually exclusive with `parent` (throws if
-   * both are given); children inherit it. Malformed values throw.
+   * both are given); children inherit it. Under an ambient active span the value
+   * applies from this span downward, which splits the trace's project routing —
+   * avoid that unless it is exactly what you mean. Malformed values throw.
    */
   projectId?: string;
   /** Explicit parent handle. Default: the current active span. */

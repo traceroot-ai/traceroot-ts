@@ -94,19 +94,20 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     // correct trace name even when child spans arrive before the root span.
     // Guard: a bare `{}` context (used in unit tests) has no getValue — skip gracefully.
     const parentSpan = (
-      typeof (parentContext as any) // eslint-disable-line @typescript-eslint/no-explicit-any
-        ?.getValue === 'function'
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      typeof (parentContext as any)?.getValue === 'function'
         ? otelTrace.getSpan(parentContext)
         : undefined
-    ) as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ) as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const spanName = ((span as any).name as string) ?? '';
 
     // `span.name` and `span.parentSpanId` are not on the public @opentelemetry/api
     // Span interface but are stable internal fields on the SDK implementation.
     const parentSpanId: string | undefined =
-      ((span as any) // eslint-disable-line @typescript-eslint/no-explicit-any
-        .parentSpanId as string | undefined) ||
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((span as any).parentSpanId as string | undefined) ||
       (parentSpan?.spanContext?.()?.spanId as string | undefined);
 
     // Project attribution: the OTel context the span was started under is primary
@@ -148,8 +149,8 @@ export class TraceRootSpanProcessor implements SpanProcessor {
 
     // Store paths so descendant spans can inherit them via map lookup.
     const spanId =
-      typeof (span as any) // eslint-disable-line @typescript-eslint/no-explicit-any
-        .spanContext === 'function' ? span.spanContext().spanId : undefined;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      typeof (span as any).spanContext === 'function' ? span.spanContext().spanId : undefined;
     if (spanId) {
       this._namePathBySpanId.set(spanId, spanPath);
       this._idsPathBySpanId.set(spanId, spanIdsPath);
