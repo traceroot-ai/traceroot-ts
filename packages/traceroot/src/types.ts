@@ -113,10 +113,10 @@ export interface InitializeOptions {
   globalAttributes?: Record<string, string | number | boolean>;
   /**
    * Internal / trusted export mode. When set, spans export to `baseUrl + path` with
-   * the project id in an `X-Project-Id` header plus the given headers, instead of the
-   * public route + Bearer apiKey. Presence of this option also unlocks deterministic
-   * trace-id forcing (see `traceId` on ObserveOptions/StartSpanOptions).
-   * Leave unset for normal (public) operation.
+   * the project id in an `X-Project-Id` header only when a process-default projectId
+   * is configured, plus the given headers, instead of the public route + Bearer apiKey.
+   * Presence of this option also unlocks deterministic trace-id forcing (see `traceId`
+   * on ObserveOptions/StartSpanOptions). Leave unset for normal (public) operation.
    */
   internalExport?: {
     /** Ingest path appended to baseUrl, e.g. '/api/v1/internal/traces'. Must start with '/'. */
@@ -126,6 +126,8 @@ export interface InitializeOptions {
      * The server uses it only as a request-level fallback for spans lacking the
      * per-span attribute. Prefer per-root attribution via the `projectId` option
      * on observe()/startSpan(); leave this unset when every root sets its own.
+     * When this is unset, spans that end up with no per-span project id are dropped
+     * at export (with a one-time warning) rather than guessed.
      */
     projectId?: string;
     /** Extra headers, e.g. { 'X-Internal-Secret': '...' }. Auth-only by convention. */

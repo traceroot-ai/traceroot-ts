@@ -43,8 +43,9 @@ export interface ExportTarget {
 /**
  * Resolve the OTLP export URL + headers. Public mode targets the public traces route
  * with Bearer auth; internal mode targets the bare baseUrl+path with the project id in
- * an X-Project-Id header (no Authorization; a caller-supplied X-Project-Id overrides
- * the option). SDK identity headers always win on collision with caller-supplied headers.
+ * an X-Project-Id header only when a process-default projectId is configured (no
+ * Authorization; a caller-supplied X-Project-Id overrides the option). SDK identity
+ * headers always win on collision with caller-supplied headers.
  */
 export function resolveExportTarget(
   baseUrl: string,
