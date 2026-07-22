@@ -93,13 +93,10 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     // path[0] is always the root span name, so the backend can recover the
     // correct trace name even when child spans arrive before the root span.
     // Guard: a bare `{}` context (used in unit tests) has no getValue — skip gracefully.
-    const parentSpan = (
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      typeof (parentContext as any)?.getValue === 'function'
-        ? otelTrace.getSpan(parentContext)
-        : undefined
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ) as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const isRealContext = typeof (parentContext as any)?.getValue === 'function';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const parentSpan = (isRealContext ? otelTrace.getSpan(parentContext) : undefined) as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const spanName = ((span as any).name as string) ?? '';
 
@@ -117,10 +114,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     // the project id already stamped on the parent span object itself — same trick
     // as the parentPath resolution below.
     const projectId =
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (typeof (parentContext as any)?.getValue === 'function'
-        ? projectIdFromContext(parentContext)
-        : undefined) ??
+      (isRealContext ? projectIdFromContext(parentContext) : undefined) ??
       (parentSpanId ? this._projectIdBySpanId.get(parentSpanId) : undefined) ??
       (parentSpan?.attributes?.[PROJECT_ID_ATTR] as string | undefined);
     if (projectId !== undefined) {

@@ -186,7 +186,9 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
     attachedProjectId !== undefined ? contextWithProjectId(base, attachedProjectId) : base;
   const force = forcedId !== undefined && shouldForceTraceId(forcedId);
   const span = force
-    ? withForcedTraceId(forcedId, () => tracer.startSpan(name, undefined, withProjectId(ROOT_CONTEXT)))
+    ? withForcedTraceId(forcedId, () =>
+        tracer.startSpan(name, undefined, withProjectId(ROOT_CONTEXT)),
+      )
     : attachedProjectId !== undefined
       ? tracer.startSpan(name, undefined, withProjectId(context.active()))
       : tracer.startSpan(name);

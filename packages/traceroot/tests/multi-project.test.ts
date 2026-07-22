@@ -93,7 +93,11 @@ describe('processor stamping from context', () => {
 
   it('context value wins over the parent map when both are present', () => {
     const tracer = trace.getTracer('t');
-    const root = tracer.startSpan('root', undefined, contextWithProjectId(ROOT_CONTEXT, 'proj-map'));
+    const root = tracer.startSpan(
+      'root',
+      undefined,
+      contextWithProjectId(ROOT_CONTEXT, 'proj-map'),
+    );
     // Child context carries the parent span (map says proj-map) AND an explicit
     // conflicting value — the context value must win.
     const child = tracer.startSpan(
@@ -166,9 +170,12 @@ describe('observe() multi-project attribution', () => {
   });
 
   it('generator roots attribute their children too', async () => {
-    const gen = observe({ name: 'stream', traceId: RUN_A, projectId: 'proj-1' }, async function* () {
-      yield await observe({ name: 'step' }, async () => 1);
-    });
+    const gen = observe(
+      { name: 'stream', traceId: RUN_A, projectId: 'proj-1' },
+      async function* () {
+        yield await observe({ name: 'step' }, async () => 1);
+      },
+    );
     for await (const _ of gen) {
       void _;
     }
@@ -183,9 +190,7 @@ describe('observe() projectId gating and validation', () => {
     // Harness WITHOUT internal mode: register the pipeline, never flip the flag.
     const exporter = new InMemorySpanExporter();
     const provider = new NodeTracerProvider({ idGenerator: new ContextIdGenerator() });
-    provider.addSpanProcessor(
-      new TraceRootSpanProcessor(new SimpleSpanProcessor(exporter), {}),
-    );
+    provider.addSpanProcessor(new TraceRootSpanProcessor(new SimpleSpanProcessor(exporter), {}));
     provider.register();
     const { mock } = await import('node:test');
     const warn = mock.method(console, 'warn', () => {});

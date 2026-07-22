@@ -26,7 +26,9 @@ export function assertValidTraceId(traceId: string): void {
   if (typeof traceId !== 'string' || !HEX32.test(traceId) || traceId === INVALID_TRACE_ID) {
     const description =
       typeof traceId === 'string' ? JSON.stringify(traceId) : `a value of type ${typeof traceId}`;
-    throw new TypeError(`[TraceRoot] traceId must be a lowercase 32-hex string, got: ${description}`);
+    throw new TypeError(
+      `[TraceRoot] traceId must be a lowercase 32-hex string, got: ${description}`,
+    );
   }
 }
 

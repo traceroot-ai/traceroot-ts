@@ -134,10 +134,7 @@ describe('public mode: the internal-mode-only drop-guard is inert', () => {
     stray2.end();
 
     const spans = exporter.getFinishedSpans();
-    assert.deepEqual(
-      spans.map((s) => s.name).sort(),
-      ['stray', 'stray-2'],
-    );
+    assert.deepEqual(spans.map((s) => s.name).sort(), ['stray', 'stray-2']);
   });
 });
 

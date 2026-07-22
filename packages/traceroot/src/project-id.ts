@@ -24,7 +24,9 @@ export function assertValidProjectId(projectId: unknown): asserts projectId is s
     // poisoned toJSON()/toString() must never be able to throw a foreign error out
     // of a synchronous validation helper.
     const description =
-      typeof projectId === 'string' ? JSON.stringify(projectId) : `a value of type ${typeof projectId}`;
+      typeof projectId === 'string'
+        ? JSON.stringify(projectId)
+        : `a value of type ${typeof projectId}`;
     throw new TypeError(`[TraceRoot] projectId must be a non-empty string, got: ${description}`);
   }
 }
