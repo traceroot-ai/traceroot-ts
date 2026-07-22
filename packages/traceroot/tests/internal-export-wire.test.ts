@@ -138,6 +138,34 @@ describe('internal export wire contract', () => {
       server.closeAllConnections?.();
     }
   });
+
+  it('sends no X-Project-Id header when internalExport has no default projectId', async () => {
+    const { port, server, nextRequest } = await startCaptureServer(200);
+    try {
+      TraceRoot.initialize({
+        baseUrl: `http://127.0.0.1:${port}`,
+        internalExport: {
+          path: '/api/v1/internal/traces',
+          headers: { 'X-Internal-Secret': 'sekrit' },
+        },
+      });
+      const root = startSpan({ name: 'run', traceId: FORCED });
+      root.end();
+      await TraceRoot.flush();
+
+      const req = await nextRequest();
+      assert.equal(Object.prototype.hasOwnProperty.call(req.headers, 'x-project-id'), false);
+      assert.equal(req.headers['x-internal-secret'], 'sekrit');
+    } finally {
+      // Shut the provider down (flushing may fail against the closing server — ignore)
+      // so no batch timer holds buffered spans aimed at a closed port.
+      await TraceRoot.shutdown().catch(() => {});
+      _resetForTesting();
+      _resetSpansState(); // drop the cached module tracer so the next test re-resolves it
+      server.close();
+      server.closeAllConnections?.();
+    }
+  });
 });
 
 describe('flush() failure contract', () => {

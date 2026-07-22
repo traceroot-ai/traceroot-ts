@@ -111,8 +111,13 @@ export interface InitializeOptions {
   internalExport?: {
     /** Ingest path appended to baseUrl, e.g. '/api/v1/internal/traces'. Must start with '/'. */
     path: string;
-    /** Project id; sent as the `X-Project-Id` header. Required. */
-    projectId: string;
+    /**
+     * Optional process-default project id, sent as the `X-Project-Id` header.
+     * The server uses it only as a request-level fallback for spans lacking the
+     * per-span attribute. Prefer per-root attribution via the `projectId` option
+     * on observe()/startSpan(); leave this unset when every root sets its own.
+     */
+    projectId?: string;
     /** Extra headers, e.g. { 'X-Internal-Secret': '...' }. Auth-only by convention. */
     headers?: Record<string, string>;
   };

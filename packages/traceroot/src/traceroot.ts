@@ -26,7 +26,7 @@ import {
   _resetGitContextCache,
 } from './git_context';
 import { ContextIdGenerator, _resetTraceIdState, _setInternalMode } from './trace-id';
-import { _resetProjectIdState } from './project-id';
+import { assertValidProjectId, _resetProjectIdState } from './project-id';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
@@ -54,11 +54,15 @@ export function resolveExportTarget(
 ): ExportTarget {
   if (internalExport) {
     // The OTLP exporter strips query strings from its endpoint URL, so the
-    // project id travels as a header (the route accepts X-Project-Id).
+    // project id travels as a header (the route accepts X-Project-Id). It is a
+    // request-level fallback only — per-span attribution is primary — so when no
+    // default is configured, no header is sent at all.
     return {
       url: `${baseUrl}${internalExport.path}`,
       headers: {
-        'X-Project-Id': internalExport.projectId,
+        ...(internalExport.projectId !== undefined
+          ? { 'X-Project-Id': internalExport.projectId }
+          : {}),
         ...(internalExport.headers ?? {}),
         ...sdkHeaders,
       },
@@ -175,6 +179,10 @@ export class TraceRoot {
           'Set TRACEROOT_GIT_REPO / TRACEROOT_GIT_REF (see ' +
           'https://docs.traceroot.ai/tracing/git-context).',
       );
+    }
+
+    if (options.internalExport?.projectId !== undefined) {
+      assertValidProjectId(options.internalExport.projectId);
     }
 
     // Flush/batch tuning — env vars take precedence over SDK defaults.
