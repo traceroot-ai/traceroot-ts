@@ -10,6 +10,7 @@ import { gunzipSync } from 'node:zlib';
 import { trace } from '@opentelemetry/api';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
 import { startSpan, _resetSpansState } from '../src/spans';
+import { isInternalMode } from '../src/trace-id';
 
 const FORCED = 'feedfacefeedfacefeedfacefeedface';
 const FORCED_B = 'beefbeefbeefbeefbeefbeefbeefbeef';
@@ -243,6 +244,35 @@ describe('flush() failure contract', () => {
       // The process (and tracer) keeps working after the rejection.
       const again = startSpan({ name: 'still-alive' });
       assert.doesNotThrow(() => again.end());
+    } finally {
+      // Shut the provider down (flushing may fail against the closing server — ignore)
+      // so no batch timer holds buffered spans aimed at a closed port.
+      await TraceRoot.shutdown().catch(() => {});
+      _resetForTesting();
+      _resetSpansState(); // drop the cached module tracer so the next test re-resolves it
+      server.close();
+      server.closeAllConnections?.();
+    }
+  });
+
+  it('shutdown() rejects but still resets isInitialized()/isInternalMode() state', async () => {
+    const { port, server } = await startCaptureServer(403);
+    try {
+      TraceRoot.initialize({
+        baseUrl: `http://127.0.0.1:${port}`,
+        internalExport: {
+          path: '/api/v1/internal/traces',
+          projectId: 'p',
+          headers: { 'X-Internal-Secret': 'wrong' },
+        },
+      });
+      const root = startSpan({ name: 'denied', traceId: FORCED });
+      root.end();
+      // shutdown() flushes on the way out; a denied export makes it reject —
+      // the state cleanup below must still happen despite the rejection.
+      await assert.rejects(TraceRoot.shutdown());
+      assert.equal(TraceRoot.isInitialized(), false);
+      assert.equal(isInternalMode(), false);
     } finally {
       // Shut the provider down (flushing may fail against the closing server — ignore)
       // so no batch timer holds buffered spans aimed at a closed port.

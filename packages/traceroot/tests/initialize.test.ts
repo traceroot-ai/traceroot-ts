@@ -452,6 +452,23 @@ describe('internal export mode init', () => {
     );
   });
 
+  it('throws TypeError when internalExport.path is missing its leading slash, leaving no state behind', () => {
+    try {
+      assert.throws(
+        () => {
+          TraceRoot.initialize({
+            internalExport: { path: 'api/v1/internal/traces', projectId: 'p' },
+          });
+        },
+        TypeError,
+      );
+      assert.equal(TraceRoot.isInitialized(), false);
+      assert.equal(isInternalMode(), false);
+    } finally {
+      _resetForTesting();
+    }
+  });
+
   it('installs the forcing generator in internal mode only (defense in depth)', () => {
     // Internal init: the globally registered provider carries ContextIdGenerator,
     // so a root created inside a forced scope gets the forced id. Default batching
