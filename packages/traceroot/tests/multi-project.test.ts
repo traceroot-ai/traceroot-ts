@@ -249,6 +249,20 @@ describe('startSpan() multi-project attribution (adapter shape)', () => {
     assert.equal(rootSpan.parentSpanId, undefined);
   });
 
+  it('child started from a root handle AFTER the root has ended still inherits the project', () => {
+    const root = startSpan({ name: 'run', traceId: RUN_A, projectId: 'proj-1' });
+    root.end();
+    // The map entry for root's spanId was deleted in onEnd — attribution must fall
+    // back to the project id already stamped on the (now-ended) root span object.
+    const lateChild = root.startSpan({ name: 'late-child' });
+    lateChild.end();
+
+    const spans = exporter.getFinishedSpans();
+    const lateChildSpan = spans.find((s) => s.name === 'late-child');
+    assert.ok(lateChildSpan);
+    assert.equal(lateChildSpan.attributes[PROJECT_ID_ATTR], 'proj-1');
+  });
+
   it('explicit-parent child keeps its own project even inside another project scope', async () => {
     const rootB = startSpan({ name: 'root-b', traceId: RUN_B, projectId: 'proj-b' });
     await observe({ name: 'root-a', traceId: RUN_A, projectId: 'proj-a' }, async () => {

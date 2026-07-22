@@ -112,12 +112,17 @@ export class TraceRootSpanProcessor implements SpanProcessor {
 
     // Project attribution: the OTel context the span was started under is primary
     // (descendants — including auto-instrumented spans — inherit it); the in-process
-    // map covers children created from an explicit parent handle.
+    // map covers children created from an explicit parent handle; and, when the
+    // parent has already ended (its map entry was deleted in onEnd), fall back to
+    // the project id already stamped on the parent span object itself — same trick
+    // as the parentPath resolution below.
     const projectId =
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (typeof (parentContext as any)?.getValue === 'function'
         ? projectIdFromContext(parentContext)
-        : undefined) ?? (parentSpanId ? this._projectIdBySpanId.get(parentSpanId) : undefined);
+        : undefined) ??
+      (parentSpanId ? this._projectIdBySpanId.get(parentSpanId) : undefined) ??
+      (parentSpan?.attributes?.[PROJECT_ID_ATTR] as string | undefined);
     if (projectId !== undefined) {
       span.setAttribute(PROJECT_ID_ATTR, projectId);
     }
