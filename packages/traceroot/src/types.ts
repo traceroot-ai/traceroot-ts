@@ -1,6 +1,24 @@
 // src/types.ts
+import type { PiInstrumentationConfig } from './pi';
 
 export type SpanType = 'span' | 'agent' | 'tool' | 'llm';
+
+/**
+ * The object form of `instrumentModules.piCodingAgent`: the
+ * `@earendil-works/pi-coding-agent` module ref bundled with an explicit
+ * {@link PiInstrumentationConfig}. Use this instead of the bare module ref
+ * when you need to override capture behavior (e.g. `captureContent: false`
+ * or `captureToolIo: false` for PII control). This in-tree integration
+ * builds no export pipeline of its own -- there is no apiKey/baseUrl here to
+ * override; it always gets its tracer from the globally-registered OTel
+ * provider core (`TraceRoot.initialize()`) already set up.
+ */
+export interface PiCodingAgentInstrumentation {
+  /** `import * as pi from '@earendil-works/pi-coding-agent'`. */
+  module: unknown;
+  /** Explicit pi instrumentation config (captureContent/captureToolIo); overrides the defaults. */
+  config?: PiInstrumentationConfig;
+}
 
 export interface ObserveOptions {
   /** Span name. Defaults to fn.name, then 'anonymous'. */
@@ -63,6 +81,23 @@ export interface InitializeOptions {
      * after `initialize()`.
      */
     openaiAgents?: unknown;
+    /**
+     * @earendil-works/pi-coding-agent instrumentation, built in to this
+     * package (packages/traceroot/src/pi.ts). Accepts either:
+     *  - the bare module ref: `import * as pi from '@earendil-works/pi-coding-agent'`; or
+     *  - a {@link PiCodingAgentInstrumentation} wrapper: `{ module: pi, config: {...} }`,
+     *    to override capture behavior (`captureContent`/`captureToolIo`) —
+     *    the deliberate divergence from {@link claudeAgentSDK}, which has no
+     *    config at all.
+     *
+     * Delegates directly to instrumentPiCodingAgent() (./pi.ts),
+     * which auto-discovers the already-registered global OTel provider core
+     * sets up, so pi's spans land in the same shared pipeline as the rest of
+     * TraceRoot's traces. No separate package install, no lazy-loading, and
+     * no apiKey/baseUrl threading — this in-tree integration never builds an
+     * export pipeline of its own.
+     */
+    piCodingAgent?: unknown;
   };
   /** Use SimpleSpanProcessor instead of BatchSpanProcessor. Useful for scripts/tests. */
   disableBatch?: boolean;
