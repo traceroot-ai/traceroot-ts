@@ -9,7 +9,7 @@ export { evaluate, evaluateAsync } from './engine';
 export type { EvaluateOptions, TaskFn, ScorerFn, ScoreLike, RunScorerFn } from './engine';
 export { Evaluation } from './evaluation';
 export type { EvaluationOptions } from './evaluation';
-export { LocalTransport, FakeTransport } from './transport';
+export { FakeTransport } from './transport';
 export type { EvalTransport, RunHandle, PublishResult } from './transport';
 export { pullDataset, pullDatasetVersion, PlatformTransport } from './platform';
 export type {
@@ -25,8 +25,6 @@ export {
   PlatformDatasetSync,
 } from './dataset_sync';
 export type { PushResult, DatasetSyncTransport } from './dataset_sync';
-export { RunSession } from './session';
-export type { RunSessionOptions } from './session';
 export {
   scorer,
   llmJudge,

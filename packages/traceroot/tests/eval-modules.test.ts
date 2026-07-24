@@ -7,7 +7,6 @@ import {
   llmJudge,
   describeScorers,
   scorerMetadata,
-  RunSession,
   FakeTransport,
   collectRunProvenance,
   datasetLatestSnippet,
@@ -134,31 +133,6 @@ describe('scorer metadata', () => {
 });
 
 // ---------------------------------------------------------------------------
-describe('RunSession lifecycle', () => {
-  it('start -> register -> record -> complete via FakeTransport', async () => {
-    const t = new FakeTransport();
-    const s = await new RunSession(t, { name: 'r' }).start();
-    await s.register({ input: 1, id: 'c0' });
-    await s.record({
-      caseId: 'c0',
-      input: 1,
-      output: 1,
-      expected: 1,
-      scores: [{ name: 'acc', value: 1 }],
-      scorerErrors: {},
-      error: null,
-      traceId: null,
-      durationMs: 5,
-    });
-    const state = await s.complete();
-    assert.equal(state.status, 'local_only');
-    assert.deepEqual(t.calls[0], ['create_run', 'r', '<inline>']);
-    assert.ok(t.calls.some((c) => c[0] === 'register_item' && c[1] === 'c0'));
-    assert.ok(t.calls.some((c) => c[0] === 'finish_run'));
-  });
-});
-
-// ---------------------------------------------------------------------------
 describe('provenance (machine-independent)', () => {
   it('github ci + git block; user metadata wins', () => {
     const orig = (prov as any)._resolvedGit;
@@ -206,6 +180,7 @@ describe('Evaluation object', () => {
       dataset: ds,
       task: echo,
       scorers: [(c) => (c.output === c.expected ? 1 : 0)],
+      transport: new FakeTransport(),
     }).run();
     assert.equal(run.passed, 1);
     assert.throws(
@@ -225,7 +200,7 @@ describe('deferred score', () => {
       dataset: ds,
       task: echo,
       scorers: [() => new DeferredScore('human', 'awaiting review')],
-      local: true,
+      transport: new FakeTransport(),
     });
     assert.equal(run.itemResults[0].scores[0].value, 'pending');
     assert.equal(run.notScored, 1);
