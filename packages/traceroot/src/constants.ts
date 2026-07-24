@@ -73,4 +73,27 @@ export const SpanAttributes = {
 
   // Deployment
   ENVIRONMENT: 'deployment.environment',
+
+  // Offline evaluation — versioned identity contract (parity with Python span_attributes).
+  TRACEROOT_ENVIRONMENT: 'traceroot.environment',
+  EVAL_CONTRACT_VERSION: 'traceroot.eval.contract_version',
+  EVAL_NAME: 'traceroot.eval.name',
+  EVAL_RUN_NAME: 'traceroot.eval.run_name',
+  EVAL_RUN_ID: 'traceroot.eval.run_id',
+  EVAL_LOCAL_RUN_ID: 'traceroot.eval.local_run_id',
+  EVAL_DATASET_NAME: 'traceroot.eval.dataset_name',
+  EVAL_DATASET_ID: 'traceroot.eval.dataset_id',
+  EVAL_DATASET_VERSION_ID: 'traceroot.eval.dataset_version_id',
+  EVAL_CASE_ID: 'traceroot.eval.case_id',
+  EVAL_CANDIDATE_VERSION: 'traceroot.eval.candidate_version',
+  EVAL_ENVIRONMENT: 'traceroot.eval.environment',
+  EVAL_HAS_EXPECTED: 'traceroot.eval.has_expected',
+  EVAL_SOURCE_TRACE_ID: 'traceroot.eval.source_trace_id',
+  EVAL_SOURCE_SPAN_ID: 'traceroot.eval.source_span_id',
+  EVAL_SCORE_TARGET_SPAN_ID: 'traceroot.eval.score_target_span_id',
+  EVAL_TASK_NAME: 'traceroot.eval.task_name',
+  EVAL_ERROR: 'traceroot.eval.error',
+  EVAL_SCORER_NAME: 'traceroot.eval.scorer_name',
+  EVAL_SCORE_VALUE: 'traceroot.eval.score_value',
+  EVAL_SCORE_COMMENT: 'traceroot.eval.score_comment',
 } as const;

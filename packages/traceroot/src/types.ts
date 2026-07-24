@@ -1,19 +1,6 @@
 // src/types.ts
-import type { PiInstrumentationConfig } from './pi';
 
-export type SpanType = 'span' | 'agent' | 'tool' | 'llm';
-
-/**
- * The object form of `instrumentModules.piCodingAgent`: the pi module ref plus
- * an explicit {@link PiInstrumentationConfig}. Use instead of the bare module
- * ref to override capture behavior (e.g. `captureContent: false` for PII).
- */
-export interface PiCodingAgentInstrumentation {
-  /** `import * as pi from '@earendil-works/pi-coding-agent'`. */
-  module: unknown;
-  /** Explicit pi instrumentation config (captureContent/captureToolIo); overrides the defaults. */
-  config?: PiInstrumentationConfig;
-}
+export type SpanType = 'span' | 'agent' | 'tool' | 'llm' | 'evaluation' | 'task' | 'scorer';
 
 export interface ObserveOptions {
   /** Span name. Defaults to fn.name, then 'anonymous'. */
@@ -76,16 +63,6 @@ export interface InitializeOptions {
      * after `initialize()`.
      */
     openaiAgents?: unknown;
-    /**
-     * @earendil-works/pi-coding-agent module ref, or a
-     * {@link PiCodingAgentInstrumentation} wrapper (`{ module: pi, config }`)
-     * to override `captureContent`/`captureToolIo` — a deliberate divergence
-     * from {@link claudeAgentSDK}, which has no config at all.
-     *
-     * Traces through the globally-registered provider and builds no export
-     * pipeline of its own, so there is no apiKey/baseUrl to thread here.
-     */
-    piCodingAgent?: unknown;
   };
   /** Use SimpleSpanProcessor instead of BatchSpanProcessor. Useful for scripts/tests. */
   disableBatch?: boolean;
