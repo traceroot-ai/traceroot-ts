@@ -1,4 +1,4 @@
-// Parity: scorers metadata, comparison, session, provenance, snippets, evaluation, deferred.
+// Parity: scorers metadata, session, provenance, snippets, evaluation, deferred.
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -6,8 +6,6 @@ import {
   scorer,
   describeScorers,
   scorerMetadata,
-  compareRuns,
-  makeRunResult,
   RunSession,
   FakeTransport,
   collectRunProvenance,
@@ -20,7 +18,7 @@ import {
   evaluate,
 } from '../src/eval';
 import * as prov from '../src/eval/provenance';
-import type { EvalItemResult, ScorerContext } from '../src/eval';
+import type { ScorerContext } from '../src/eval';
 
 const echo = (x: unknown) => x;
 
@@ -60,57 +58,6 @@ describe('scorer metadata', () => {
     const [d] = describeScorers([latency], { latency: 'numeric' });
     assert.equal(d.value_type, 'numeric');
     assert.equal(d.direction, 'lower_is_better');
-  });
-});
-
-// ---------------------------------------------------------------------------
-describe('comparison (score cells)', () => {
-  function run(name: string, scoresByCase: Record<string, number>) {
-    const items: EvalItemResult[] = Object.entries(scoresByCase).map(([caseId, v]) => ({
-      caseId,
-      input: null,
-      output: null,
-      expected: null,
-      scores: [{ name: 'acc', value: v }],
-      scorerErrors: {},
-      error: null,
-      traceId: null,
-      durationMs: null,
-    }));
-    return makeRunResult(
-      name,
-      items,
-      { status: 'local_only', dashboardUrl: null },
-      {
-        dataset: {
-          datasetId: 'ds',
-          revision: 'rev_1',
-          datasetVersionId: null,
-          caseCount: items.length,
-        },
-      },
-    );
-  }
-  it('improved / regressed / unchanged / unpaired', () => {
-    const base = run('r', { c0: 1, c1: 1, c2: 0 });
-    const cand = run('r', { c0: 1, c1: 0, c3: 1 }); // c1 regressed, c2/c3 unpaired
-    const cmp = compareRuns(cand, base);
-    assert.equal(cmp.regressions.length, 1);
-    assert.equal(cmp.unchanged.length, 1); // c0
-    assert.deepEqual(cmp.unpaired.sort(), ['c2', 'c3']);
-    assert.match(cmp.summary(), /score cells/);
-  });
-
-  it('comparisonReport renders a Braintrust-style per-scorer block', () => {
-    const base = run('r', { c0: 1, c1: 1 }); // mean 1.00
-    const cand = run('r', { c0: 1, c1: 0 }); // mean 0.50, c1 regressed
-    const report = cand.comparisonReport(base);
-    assert.match(report, /COMPARISON/);
-    assert.match(report, /r {2}vs {2}r \[baseline\]/);
-    assert.match(report, /50\.00%/); // candidate mean
-    assert.match(report, /-50\.00%/); // delta
-    assert.match(report, /'acc'/);
-    assert.match(report, /\(0 improvements, 1 regression\)/); // singular
   });
 });
 

@@ -34,8 +34,6 @@ export {
   FakeTransport,
   RunSession,
   EvalRunResult,
-  compareRuns,
-  Comparison,
   aggregateScores,
   caseStatus,
   scorer,
@@ -71,6 +69,5 @@ export type {
   DatasetSyncTransport,
   Scorer,
   ScorerDescriptor,
-  CaseDelta,
   DatasetSnapshot,
 } from './eval';
