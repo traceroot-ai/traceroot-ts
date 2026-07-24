@@ -100,6 +100,18 @@ describe('comparison (score cells)', () => {
     assert.deepEqual(cmp.unpaired.sort(), ['c2', 'c3']);
     assert.match(cmp.summary(), /score cells/);
   });
+
+  it('comparisonReport renders a Braintrust-style per-scorer block', () => {
+    const base = run('r', { c0: 1, c1: 1 }); // mean 1.00
+    const cand = run('r', { c0: 1, c1: 0 }); // mean 0.50, c1 regressed
+    const report = cand.comparisonReport(base);
+    assert.match(report, /COMPARISON/);
+    assert.match(report, /r {2}vs {2}r \[baseline\]/);
+    assert.match(report, /50\.00%/); // candidate mean
+    assert.match(report, /-50\.00%/); // delta
+    assert.match(report, /'acc'/);
+    assert.match(report, /\(0 improvements, 1 regression\)/); // singular
+  });
 });
 
 // ---------------------------------------------------------------------------

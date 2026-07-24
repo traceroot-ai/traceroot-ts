@@ -18,7 +18,7 @@ export type {
   PlatformTransportOptions,
   ScorerSpec,
 } from './platform';
-export { compareRuns, Comparison } from './comparison';
+export { compareRuns, Comparison, formatComparisonReport } from './comparison';
 export type { CaseDelta } from './comparison';
 export {
   DatasetConflictError,
