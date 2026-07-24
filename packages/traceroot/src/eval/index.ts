@@ -29,6 +29,7 @@ export { RunSession } from './session';
 export type { RunSessionOptions } from './session';
 export {
   scorer,
+  llmJudge,
   describeScorers,
   scorerMetadata,
   declaredVersion,

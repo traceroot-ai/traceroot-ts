@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 
 import {
   scorer,
+  llmJudge,
   describeScorers,
   scorerMetadata,
   RunSession,
@@ -26,14 +27,22 @@ const echo = (x: unknown) => x;
 describe('scorer metadata', () => {
   it('defaults + explicit-wins + no name inference + no version fabrication', () => {
     const acc = scorer((_c: ScorerContext) => 1, { valueType: 'numeric' });
+    const md = scorerMetadata(acc);
+    assert.equal(md.language, 'typescript');
+    assert.ok((md.source ?? '').length > 0); // source captured
+    const { source: _s, language: _l, ...rest } = md;
     assert.deepEqual(
-      { ...scorerMetadata(acc), name: 'x' },
+      { ...rest, name: 'x' },
       {
         name: 'x',
         version: null,
+        scorer_type: 'code',
         value_type: 'numeric',
         direction: 'higher_is_better',
         threshold: null,
+        output_type: 'score', // derived from numeric
+        description: null,
+        metadata: null,
       },
     );
     const latency = scorer((_c: ScorerContext) => 1, {
@@ -58,6 +67,69 @@ describe('scorer metadata', () => {
     const [d] = describeScorers([latency], { latency: 'numeric' });
     assert.equal(d.value_type, 'numeric');
     assert.equal(d.direction, 'lower_is_better');
+  });
+
+  it('code scorer reports type + source; output_type derived, explicit wins', () => {
+    const exact = scorer((c: ScorerContext) => (c.output === c.expected ? 1 : 0), {
+      outputType: 'score',
+      threshold: 1.0,
+      description: 'Exact match',
+      metadata: { team: 'q' },
+    });
+    const m = scorerMetadata(exact);
+    assert.equal(m.scorer_type, 'code');
+    assert.equal(m.language, 'typescript');
+    assert.ok((m.source ?? '').includes('c.output'));
+    assert.equal(m.output_type, 'score');
+    assert.equal(m.threshold, 1.0);
+    assert.equal(m.description, 'Exact match');
+    assert.deepEqual(m.metadata, { team: 'q' });
+
+    const route = scorer((_c) => 'billing', { valueType: 'categorical' });
+    assert.equal(scorerMetadata(route).output_type, 'classification'); // derived
+    const weird = scorer((_c) => 'x', { valueType: 'categorical', outputType: 'score' });
+    assert.equal(scorerMetadata(weird).output_type, 'score'); // explicit wins
+  });
+
+  it('llmJudge reports model + messages (not source) and runs with injected complete', async () => {
+    let seenModel = '';
+    let seenRendered: { role: string; content: string }[] = [];
+    const concise = llmJudge({
+      name: 'concise',
+      version: '1',
+      model: 'claude-sonnet-5',
+      messages: [
+        { role: 'system', content: 'Rate 0..1.' },
+        { role: 'user', content: 'ANSWER:\n{{output}}' },
+      ],
+      outputType: 'score',
+      threshold: 0.8,
+      description: 'conciseness',
+      metadata: { team: 'quality' },
+      complete: (model, rendered) => {
+        seenModel = model;
+        seenRendered = rendered;
+        return 'The score is 0.7 out of 1.';
+      },
+    });
+    const md = scorerMetadata(concise);
+    assert.equal(md.scorer_type, 'llm_judge');
+    assert.equal(md.model, 'claude-sonnet-5');
+    assert.equal(md.messages?.[1].content, 'ANSWER:\n{{output}}'); // authored template verbatim
+    assert.equal(md.output_type, 'score');
+    assert.equal(md.source, undefined);
+    assert.equal(md.language, undefined);
+
+    const score = (await concise({
+      input: 'q',
+      output: 'a concise answer',
+      expected: null,
+      metadata: null,
+    } as ScorerContext)) as { name: string; value: number };
+    assert.equal(score.name, 'concise');
+    assert.equal(score.value, 0.7);
+    assert.equal(seenModel, 'claude-sonnet-5');
+    assert.equal(seenRendered[1].content, 'ANSWER:\na concise answer'); // {{output}} rendered
   });
 });
 

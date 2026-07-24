@@ -37,6 +37,7 @@ export {
   aggregateScores,
   caseStatus,
   scorer,
+  llmJudge,
   describeScorers,
   collectRunProvenance,
   datasetLatestSnippet,
