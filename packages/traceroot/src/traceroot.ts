@@ -30,12 +30,36 @@ const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
 let _isInitialized = false;
 let _provider: NodeTracerProvider | undefined;
+// Resolved on initialize() so the offline-eval module can reach the same credentials
+// (parity with the Python client that eval's _resolve_credentials reads).
+let _apiKey: string | undefined;
+let _baseUrl: string = DEFAULT_BASE_URL;
 
 export class TraceRoot {
   private constructor() {}
 
   static isInitialized(): boolean {
     return _isInitialized;
+  }
+
+  /**
+   * Resolve eval credentials with the same precedence the client uses: an explicit
+   * argument wins, else the value resolved at initialize(), else the env var, else the
+   * default host. Returns an empty apiKey when none is set (callers degrade to local).
+   */
+  static resolveCredentials(
+    apiKey?: string,
+    baseUrl?: string,
+  ): { apiKey: string; baseUrl: string } {
+    return {
+      apiKey: apiKey ?? _apiKey ?? process.env['TRACEROOT_API_KEY'] ?? '',
+      baseUrl: (
+        baseUrl ??
+        _baseUrl ??
+        process.env['TRACEROOT_HOST_URL'] ??
+        DEFAULT_BASE_URL
+      ).replace(/\/$/, ''),
+    };
   }
 
   static initialize(options: InitializeOptions = {}): void {
@@ -73,6 +97,10 @@ export class TraceRoot {
       process.env['TRACEROOT_HOST_URL'] ??
       DEFAULT_BASE_URL
     ).replace(/\/$/, '');
+
+    // Expose to the offline-eval module (pull/report reuse the same credentials).
+    _apiKey = apiKey;
+    _baseUrl = baseUrl;
 
     const headers: Record<string, string> = {
       'x-traceroot-sdk-name': SDK_NAME,
