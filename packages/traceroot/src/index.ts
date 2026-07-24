@@ -13,12 +13,18 @@ export {
 } from './context';
 export { usingAttributes } from './usingAttributes';
 export { SpanAttributes } from './constants';
-export type { SpanType, ObserveOptions, InitializeOptions } from './types';
+export type {
+  SpanType,
+  ObserveOptions,
+  InitializeOptions,
+  PiCodingAgentInstrumentation,
+} from './types';
 export type { UsingAttributesOptions } from './usingAttributes';
 export { OpenAIAgentsProcessor } from './openai-agents';
 export { startSpan, usingSpan } from './spans';
 export type { Span } from './spans';
 export type { StartSpanOptions, SpanUpdate, TokenUsage } from './types';
+export type { PiInstrumentationConfig } from './pi';
 
 // Offline evaluation (local-first, trace-native) — full surface (parity with traceroot-py).
 export {
