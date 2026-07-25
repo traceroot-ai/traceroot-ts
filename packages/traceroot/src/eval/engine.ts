@@ -22,7 +22,7 @@ import { PlatformTransport } from './platform';
 import { collectRunProvenance } from './provenance';
 import { declaredVersion, describeScorers } from './scorers';
 import { newRunId } from './ids';
-import { ConsoleProgress, shouldShowProgress } from './progress';
+import { ConsoleProgress, printRunUrl, shouldShowProgress } from './progress';
 
 export type TaskFn = (input: unknown) => unknown | Promise<unknown>;
 export type ScoreLike =
@@ -497,6 +497,12 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     reporter?.finish();
   }
   const uploadState = await active.finishRun(run);
+
+  // When the bar was shown (interactive), surface a clickable run link if the
+  // backend returned one. Off-terminal callers read result.uploadState instead.
+  if (reporter && uploadState.dashboardUrl) {
+    printRunUrl(uploadState.dashboardUrl);
+  }
 
   const summary = aggregateScores(itemResults);
   const { runScores, runScorerErrors } = await runRunScorers(
