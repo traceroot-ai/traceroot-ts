@@ -1,4 +1,4 @@
-// src/eval/engine.ts — local evaluation engine.
+// src/eval/engine.ts — evaluation engine.
 // Parity with traceroot-py/traceroot/eval/engine.py: sync/async tasks and scorers, bounded
 // concurrency, deterministic ordering, per-case and per-scorer failure isolation, timeout,
 // deferred scores, run scorers, provenance, scorer metadata, and a trace-native span tree
@@ -6,13 +6,7 @@
 
 import { SpanAttributes } from '../constants';
 import { TraceRoot } from '../traceroot';
-import {
-  startSpan,
-  usingSpan,
-  Span,
-  _pushSuppressGlobalAutoInit as pushSuppressGlobalAutoInit,
-  _popSuppressGlobalAutoInit as popSuppressGlobalAutoInit,
-} from '../spans';
+import { startSpan, usingSpan, Span } from '../spans';
 import type { Tracer } from '@opentelemetry/api';
 import { evalTracer } from './tracer';
 import { Dataset, DeferredScore, EvalCase, Score, ScorerContext } from './types';
@@ -25,7 +19,7 @@ import {
   aggregateScores,
   makeRunResult,
 } from './results';
-import { EvalTransport, LocalTransport, RunHandle } from './transport';
+import { EvalTransport, RunHandle } from './transport';
 import { PlatformTransport } from './platform';
 import { collectRunProvenance } from './provenance';
 import { declaredVersion, describeScorers } from './scorers';
@@ -61,10 +55,8 @@ export interface EvaluateOptions {
   metadata?: Record<string, unknown> | null;
   select?: (c: EvalCase) => boolean;
   environment?: string;
-  /** Explicit transport wins over the default upload decision. */
+  /** Explicit transport wins over the default reporting transport. */
   transport?: EvalTransport;
-  /** Opt out of the upload-by-default behavior; keep the run local. */
-  local?: boolean;
   /**
    * Live console progress bar. Undefined = auto (on for an interactive
    * terminal, off when piped/CI); true/false forces it.
@@ -241,7 +233,6 @@ async function runCase(
   identity: RunIdentity,
   transport: EvalTransport,
   run: RunHandle,
-  reporting: boolean,
   timeout: number | undefined,
   tracer: Tracer,
   onCaseStart?: (c: EvalCase) => void,
@@ -257,7 +248,8 @@ async function runCase(
   );
   setRootAttrs(root, identity, evalCase);
   const rawTraceId = root.traceId;
-  const traceId = reporting && !ZERO_TRACE_ID.test(rawTraceId) ? rawTraceId : null;
+  // A reported run exports its per-case spans, so the result carries the trace id.
+  const traceId = !ZERO_TRACE_ID.test(rawTraceId) ? rawTraceId : null;
 
   const result = await usingSpan(root, async (): Promise<EvalItemResult> => {
     let output: unknown = null;
@@ -384,9 +376,9 @@ async function runRunScorers(
 }
 
 /**
- * Reporting default (matches Braintrust/Langfuse/Laminar): upload when credentials + a
- * platform dataset (pulled/pushed, or an explicit datasetId) exist. Returns null to stay
- * local — no credentials, or a purely local dataset the SDK cannot create server-side.
+ * Build the reporting transport from credentials + a synced dataset (pulled/pushed, or an
+ * explicit datasetId). Returns null when it cannot (no credentials, or an unsynced dataset the
+ * SDK cannot create server-side); the caller turns that into a clear error (cloud-only).
  */
 function autoTransport(
   data: Dataset | EvalCase[],
@@ -437,17 +429,21 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     data instanceof Dataset ? data.snapshot().revision : `local-${cases.length}`;
   const runMetadata = collectRunProvenance(options.metadata, { detectDirty: false });
 
-  // Reporting decision: explicit transport wins; else local:true keeps local; else upload
-  // when credentials + a platform dataset exist.
+  // Cloud-only: an explicit transport wins; otherwise build a reporting transport from
+  // credentials + a synced dataset. Evaluation always reports -- there is no local run.
   let active: EvalTransport;
   if (transport !== undefined) {
     active = transport;
-  } else if (options.local) {
-    active = new LocalTransport();
   } else {
-    active =
-      autoTransport(data, options.datasetId, scorers, candidateVersion, environment) ??
-      new LocalTransport();
+    const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
+    if (auto === null) {
+      throw new Error(
+        'evaluate() reports to the TraceRoot platform, but no credentials or synced dataset ' +
+          'were found. Set TRACEROOT_API_KEY and pass a pulled dataset (pullDataset(...)), or ' +
+          'pass an explicit transport.',
+      );
+    }
+    active = auto;
   }
 
   // Forward scorer comparison metadata to a transport that accepts specs (before createRun).
@@ -455,11 +451,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     (active as PlatformTransport).scorerSpecs = describeScorers(scorers);
   }
 
-  const reporting = active.reportsTraces === true;
-  // Eval structural spans go through this tracer. For a local run it is a private,
-  // non-exporting tracer that also avoids initializing the global exporting provider,
-  // so a local eval never exports spans even when TRACEROOT_API_KEY is set.
-  const evalSpanTracer = evalTracer(reporting);
+  // Eval structural spans always export (cloud-only) and are linked to the reported results.
+  const evalSpanTracer = evalTracer();
   const localRunId = newRunId();
   const run = await active.createRun(name, datasetName, runMetadata);
 
@@ -488,10 +481,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     };
   }
 
-  // For a local run, suppress lazy global-provider init for the duration so nested
-  // application spans (user startSpan/observe, auto-instrumentation) created inside a
-  // task/scorer cannot bring up the OTLP exporter and leak. No-op for a reported run.
-  if (!reporting) pushSuppressGlobalAutoInit();
   let itemResults: EvalItemResult[];
   try {
     itemResults = await runBounded(cases.length, maxConcurrency, (i) =>
@@ -502,7 +491,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         identity,
         active,
         run,
-        reporting,
         options.timeout,
         evalSpanTracer,
         options.onCaseStart,
@@ -510,7 +498,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
       ),
     );
   } finally {
-    if (!reporting) popSuppressGlobalAutoInit();
     reporter?.finish();
   }
   const uploadState = await active.finishRun(run);

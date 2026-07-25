@@ -2,8 +2,19 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Dataset, evaluate, evaluateAsync } from '../src/eval';
+import {
+  Dataset,
+  evaluate as _evaluate,
+  evaluateAsync as _evaluateAsync,
+  FakeTransport,
+} from '../src/eval';
 import type { ScorerContext, Score } from '../src/eval';
+
+// Cloud-only: a run always reports. These engine tests don't care about the wire, so default
+// a non-network FakeTransport when the test doesn't pass one.
+type EvalOpts = Parameters<typeof _evaluate>[0];
+const evaluate = (o: EvalOpts) => _evaluate({ transport: new FakeTransport(), ...o });
+const evaluateAsync = (o: EvalOpts) => _evaluateAsync({ transport: new FakeTransport(), ...o });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -39,9 +50,9 @@ describe('basic runs', () => {
     assert.equal(result.scoreSummary.ascore.mean, 1);
   });
 
-  it('evaluate resolves to a completed result and reports local_only', async () => {
+  it('evaluate resolves to a completed result and reports uploaded', async () => {
     const result = await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact] });
-    assert.equal(result.uploadState.status, 'local_only');
+    assert.equal(result.uploadState.status, 'uploaded');
     assert.equal(result.itemResults[0].traceId ?? null, result.itemResults[0].traceId); // defined key
   });
 });
