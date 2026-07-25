@@ -61,12 +61,10 @@ export interface EvaluateOptions {
   metadata?: Record<string, unknown> | null;
   select?: (c: EvalCase) => boolean;
   environment?: string;
-  /** Explicit transport wins over the default upload decision (e.g. baseline linking). */
+  /** Explicit transport wins over the default upload decision. */
   transport?: EvalTransport;
   /** Opt out of the upload-by-default behavior; keep the run local. */
   local?: boolean;
-  /** A prior run to link as the baseline (auto-links baselineRunId when reporting). */
-  baseline?: EvalRunResult;
   /**
    * Live console progress bar. Undefined = auto (on for an interactive
    * terminal, off when piped/CI); true/false forces it.
@@ -396,7 +394,6 @@ function autoTransport(
   scorers: ScorerFn[],
   candidateVersion: string | undefined,
   environment: string | undefined,
-  baselineRunId: string | null,
 ): EvalTransport | null {
   let effectiveId = datasetId;
   let versionId: string | null = null;
@@ -413,7 +410,6 @@ function autoTransport(
     candidateVersion: candidateVersion ?? null,
     environment,
     datasetVersionId: versionId,
-    baselineRunId,
   });
 }
 
@@ -449,16 +445,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   } else if (options.local) {
     active = new LocalTransport();
   } else {
-    const baselineRunId = options.baseline?.runId ?? null;
     active =
-      autoTransport(
-        data,
-        options.datasetId,
-        scorers,
-        candidateVersion,
-        environment,
-        baselineRunId,
-      ) ?? new LocalTransport();
+      autoTransport(data, options.datasetId, scorers, candidateVersion, environment) ??
+      new LocalTransport();
   }
 
   // Forward scorer comparison metadata to a transport that accepts specs (before createRun).
@@ -547,21 +536,15 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     candidateVersion: candidateVersion ?? null,
     dataset: datasetRef,
     metadata: runMetadata,
-    baseline: options.baseline ?? null,
     runScores,
     runScorerErrors,
   });
 
-  // When the bar was shown (interactive), print a closing block: the
-  // candidate-vs-baseline comparison when a baseline exists (it carries the run
-  // link), otherwise just the clickable run link. Off-terminal callers read the
-  // returned result instead.
-  if (reporter) {
-    if (options.baseline) {
-      process.stderr.write(result.comparisonReport(options.baseline) + '\n');
-    } else if (uploadState.dashboardUrl) {
-      printRunUrl(uploadState.dashboardUrl);
-    }
+  // When the bar was shown (interactive), surface the clickable run link if the backend
+  // returned one. Off-terminal callers read result.uploadState instead. (Candidate-vs-
+  // baseline comparison is the backend's job, not the SDK's.)
+  if (reporter && uploadState.dashboardUrl) {
+    printRunUrl(uploadState.dashboardUrl);
   }
 
   return result;
