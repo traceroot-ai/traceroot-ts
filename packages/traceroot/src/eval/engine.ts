@@ -6,7 +6,15 @@
 
 import { SpanAttributes } from '../constants';
 import { TraceRoot } from '../traceroot';
-import { startSpan, usingSpan, Span } from '../spans';
+import {
+  startSpan,
+  usingSpan,
+  Span,
+  _pushSuppressGlobalAutoInit as pushSuppressGlobalAutoInit,
+  _popSuppressGlobalAutoInit as popSuppressGlobalAutoInit,
+} from '../spans';
+import type { Tracer } from '@opentelemetry/api';
+import { evalTracer } from './tracer';
 import { Dataset, DeferredScore, EvalCase, Score, ScorerContext } from './types';
 import {
   EvalItemResult,
@@ -236,7 +244,8 @@ async function runCase(
   transport: EvalTransport,
   run: RunHandle,
   reporting: boolean,
-  timeout?: number,
+  timeout: number | undefined,
+  tracer: Tracer,
   onCaseStart?: (c: EvalCase) => void,
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void,
 ): Promise<EvalItemResult> {
@@ -244,7 +253,10 @@ async function runCase(
   await transport.registerItem(run, evalCase);
 
   const startedAt = performance.now();
-  const root = startSpan({ name: 'evaluation-item', type: 'evaluation', input: evalCase.input });
+  const root = startSpan(
+    { name: 'evaluation-item', type: 'evaluation', input: evalCase.input },
+    tracer,
+  );
   setRootAttrs(root, identity, evalCase);
   const rawTraceId = root.traceId;
   const traceId = reporting && !ZERO_TRACE_ID.test(rawTraceId) ? rawTraceId : null;
@@ -255,16 +267,19 @@ async function runCase(
     const scores: Score[] = [];
     const scorerErrors: Record<string, string> = {};
 
-    const taskSpan = startSpan({
-      name: 'task',
-      type: 'task',
-      input: evalCase.input,
-      attributes: {
-        [SpanAttributes.EVAL_RUN_NAME]: identity.name,
-        [SpanAttributes.EVAL_CASE_ID]: evalCase.id as string,
-        [SpanAttributes.EVAL_TASK_NAME]: fnName(task, 'task'),
+    const taskSpan = startSpan(
+      {
+        name: 'task',
+        type: 'task',
+        input: evalCase.input,
+        attributes: {
+          [SpanAttributes.EVAL_RUN_NAME]: identity.name,
+          [SpanAttributes.EVAL_CASE_ID]: evalCase.id as string,
+          [SpanAttributes.EVAL_TASK_NAME]: fnName(task, 'task'),
+        },
       },
-    });
+      tracer,
+    );
     try {
       output = await usingSpan(taskSpan, () =>
         withTimeout(Promise.resolve(task(evalCase.input)), timeout),
@@ -296,15 +311,18 @@ async function runCase(
           expected: evalCase.expected ?? null,
         };
         if (evalCase.scoreTargetSpanId) scorerInput.target_span_id = evalCase.scoreTargetSpanId;
-        const scorerSpan = startSpan({
-          name,
-          type: 'scorer',
-          input: scorerInput,
-          attributes: {
-            [SpanAttributes.EVAL_RUN_NAME]: identity.name,
-            [SpanAttributes.EVAL_SCORER_NAME]: name,
+        const scorerSpan = startSpan(
+          {
+            name,
+            type: 'scorer',
+            input: scorerInput,
+            attributes: {
+              [SpanAttributes.EVAL_RUN_NAME]: identity.name,
+              [SpanAttributes.EVAL_SCORER_NAME]: name,
+            },
           },
-        });
+          tracer,
+        );
         try {
           const raw = await usingSpan(scorerSpan, () => Promise.resolve(scorer(ctx)));
           const produced = stampScorerVersion(normalizeScoreLike(raw, name), scorer);
@@ -449,6 +467,10 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   }
 
   const reporting = active.reportsTraces === true;
+  // Eval structural spans go through this tracer. For a local run it is a private,
+  // non-exporting tracer that also avoids initializing the global exporting provider,
+  // so a local eval never exports spans even when TRACEROOT_API_KEY is set.
+  const evalSpanTracer = evalTracer(reporting);
   const localRunId = newRunId();
   const run = await active.createRun(name, datasetName, runMetadata);
 
@@ -477,6 +499,10 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     };
   }
 
+  // For a local run, suppress lazy global-provider init for the duration so nested
+  // application spans (user startSpan/observe, auto-instrumentation) created inside a
+  // task/scorer cannot bring up the OTLP exporter and leak. No-op for a reported run.
+  if (!reporting) pushSuppressGlobalAutoInit();
   let itemResults: EvalItemResult[];
   try {
     itemResults = await runBounded(cases.length, maxConcurrency, (i) =>
@@ -489,11 +515,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         run,
         reporting,
         options.timeout,
+        evalSpanTracer,
         options.onCaseStart,
         onCaseComplete,
       ),
     );
   } finally {
+    if (!reporting) popSuppressGlobalAutoInit();
     reporter?.finish();
   }
   const uploadState = await active.finishRun(run);
