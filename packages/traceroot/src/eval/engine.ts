@@ -22,6 +22,7 @@ import { PlatformTransport } from './platform';
 import { collectRunProvenance } from './provenance';
 import { declaredVersion, describeScorers } from './scorers';
 import { newRunId } from './ids';
+import { ConsoleProgress, shouldShowProgress } from './progress';
 
 export type TaskFn = (input: unknown) => unknown | Promise<unknown>;
 export type ScoreLike =
@@ -58,6 +59,11 @@ export interface EvaluateOptions {
   local?: boolean;
   /** A prior run to link as the baseline (auto-links baselineRunId when reporting). */
   baseline?: EvalRunResult;
+  /**
+   * Live console progress bar. Undefined = auto (on for an interactive
+   * terminal, off when piped/CI); true/false forces it.
+   */
+  progress?: boolean;
   /** Internal hooks the CLI runner uses to stream per-case events. */
   onCaseStart?: (c: EvalCase) => void;
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void;
@@ -457,20 +463,39 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     localRunId,
   };
 
-  const itemResults = await runBounded(cases.length, maxConcurrency, (i) =>
-    runCase(
-      cases[i],
-      task,
-      scorers,
-      identity,
-      active,
-      run,
-      reporting,
-      options.timeout,
-      options.onCaseStart,
-      options.onCaseComplete,
-    ),
-  );
+  // Live console progress bar (local presentation only; auto-on for an
+  // interactive terminal, off when piped/CI). Composes with any caller hooks.
+  let reporter: ConsoleProgress | undefined;
+  let onCaseComplete = options.onCaseComplete;
+  if (shouldShowProgress(options.progress)) {
+    reporter = new ConsoleProgress(cases.length, name);
+    reporter.start();
+    const next = options.onCaseComplete;
+    onCaseComplete = (item, durationMs) => {
+      reporter!.onCaseComplete(item, durationMs);
+      next?.(item, durationMs);
+    };
+  }
+
+  let itemResults: EvalItemResult[];
+  try {
+    itemResults = await runBounded(cases.length, maxConcurrency, (i) =>
+      runCase(
+        cases[i],
+        task,
+        scorers,
+        identity,
+        active,
+        run,
+        reporting,
+        options.timeout,
+        options.onCaseStart,
+        onCaseComplete,
+      ),
+    );
+  } finally {
+    reporter?.finish();
+  }
   const uploadState = await active.finishRun(run);
 
   const summary = aggregateScores(itemResults);
