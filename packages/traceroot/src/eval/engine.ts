@@ -498,12 +498,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   }
   const uploadState = await active.finishRun(run);
 
-  // When the bar was shown (interactive), surface a clickable run link if the
-  // backend returned one. Off-terminal callers read result.uploadState instead.
-  if (reporter && uploadState.dashboardUrl) {
-    printRunUrl(uploadState.dashboardUrl);
-  }
-
   const summary = aggregateScores(itemResults);
   const { runScores, runScorerErrors } = await runRunScorers(
     options.runScorers,
@@ -519,7 +513,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     caseCount: cases.length,
   };
 
-  return makeRunResult(name, itemResults, uploadState, {
+  const result = makeRunResult(name, itemResults, uploadState, {
     localRunId,
     runId: active.runId ?? null,
     candidateVersion: candidateVersion ?? null,
@@ -529,6 +523,20 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     runScores,
     runScorerErrors,
   });
+
+  // When the bar was shown (interactive), print a closing block: the
+  // candidate-vs-baseline comparison when a baseline exists (it carries the run
+  // link), otherwise just the clickable run link. Off-terminal callers read the
+  // returned result instead.
+  if (reporter) {
+    if (options.baseline) {
+      process.stderr.write(result.comparisonReport(options.baseline) + '\n');
+    } else if (uploadState.dashboardUrl) {
+      printRunUrl(uploadState.dashboardUrl);
+    }
+  }
+
+  return result;
 }
 
 /** Alias of {@link evaluateAsync}. TypeScript has no blocking mode; both return a Promise. */
