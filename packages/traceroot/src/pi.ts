@@ -154,8 +154,6 @@ export function resolveConfig(config?: PiInstrumentationConfig): ResolvedPiInstr
   };
 }
 
-// Local by design: constants.ts carries the shared attribute keys, each integration
-// carries its own span-kind values. Mirrors claude-agent-sdk.ts.
 const OI_SPAN_KIND_VALUE = {
   AGENT: 'AGENT',
   LLM: 'LLM',
@@ -213,28 +211,16 @@ const MAX_TOOL_IO_ENTRIES = 2048;
 // Appended whenever capJsonWithMarker cuts, so truncation is distinguishable from coincidence.
 const TRUNCATION_MARKER = '…[truncated]';
 
-/** Surrogate-pair-safe truncation: never splits a pair, which would corrupt the UTF-8 an OTLP/proto collector requires. */
-export function sliceSurrogateSafe(text: string, maxLen: number): string {
-  if (maxLen <= 0) return '';
-  if (text.length <= maxLen) return text;
-  let cut = maxLen;
-  const code = text.charCodeAt(cut - 1);
-  if (code >= 0xd800 && code <= 0xdbff) {
-    cut -= 1;
-  }
-  return text.slice(0, cut);
-}
-
 function capJsonWithMarker(json: string): string {
   if (json.length <= MAX_TOOL_IO_JSON_CHARS) return json;
-  return `${sliceSurrogateSafe(json, MAX_TOOL_IO_JSON_CHARS)}${TRUNCATION_MARKER}`;
+  return `${json.slice(0, MAX_TOOL_IO_JSON_CHARS)}${TRUNCATION_MARKER}`;
 }
 
 // Caps each oversized string field AND array/object breadth while walking the tree, so
 // neither one huge field nor tens of thousands of small ones fully materialize first.
 function capFieldReplacer(_key: string, value: unknown): unknown {
   if (typeof value === 'string' && value.length > MAX_TOOL_IO_JSON_CHARS) {
-    return sliceSurrogateSafe(value, MAX_TOOL_IO_JSON_CHARS);
+    return value.slice(0, MAX_TOOL_IO_JSON_CHARS);
   }
   if (Array.isArray(value) && value.length > MAX_TOOL_IO_ENTRIES) {
     return [...value.slice(0, MAX_TOOL_IO_ENTRIES), TRUNCATION_MARKER];
@@ -292,8 +278,6 @@ export function stampRootOutput(
   captureContent: boolean,
 ): void {
   if (!captureContent) return;
-  // Walk backwards rather than Array.findLast, which would need ES2023 in the
-  // package's tsconfig lib.
   let lastAssistant: AgentMessage | undefined;
   for (let i = finalMessages.length - 1; i >= 0; i -= 1) {
     if (finalMessages[i].role === 'assistant') {
@@ -392,7 +376,7 @@ function firstPathArgument(args: Record<string, unknown>): string | undefined {
 
 function truncateWithEllipsis(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
-  return `${sliceSurrogateSafe(text, maxLen)}…`;
+  return `${text.slice(0, maxLen)}…`;
 }
 
 export function describeToolCallSpan(toolName: string, args: unknown): string {

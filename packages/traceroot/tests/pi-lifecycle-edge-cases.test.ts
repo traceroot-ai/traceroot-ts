@@ -1008,8 +1008,6 @@ describe('pi close-root-span backward scan', () => {
     const tracer = provider.getTracer('close-root-span-backward-scan-test');
     const span = tracer.startSpan('AgentSession.prompt');
 
-    // Two assistant replies, and the one we want is buried rather than final: this pins
-    // "last assistant", which a forward scan stopping at the first match would fail.
     const finalMessages: AgentMessage[] = [
       { role: 'user', content: 'question', timestamp: 0 },
       assistantMessage({ content: [{ type: 'text', text: 'an earlier, superseded answer' }] }),

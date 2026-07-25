@@ -16,7 +16,6 @@ import {
   closeLlmSpan,
   openToolSpan,
   closeToolSpan,
-  sliceSurrogateSafe,
   type AgentEvent,
   type AssistantMessage,
 } from '../src/pi';
@@ -70,7 +69,7 @@ describe('pi span name', () => {
 });
 
 describe('pi spans and config boundary coverage', () => {
-  // Direct unit coverage of pi.ts's LLM/tool span helpers and sliceSurrogateSafe.
+  // Direct unit coverage of pi.ts's LLM/tool span helpers and span-name truncation.
   function makeTracer() {
     const spans: ReadableSpan[] = [];
     const provider = new NodeTracerProvider();
@@ -171,19 +170,12 @@ describe('pi spans and config boundary coverage', () => {
     assert.equal(attrs(toolSpan!)['output.value'], JSON.stringify({ ok: true }));
   });
 
-  it('sliceSurrogateSafe returns text unchanged when at or under maxLen (<=, not <)', () => {
-    assert.equal(sliceSurrogateSafe('hello', 5), 'hello');
-    assert.equal(sliceSurrogateSafe('hello', 10), 'hello');
-    assert.equal(sliceSurrogateSafe('', 0), '');
-  });
+  it('describeToolCallSpan truncates at the cap boundary, not one character early (<=, not <)', () => {
+    const atCap = 'x'.repeat(60);
+    assert.equal(describeToolCallSpan('bash', { command: atCap }), `bash: ${atCap}`);
 
-  it('sliceSurrogateSafe backs off one code unit when a high surrogate sits at the cut boundary', () => {
-    const emoji = '\u{1F600}';
-    const text = `abc${emoji}tail`;
-    const sliced = sliceSurrogateSafe(text, 4);
-    assert.equal(sliced, 'abc');
-    const lastCode = sliced.charCodeAt(sliced.length - 1);
-    assert.ok(lastCode < 0xd800 || lastCode > 0xdbff, 'must not end on an unpaired high surrogate');
+    const overCap = 'x'.repeat(61);
+    assert.equal(describeToolCallSpan('bash', { command: overCap }), `bash: ${'x'.repeat(60)}…`);
   });
 });
 
