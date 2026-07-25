@@ -94,6 +94,14 @@ export function contentRevision(cases: EvalCase[]): string {
 }
 
 /** An immutable, content-addressed snapshot of a dataset's active cases. */
+export interface DatasetSnapshot {
+  datasetId: string;
+  name: string;
+  description: string | null;
+  revision: string;
+  cases: EvalCase[];
+  baseVersionId: string | null;
+}
 
 /**
  * A local, mutable, ordered collection of {@link EvalCase} keyed by stable id. Construction
@@ -101,3 +109,196 @@ export function contentRevision(cases: EvalCase[]): string {
  * assigned at creation; `datasetVersionId` is set only when this mirrors a pushed/pulled
  * remote version.
  */
+export class Dataset {
+  name: string;
+  description: string | null;
+  datasetId: string;
+  datasetVersionId?: string;
+  baseVersionId: string | null = null;
+  private readonly casesById = new Map<string, EvalCase>();
+
+  constructor(name: string, description: string | null = null) {
+    this.name = name;
+    this.description = description;
+    this.datasetId = newDatasetId();
+  }
+
+  // --- authoring / mutation (network-free) ---
+  add(
+    input: unknown,
+    opts: {
+      expected?: unknown;
+      metadata?: Record<string, unknown> | null;
+      sourceTraceId?: string;
+      sourceSpanId?: string;
+      id?: string;
+    } = {},
+  ): EvalCase {
+    const cid = opts.id ?? newTestCaseId();
+    if (this.casesById.has(cid)) throw new Error(`test case id already exists: ${cid}`);
+    const c: EvalCase = {
+      input,
+      id: cid,
+      expected: opts.expected,
+      metadata: opts.metadata,
+      sourceTraceId: opts.sourceTraceId,
+      sourceSpanId: opts.sourceSpanId,
+    };
+    this.casesById.set(cid, c);
+    return c;
+  }
+
+  /** Add or replace by id; anonymous cases get a stable ULID id. */
+  upsert(evalCase: EvalCase): EvalCase {
+    const stored = evalCase.id == null ? { ...evalCase, id: newTestCaseId() } : evalCase;
+    this.casesById.set(stored.id as string, stored);
+    return stored;
+  }
+
+  /** Replace fields of an existing case; throws if absent. */
+  update(id: string, changes: Partial<EvalCase>): EvalCase {
+    const cur = this.casesById.get(id);
+    if (!cur) throw new Error(`no such case: ${id}`);
+    const updated = { ...cur, ...changes, id };
+    this.casesById.set(id, updated);
+    return updated;
+  }
+
+  /** Soft-archive a case: retained for lineage, excluded from the active set. */
+  archive(id: string): void {
+    const cur = this.casesById.get(id);
+    if (!cur) throw new Error(`no such case: ${id}`);
+    this.casesById.set(id, { ...cur, archived: true });
+  }
+
+  /** Hard-delete a case; throws if absent. */
+  remove(id: string): void {
+    if (!this.casesById.delete(id)) throw new Error(`no such case: ${id}`);
+  }
+
+  // --- access ---
+  get(id: string): EvalCase | undefined {
+    return this.casesById.get(id);
+  }
+
+  cases(includeArchived = false): EvalCase[] {
+    return [...this.casesById.values()].filter((c) => includeArchived || !c.archived);
+  }
+
+  get size(): number {
+    return this.cases().length;
+  }
+
+  [Symbol.iterator](): Iterator<EvalCase> {
+    return this.cases()[Symbol.iterator]();
+  }
+
+  // --- snapshot ---
+  snapshot(): DatasetSnapshot {
+    const active = this.cases();
+    return {
+      datasetId: this.datasetId,
+      name: this.name,
+      description: this.description,
+      revision: contentRevision(active),
+      cases: active,
+      baseVersionId: this.baseVersionId,
+    };
+  }
+
+  // --- serialization (network-free) ---
+  toJSON(): {
+    datasetId: string;
+    name: string;
+    description: string | null;
+    baseVersionId: string | null;
+    cases: EvalCase[];
+  } {
+    return {
+      datasetId: this.datasetId,
+      name: this.name,
+      description: this.description,
+      baseVersionId: this.baseVersionId,
+      cases: [...this.casesById.values()], // incl. archived
+    };
+  }
+
+  static fromJSON(d: {
+    name: string;
+    description?: string | null;
+    datasetId?: string;
+    baseVersionId?: string | null;
+    datasetVersionId?: string;
+    cases?: EvalCase[];
+  }): Dataset {
+    const ds = new Dataset(d.name, d.description ?? null);
+    if (d.datasetId) ds.datasetId = d.datasetId;
+    ds.baseVersionId = d.baseVersionId ?? null;
+    ds.datasetVersionId = d.datasetVersionId;
+    for (const c of d.cases ?? []) ds.casesById.set(c.id as string, c);
+    return ds;
+  }
+
+  /** Write to disk. `.jsonl` = header line + one line per case; else `.json`. */
+  save(path: string): void {
+    if (path.endsWith('.jsonl')) {
+      const header = {
+        type: 'dataset',
+        datasetId: this.datasetId,
+        name: this.name,
+        description: this.description,
+        baseVersionId: this.baseVersionId,
+        schema: 1,
+      };
+      const lines = [JSON.stringify(header)];
+      for (const c of this.casesById.values()) lines.push(JSON.stringify({ type: 'case', ...c }));
+      writeFileSync(path, lines.join('\n') + '\n');
+    } else {
+      writeFileSync(path, JSON.stringify(this.toJSON()));
+    }
+  }
+
+  static load(path: string): Dataset {
+    const text = readFileSync(path, 'utf8');
+    if (path.endsWith('.jsonl')) {
+      const records = text
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l));
+      const header = records[0];
+      return Dataset.fromJSON({
+        datasetId: header.datasetId,
+        name: header.name,
+        description: header.description,
+        baseVersionId: header.baseVersionId,
+        cases: records.slice(1).map((r) => {
+          const { type: _t, ...rest } = r;
+          return rest as EvalCase;
+        }),
+      });
+    }
+    return Dataset.fromJSON(JSON.parse(text));
+  }
+
+  /**
+   * Explicitly publish this dataset as ONE immutable server version. Local mutations never
+   * create versions; this is the deliberate publish boundary. `transport` defaults to a
+   * no-op LocalDatasetSync (local-only). `baseVersionId` (defaults to the pinned version)
+   * drives optimistic concurrency; a stale base rejects with DatasetConflictError.
+   */
+  async push(
+    transport?: import('./dataset_sync').DatasetSyncTransport,
+    baseVersionId?: string | null,
+  ): Promise<import('./dataset_sync').PushResult> {
+    const { LocalDatasetSync } = await import('./dataset_sync');
+    const sync = transport ?? new LocalDatasetSync();
+    const snapshot = this.snapshot();
+    const base = baseVersionId !== undefined ? baseVersionId : this.baseVersionId;
+    const result = await sync.pushDataset(snapshot, base);
+    if (result.status === 'uploaded' && result.datasetVersionId != null) {
+      this.datasetVersionId = result.datasetVersionId;
+      this.baseVersionId = result.datasetVersionId;
+    }
+    return result;
+  }
+}
