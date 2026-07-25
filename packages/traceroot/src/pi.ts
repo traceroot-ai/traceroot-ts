@@ -18,7 +18,7 @@ import { SDK_VERSION } from './processor';
 import type { PiCodingAgentInstrumentation } from './types';
 
 /**
- * Hand-transcribed local mirror of @earendil-works/pi-coding-agent / pi-agent-core, verified against their published .d.ts at 0.80.6 (mirrors claude-agent-sdk.ts).
+ * Hand-transcribed local mirror of @earendil-works/pi-coding-agent / pi-agent-core, verified against published .d.ts at 0.80.6.
  */
 
 export interface Usage {
@@ -317,9 +317,8 @@ export function openLlmSpan(
   setAttr(span, OI_SPAN_KIND, OI_SPAN_KIND_VALUE.LLM);
   setAttr(span, GEN_AI_ATTRIBUTES.SYSTEM, message.provider);
   setAttr(span, GEN_AI_ATTRIBUTES.REQUEST_MODEL, message.model);
-  // Dual-write the OpenInference llm.* family alongside gen_ai.*, so downstream
-  // llm.* consumers (the ones the claude-agent-sdk reference targets) see pi
-  // spans too. model_name starts at the request model; closeLlmSpan resolves it.
+  // Dual-write the OpenInference llm.* family alongside gen_ai.* for downstream
+  // consumers. model_name starts at the request model; closeLlmSpan resolves it.
   setAttr(span, OI_LLM_MODEL_NAME, message.model);
   return span;
 }
@@ -557,13 +556,13 @@ export function instrumentPiCodingAgent(sdk: unknown, config?: PiInstrumentation
     | (AgentSessionInstance & { [WRAPPED]?: boolean })
     | undefined;
   if (typeof proto?.prompt !== 'function' || typeof proto?.subscribe !== 'function') {
-    // Fail loudly, mirroring claude-agent-sdk's wiring throw: a pi SDK rename must not silently emit zero traces.
+    // Fail loudly: a pi SDK rename must not silently emit zero traces.
     throw new Error(
       '[traceroot-pi] AgentSession.prototype.prompt/subscribe not found — cannot install instrumentation.',
     );
   }
 
-  // Idempotent no-op on a second install for the same sdk (mirrors claude-agent-sdk's wrap-once return); the first call's config stands.
+  // Idempotent no-op on a second install for the same sdk; the first call's config stands.
   if (proto[WRAPPED]) {
     return sdk;
   }
@@ -606,7 +605,7 @@ export function instrumentPiCodingAgent(sdk: unknown, config?: PiInstrumentation
         sweepDanglingSpans(state, { includeRoot: true });
       }
 
-      // context.active(), matching claude-agent-sdk.ts, lets a host span nest this trace under it.
+      // context.active() lets a host span nest this trace under it.
       const parentCtx = context.active();
       const rootSpan = openRootSpan(tracer, parentCtx, {
         text: typeof text === 'string' ? text : undefined,
