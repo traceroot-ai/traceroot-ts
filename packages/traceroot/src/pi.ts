@@ -259,6 +259,58 @@ function assistantTextOf(message: AgentMessage | undefined): string | undefined 
   return parts.length > 0 ? parts.join('') : undefined;
 }
 
+interface ToolCallPart {
+  type: 'toolCall';
+  id?: string;
+  name?: string;
+  arguments?: unknown;
+}
+
+function isToolCallPart(part: unknown): part is ToolCallPart {
+  return (
+    typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'toolCall'
+  );
+}
+
+// OpenAI-convention function-call `arguments` is a JSON *string*: keep a string
+// as-is, else serialize. A non-serializable value (circular/BigInt) collapses to
+// "" rather than throwing, so one bad arg can't drop the whole output.
+function toolCallArgumentsString(args: unknown): string {
+  if (typeof args === 'string') return args;
+  try {
+    return JSON.stringify(args) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+// Output value for an assistant turn. A text-only turn stays a plain string
+// (unchanged). A turn that ISSUED tool calls — which is exactly the turn that
+// owns the nested TOOL spans — serializes an OpenAI-style assistant message so
+// the tool calls the model produced aren't silently dropped from the LLM span
+// (assistantTextOf alone returns undefined for a tool-call-only turn). Mirrors
+// claude-agent-sdk.ts, which serializes the full assistant message content.
+function assistantOutputValue(message: AgentMessage | undefined): string | undefined {
+  const text = assistantTextOf(message);
+  if (!message || message.role !== 'assistant' || !Array.isArray(message.content)) {
+    return text;
+  }
+  const toolCalls = message.content.filter(isToolCallPart).map((part) => ({
+    id: part.id,
+    type: 'function' as const,
+    function: { name: part.name, arguments: toolCallArgumentsString(part.arguments) },
+  }));
+  if (toolCalls.length === 0) return text;
+  try {
+    return capJsonWithMarker(
+      JSON.stringify({ role: 'assistant', content: text ?? null, tool_calls: toolCalls }),
+    );
+  } catch {
+    // arguments are already strings, so this should not throw; never lose the close.
+    return text;
+  }
+}
+
 export function openRootSpan(
   tracer: Pick<Tracer, 'startSpan'>,
   parentCtx: Context,
@@ -285,7 +337,7 @@ export function stampRootOutput(
       break;
     }
   }
-  setAttr(span, OI_OUTPUT_VALUE, assistantTextOf(lastAssistant));
+  setAttr(span, OI_OUTPUT_VALUE, assistantOutputValue(lastAssistant));
 }
 
 // Ends the root span exactly once, when the wrapping prompt() call's own returned promise settles.
@@ -340,7 +392,7 @@ export function closeLlmSpan(span: Span, message: AssistantMessage, captureConte
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_READ, message.usage?.cacheRead);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_WRITE, message.usage?.cacheWrite);
   if (captureContent) {
-    setAttr(span, OI_OUTPUT_VALUE, assistantTextOf(message));
+    setAttr(span, OI_OUTPUT_VALUE, assistantOutputValue(message));
   }
   if (message.stopReason === 'error' || message.stopReason === 'aborted') {
     span.setStatus({

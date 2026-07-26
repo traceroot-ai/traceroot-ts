@@ -152,6 +152,52 @@ describe('pi spans and config boundary coverage', () => {
     assert.equal(attrs(spans[0]!)['llm.model_name'], 'claude-resp-dated');
   });
 
+  it('closeLlmSpan records tool_calls in output.value on a tool-use turn (was dropped when content had no text)', () => {
+    const { tracer, spans } = makeTracer();
+    const message = assistantMessage({
+      content: [
+        { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'node test/x.js' } },
+      ],
+      stopReason: 'toolUse',
+    });
+    const span = openLlmSpan(tracer, ROOT_CONTEXT, message);
+    closeLlmSpan(span, message, true);
+    const out = attrs(spans[0]!)['output.value'] as string | undefined;
+    // The LLM turn that ISSUES tool calls owns the nested TOOL spans — it must
+    // still export what the model produced, not an empty output.
+    assert.ok(out, 'a tool-use LLM turn must still emit output.value');
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.tool_calls[0].function.name, 'bash');
+    assert.equal(
+      parsed.tool_calls[0].function.arguments,
+      JSON.stringify({ command: 'node test/x.js' }),
+    );
+  });
+
+  it('closeLlmSpan captures assistant text AND tool_calls when a turn has both', () => {
+    const { tracer, spans } = makeTracer();
+    const message = assistantMessage({
+      content: [
+        { type: 'text', text: 'let me check' },
+        { type: 'toolCall', id: 't1', name: 'grep', arguments: { pattern: 'x' } },
+      ],
+      stopReason: 'toolUse',
+    });
+    const span = openLlmSpan(tracer, ROOT_CONTEXT, message);
+    closeLlmSpan(span, message, true);
+    const parsed = JSON.parse(attrs(spans[0]!)['output.value'] as string);
+    assert.equal(parsed.content, 'let me check');
+    assert.equal(parsed.tool_calls[0].function.name, 'grep');
+  });
+
+  it('closeLlmSpan keeps plain-text output.value for a text-only turn (unchanged)', () => {
+    const { tracer, spans } = makeTracer();
+    const message = assistantMessage({ content: [{ type: 'text', text: 'hello world' }] });
+    const span = openLlmSpan(tracer, ROOT_CONTEXT, message);
+    closeLlmSpan(span, message, true);
+    assert.equal(attrs(spans[0]!)['output.value'], 'hello world');
+  });
+
   it('openToolSpan swallows a circular-reference arg without setting input.value or throwing', () => {
     const { tracer, spans } = makeTracer();
     const circular: Record<string, unknown> = { a: 1 };
@@ -448,11 +494,16 @@ describe('pi instrumentation', () => {
     assert.equal(attrs(llmSpan)['gen_ai.request.model'], 'claude-sonnet-5');
     assert.equal(attrs(llmSpan)['gen_ai.usage.input_tokens'], 100);
     assert.equal(attrs(llmSpan)['gen_ai.usage.output_tokens'], 20);
+    // This turn emitted assistant text AND a `bash` tool call, so output.value is
+    // the serialized assistant message carrying BOTH — the tool call must not be
+    // dropped just because the turn also produced text.
+    const llmOut = JSON.parse(attrs(llmSpan)['output.value'] as string);
     assert.equal(
-      attrs(llmSpan)['output.value'],
+      llmOut.content,
       "I'll list the files now.",
       'captureContent:true (the default) must populate output.value on the LLM span too, not just the root span',
     );
+    assert.equal(llmOut.tool_calls[0].function.name, 'bash');
     assert.equal(
       llmSpan.parentSpanId,
       rootSpan.spanContext().spanId,
