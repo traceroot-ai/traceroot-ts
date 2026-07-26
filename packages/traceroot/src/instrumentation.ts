@@ -3,6 +3,7 @@ import { registerInstrumentations, type Instrumentation } from '@opentelemetry/i
 import type { InitializeOptions } from './types';
 import { wireOpenAIAgentsProcessor } from './openai-agents';
 import { wireClaudeAgentSDKInstrumentation } from './claude-agent-sdk';
+import { wirePiCodingAgentInstrumentation } from './pi';
 
 type InstrumentationWithManualPatch = Instrumentation & {
   manuallyInstrument(moduleRef: unknown): void;
@@ -77,6 +78,9 @@ export function wireInstrumentations(
   }
   if (instrumentModules.openaiAgents) {
     wireOpenAIAgentsProcessor(instrumentModules.openaiAgents);
+  }
+  if (instrumentModules.piCodingAgent) {
+    wirePiCodingAgentInstrumentation(instrumentModules.piCodingAgent);
   }
 
   if (instrs.length > 0) {
