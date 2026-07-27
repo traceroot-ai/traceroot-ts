@@ -10,6 +10,7 @@
 // and exits 130 on SIGINT after finalizing a partial artifact.
 
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -229,8 +230,33 @@ function counts(result: EvalRunResult): Record<string, number> {
   };
 }
 
+function ensureGitignore(dir: string): void {
+  // Drop a '*' .gitignore so local eval payloads (which may hold PII/secrets in case
+  // input/output) can't be accidentally committed. Never clobbers a user's file.
+  const gi = join(dir, '.gitignore');
+  if (existsSync(gi)) return;
+  try {
+    writeFileSync(
+      gi,
+      '# TraceRoot local evaluation artifacts -- may contain payloads. Do not commit.\n*\n',
+      { mode: 0o600 },
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
 function atomicWrite(path: string, text: string): void {
-  mkdirSync(dirname(path), { recursive: true });
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  // Parity with Python `_atomic_write`: restrict the artifact dir so payload files are
+  // not world-readable/listable (best-effort; a no-op on platforms without POSIX modes).
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    /* best-effort */
+  }
+  ensureGitignore(dir);
   const tmp = path + '.tmp';
   writeFileSync(tmp, text, { mode: 0o600 });
   renameSync(tmp, path);
@@ -246,6 +272,20 @@ export interface WriteArtifactsOptions {
   provenance: Record<string, unknown> | null;
   baseline?: EvalRunResult | null;
   createdAt?: string;
+  /** Opt-in per-payload byte cap (parity with Python `max_payload_bytes`). */
+  maxPayloadBytes?: number | null;
+}
+
+/**
+ * Bound one payload to `limit` bytes (parity with Python `_truncate`). Over-limit values
+ * become an explicit `{ truncated, preview }` marker so a consumer never mistakes a cap
+ * for real data. `null`/undefined limit = no truncation (current default).
+ */
+function truncatePayload(value: unknown, limit: number | null | undefined): [unknown, boolean] {
+  if (limit == null) return [value, false];
+  const text = JSON.stringify(value ?? null) ?? 'null';
+  if (Buffer.byteLength(text, 'utf8') <= limit) return [value, false];
+  return [{ truncated: true, preview: text.slice(0, limit) }, true];
 }
 
 export function writeArtifacts(
@@ -254,24 +294,33 @@ export function writeArtifacts(
   casesPath: string,
   o: WriteArtifactsOptions,
 ): Record<string, unknown> {
-  const caseLines: string[] = result.itemResults.map((item) =>
-    JSON.stringify({
+  let truncatedAny = false;
+  const caseLines: string[] = result.itemResults.map((item) => {
+    const [input, t1] = truncatePayload(item.input, o.maxPayloadBytes);
+    const [output, t2] = truncatePayload(item.output, o.maxPayloadBytes);
+    const [expected, t3] = truncatePayload(item.expected, o.maxPayloadBytes);
+    truncatedAny = truncatedAny || t1 || t2 || t3;
+    return JSON.stringify({
       schema_version: '1',
       case_id: item.caseId,
       status: caseStatus(item),
-      input: item.input,
-      output: item.output,
-      expected: item.expected,
+      input,
+      output,
+      expected,
       scores: item.scores.map(scoreEvent),
       scorer_errors: scorerErrorEvents(item),
       task_error: item.error,
       trace_id: item.traceId,
       duration_ms: item.durationMs,
-    }),
-  );
+    });
+  });
   atomicWrite(casesPath, caseLines.join('\n') + (caseLines.length ? '\n' : ''));
 
-  const artifact = { run: runPath, cases: casesPath, payloads: 'complete' };
+  const artifact = {
+    run: runPath,
+    cases: casesPath,
+    payloads: truncatedAny ? 'truncated' : 'complete',
+  };
   const versions = scorerVersions(result);
   const runDoc: Record<string, unknown> = {
     schema_version: '1',
@@ -469,6 +518,7 @@ async function runOne(
       provenance,
       baseline,
       createdAt,
+      maxPayloadBytes: options.max_payload_bytes != null ? Number(options.max_payload_bytes) : null,
     });
   }
 
