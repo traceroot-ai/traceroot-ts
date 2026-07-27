@@ -270,7 +270,6 @@ export interface WriteArtifactsOptions {
   sampleSeed: number | null;
   candidateVersion: string | null;
   provenance: Record<string, unknown> | null;
-  baseline?: EvalRunResult | null;
   createdAt?: string;
   /** Opt-in per-payload byte cap (parity with Python `max_payload_bytes`). */
   maxPayloadBytes?: number | null;
@@ -353,16 +352,6 @@ export function writeArtifacts(
     artifact,
     cases: result.itemResults.map(caseMetadata),
   };
-  if (o.baseline) {
-    const cmp = result.compare(o.baseline);
-    runDoc.baseline = {
-      compatible: cmp.compatible,
-      improvements: cmp.improvements.length,
-      regressions: cmp.regressions.length,
-      unchanged: cmp.unchanged.length,
-      unpaired: cmp.unpaired.length,
-    };
-  }
   atomicWrite(runPath, JSON.stringify(runDoc, null, 2));
   return artifact;
 }
@@ -451,9 +440,6 @@ async function runOne(
       ? (c: EvalCase) => (baseSelect ? baseSelect(c) : true) && chosen.has(c.id as string)
       : baseSelect;
 
-  let baseline: EvalRunResult | null = null;
-  if (options.baseline) baseline = EvalRunResult.load(options.baseline);
-
   const fullCount = caseIds(evaluation.dataset as Dataset | EvalCase[]).length;
   const caseCount = chosen !== null ? chosen.size : fullCount;
   emitter.emit({
@@ -516,7 +502,6 @@ async function runOne(
       sampleSeed: chosen !== null ? seed : null,
       candidateVersion,
       provenance,
-      baseline,
       createdAt,
       maxPayloadBytes: options.max_payload_bytes != null ? Number(options.max_payload_bytes) : null,
     });

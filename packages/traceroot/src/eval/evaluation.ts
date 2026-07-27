@@ -1,6 +1,6 @@
 // src/eval/evaluation.ts — reusable Evaluation definition (parity with
 // traceroot-py/traceroot/eval/evaluation.py). A mutable, reusable definition (compose,
-// reuse in CI, pin a baseline, select a subset); run() produces an immutable EvalRunResult.
+// reuse in CI, select a subset); run() produces an immutable EvalRunResult.
 
 import { evaluateAsync, EvaluateOptions } from './engine';
 import type { EvalRunResult } from './results';
