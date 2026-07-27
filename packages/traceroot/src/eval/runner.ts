@@ -433,6 +433,8 @@ async function runOne(
     candidateVersion: candidateVersion ?? undefined,
     select,
     local: !reporting,
+    // The runner speaks NDJSON on its own channel; never draw a progress bar.
+    progress: false,
     onCaseStart,
     onCaseComplete,
   };
