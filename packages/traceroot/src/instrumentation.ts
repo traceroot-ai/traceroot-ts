@@ -3,7 +3,6 @@ import { registerInstrumentations, type Instrumentation } from '@opentelemetry/i
 import type { InitializeOptions } from './types';
 import { wireOpenAIAgentsProcessor } from './openai-agents';
 import { wireClaudeAgentSDKInstrumentation } from './claude-agent-sdk';
-import { wirePiCodingAgentInstrumentation } from './pi';
 
 type InstrumentationWithManualPatch = Instrumentation & {
   manuallyInstrument(moduleRef: unknown): void;
@@ -17,6 +16,22 @@ const OPENINFERENCE_PACKAGES = {
   langchain: ['@arizeai/openinference-instrumentation-langchain', 'LangChainInstrumentation'],
   bedrock: ['@arizeai/openinference-instrumentation-bedrock', 'BedrockInstrumentation'],
 } as const;
+
+// Provider keys (from OPENINFERENCE_PACKAGES) whose OpenInference instrumentation is actually
+// registered. llmJudge reads this to avoid emitting its own LLM span when the provider call is
+// already traced (which would nest an LLM span inside an LLM span).
+const _instrumentedProviders = new Set<string>();
+
+/** Whether the given provider key (e.g. 'anthropic', 'openAI') is currently instrumented. */
+export function isProviderInstrumented(provider: string): boolean {
+  return _instrumentedProviders.has(provider);
+}
+
+/** Test-only: seed the instrumented-provider set (mirrors what wireInstrumentations records). */
+export function __setInstrumentedProvidersForTest(providers: string[]): void {
+  _instrumentedProviders.clear();
+  for (const p of providers) _instrumentedProviders.add(p);
+}
 
 function loadInstrumentation(pkg: string, exportName: string): InstrumentationCtor | null {
   try {
@@ -49,9 +64,12 @@ export function wireInstrumentations(
     // Auto-instrumentation via require-in-the-middle (CJS only).
     // ESM users must pass explicit module refs.
     const instrs: Instrumentation[] = [];
-    for (const [pkg, exportName] of Object.values(OPENINFERENCE_PACKAGES)) {
+    for (const [key, [pkg, exportName]] of Object.entries(OPENINFERENCE_PACKAGES)) {
       const Ctor = loadInstrumentation(pkg, exportName);
-      if (Ctor) instrs.push(new Ctor());
+      if (Ctor) {
+        instrs.push(new Ctor());
+        _instrumentedProviders.add(key);
+      }
     }
     if (instrs.length > 0) {
       registerInstrumentations({ instrumentations: instrs });
@@ -71,6 +89,7 @@ export function wireInstrumentations(
     const instr = new Ctor();
     instrs.push(instr);
     instr.manuallyInstrument(moduleRef);
+    _instrumentedProviders.add(key);
   }
 
   if (instrumentModules.claudeAgentSDK) {
@@ -78,9 +97,6 @@ export function wireInstrumentations(
   }
   if (instrumentModules.openaiAgents) {
     wireOpenAIAgentsProcessor(instrumentModules.openaiAgents);
-  }
-  if (instrumentModules.piCodingAgent) {
-    wirePiCodingAgentInstrumentation(instrumentModules.piCodingAgent);
   }
 
   if (instrs.length > 0) {
