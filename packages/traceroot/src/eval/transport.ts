@@ -1,6 +1,7 @@
-// src/eval/transport.ts — transport seam for offline evaluation (OE-8).
-// Parity with traceroot-py/traceroot/eval/transport.py. The seam is async because a
-// reporting transport does real HTTP; the local/fake ones just resolve immediately.
+// src/eval/transport.ts — transport seam for offline evaluation.
+// Parity with traceroot-py/traceroot/eval/transport.py. Evaluation is cloud-only: every run
+// reports through a PlatformTransport. This defines the seam plus a recording FakeTransport
+// (a non-network stand-in cloud transport) for deterministic tests.
 
 import type { EvalCase, Score } from './types';
 import type { EvalItemResult, UploadState } from './results';
@@ -12,7 +13,7 @@ export interface RunHandle {
   metadata: Record<string, unknown> | null;
 }
 
-/** Result of Dataset.publish - explicit about local-only state. */
+/** Result of the dataset publish seam. */
 export interface PublishResult {
   status: 'local_only' | 'uploaded';
   datasetName: string;
@@ -21,10 +22,7 @@ export interface PublishResult {
 
 /** Persistence seam. Implementations must never fabricate remote URLs. */
 export interface EvalTransport {
-  /** Whether a run through this transport reports its per-case traces to the platform.
-   *  The engine reads it for the trace-privacy boundary; local transports are false. */
-  readonly reportsTraces?: boolean;
-  /** Platform run id once a run is created (reporting transports only). */
+  /** Platform run id once a run is created. */
   readonly runId?: string | null;
   createRun(
     name: string,
@@ -39,35 +37,10 @@ export interface EvalTransport {
   publishDataset(datasetName: string, itemCount: number): Promise<PublishResult>;
 }
 
-/** Default no-op transport. Everything stays local; nothing is uploaded. */
-export class LocalTransport implements EvalTransport {
-  readonly reportsTraces = false;
-  async createRun(
-    name: string,
-    datasetName: string,
-    metadata: Record<string, unknown> | null,
-    _clientRunId?: string,
-  ): Promise<RunHandle> {
-    return { name, datasetName, metadata };
-  }
-  async registerItem(): Promise<void> {}
-  async recordItemResult(): Promise<void> {}
-  async recordScores(): Promise<void> {}
-  async finishRun(_run: RunHandle, _status?: string | null): Promise<UploadState> {
-    return { status: 'local_only', dashboardUrl: null };
-  }
-  async publishDataset(datasetName: string, itemCount: number): Promise<PublishResult> {
-    return { status: 'local_only', datasetName, itemCount };
-  }
-}
-
-/** Records every call in order for deterministic tests. Local-only. */
+/** Records every call in order for deterministic tests -- a stand-in cloud transport
+ *  (spans export as on a reported run; no real HTTP). */
 export class FakeTransport implements EvalTransport {
   readonly calls: unknown[][] = [];
-  readonly reportsTraces: boolean;
-  constructor(reportsTraces = false) {
-    this.reportsTraces = reportsTraces;
-  }
 
   async createRun(
     name: string,
@@ -89,7 +62,7 @@ export class FakeTransport implements EvalTransport {
   }
   async finishRun(_run: RunHandle, _status?: string | null): Promise<UploadState> {
     this.calls.push(['finish_run']);
-    return { status: 'local_only', dashboardUrl: null };
+    return { status: 'uploaded', dashboardUrl: null };
   }
   async publishDataset(datasetName: string, itemCount: number): Promise<PublishResult> {
     this.calls.push(['publish_dataset', datasetName]);

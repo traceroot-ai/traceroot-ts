@@ -551,7 +551,7 @@ function partialResult(
   return makeRunResult(
     evaluation.name,
     collected,
-    { status: 'local_only', dashboardUrl: null },
+    { status: 'uploaded', dashboardUrl: null },
     {
       localRunId: newRunId(),
       candidateVersion,

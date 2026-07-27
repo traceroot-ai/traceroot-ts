@@ -12,9 +12,9 @@ export interface EvaluationOptions extends Omit<EvaluateOptions, 'dataset' | 'da
 }
 
 /**
- * A reusable, code-level evaluation definition. Reporting is upload-by-default: with
- * credentials and a platform dataset the run reports; pass `local: true` to keep it local,
- * or `transport` to control it. `retry` is rejected rather than silently ignored.
+ * A reusable, code-level evaluation definition. Evaluation is cloud-only: every run reports
+ * to the platform, which needs credentials and a synced dataset; pass `transport` to supply an
+ * explicit one. `retry` is rejected rather than silently ignored.
  */
 export class Evaluation {
   private readonly opts: EvaluateOptions;

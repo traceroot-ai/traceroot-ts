@@ -8,13 +8,15 @@ import { join } from 'node:path';
 import { Emitter, runSuite } from '../src/eval';
 
 const EVAL_SRC = `
-import { Dataset, Evaluation } from '${join(__dirname, '..', 'src', 'eval').replace(/\\/g, '/')}';
+import { Dataset, Evaluation, FakeTransport } from '${join(__dirname, '..', 'src', 'eval').replace(/\\/g, '/')}';
 const ds = new Dataset('tickets');
 ds.add({ m: 'charge' }, { id: 'a', expected: { r: 'billing' } });
 ds.add({ m: 'hello' }, { id: 'b', expected: { r: 'general' } });
 function route(x: any) { return { r: x.m === 'charge' ? 'billing' : 'general' }; }
 function accuracy(ctx: any) { return JSON.stringify(ctx.output) === JSON.stringify(ctx.expected) ? 1 : 0; }
-export const routing = new Evaluation({ name: 'ticket-routing', dataset: ds, task: route, scorers: [accuracy] });
+// Cloud-only: a run reports through a transport. This eval configures a non-network
+// FakeTransport (a real eval would report to the platform with credentials).
+export const routing = new Evaluation({ name: 'ticket-routing', dataset: ds, task: route, scorers: [accuracy], transport: new FakeTransport() });
 `;
 
 let dir: string;

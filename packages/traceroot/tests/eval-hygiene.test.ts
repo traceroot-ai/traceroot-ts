@@ -43,7 +43,7 @@ function run(items: EvalItemResult[]): EvalRunResult {
   return makeRunResult(
     'r',
     items,
-    { status: 'local_only', dashboardUrl: null },
+    { status: 'uploaded', dashboardUrl: null },
     { localRunId: 'lr_test', candidateVersion: 'v1' },
   );
 }
