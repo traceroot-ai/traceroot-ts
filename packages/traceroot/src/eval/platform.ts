@@ -177,7 +177,9 @@ export interface PlatformTransportOptions {
 export class PlatformTransport implements EvalTransport {
   readonly reportsTraces = true;
   runId: string | null = null;
-  /** UI-relative run path from the backend, when it returns one. */
+  /** Absolute UI run link from the backend (resolved against the UI origin), when present. */
+  runUrl: string | null = null;
+  /** UI-relative run path from the backend — same-origin fallback for runUrl. */
   runPath: string | null = null;
 
   private readonly datasetId: string;
@@ -277,7 +279,10 @@ export class PlatformTransport implements EvalTransport {
     if (effectiveClientRun != null) body.client_run_id = effectiveClientRun;
     const resp = await this.request('POST', '/api/v1/public/evaluation-runs', body);
     this.runId = resp.evaluation_run_id;
-    // Optional: absent on older/self-hosted backends -> dashboardUrl stays null.
+    // Optional, absent on older/self-hosted backends. Prefer the absolute run_url (resolved
+    // against the UI origin) so the link is correct across split API/UI origins; keep
+    // run_path as a same-origin fallback.
+    this.runUrl = resp.run_url ?? null;
     this.runPath = resp.run_path ?? null;
     return { name, datasetName: _datasetName, metadata: _metadata };
   }
@@ -326,7 +331,9 @@ export class PlatformTransport implements EvalTransport {
     if (this.mainCount) body.main_score = this.mainSum / this.mainCount;
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/complete`, body);
     // Join the backend's UI-relative run path with our host; null when absent.
-    const url = this.runPath ? `${this.baseUrl}${this.runPath}` : null;
+    // Prefer the backend's absolute run_url; fall back to baseUrl + run_path for a control
+    // plane that predates run_url (keeps the same-origin behavior).
+    const url = this.runUrl ?? (this.runPath ? `${this.baseUrl}${this.runPath}` : null);
     return { status: 'uploaded', dashboardUrl: url };
   }
 

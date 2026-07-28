@@ -22,6 +22,7 @@ function mockBackend(
     versions?: Record<string, any>;
     apiKey?: string;
     runPath?: string;
+    runUrl?: string;
   } = {},
 ) {
   const versions = opts.versions ?? {};
@@ -49,6 +50,7 @@ function mockBackend(
     if (u.endsWith('/evaluation-runs')) {
       const resp: Record<string, unknown> = { evaluation_run_id: 'run_1' };
       if (opts.runPath) resp.run_path = opts.runPath;
+      if (opts.runUrl) resp.run_url = opts.runUrl;
       return new Response(JSON.stringify(resp), { status: 200 });
     }
     return new Response(JSON.stringify({}), { status: 200 }); // results/complete
@@ -198,7 +200,7 @@ describe('reporting default (upload-by-default)', () => {
   });
 });
 
-describe('run URL (run_path -> dashboardUrl)', () => {
+describe('run URL (run_url preferred, run_path fallback -> dashboardUrl)', () => {
   it('joins host + run_path into dashboardUrl', async () => {
     mockBackend({ runPath: '/projects/proj_9/evaluations/run_1' });
     const ds = new Dataset('d');
@@ -213,6 +215,28 @@ describe('run URL (run_path -> dashboardUrl)', () => {
     // host is whatever resolveCredentials returns; the point is host + run_path joined.
     const url = run.uploadState.dashboardUrl!;
     assert.match(url, /^https?:\/\/.+\/projects\/proj_9\/evaluations\/run_1$/);
+  });
+
+  it('prefers an absolute run_url over host + run_path (split origins)', async () => {
+    // API host on :8000, run_url resolved against the UI origin on :3000.
+    mockBackend({
+      runPath: '/projects/proj_9/evaluations/run_1',
+      runUrl: 'http://localhost:3000/projects/proj_9/evaluations/run_1',
+    });
+    const ds = new Dataset('d');
+    ds.add({ i: 0 }, { expected: { i: 0 } });
+    const run = await evaluate({
+      name: 'r',
+      dataset: ds,
+      task: echo,
+      scorers: [exact],
+      transport: new PlatformTransport('ds_1'),
+    });
+    // run_url wins verbatim; the API origin is never used to build the link.
+    assert.equal(
+      run.uploadState.dashboardUrl,
+      'http://localhost:3000/projects/proj_9/evaluations/run_1',
+    );
   });
 
   it('leaves dashboardUrl null when the backend omits run_path', async () => {
