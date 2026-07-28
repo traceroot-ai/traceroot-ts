@@ -12,6 +12,7 @@ import {
 import { TraceRootSpanProcessor } from '../src/processor';
 import { isInternalMode, withForcedTraceId } from '../src/trace-id';
 import { trace } from '@opentelemetry/api';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
 describe('TraceRoot.initialize()', () => {
   afterEach(() => {
@@ -443,5 +444,59 @@ describe('internal export mode init', () => {
     const unforced = withForcedTraceId(FORCED, () => trace.getTracer('t').startSpan('root'));
     assert.notEqual(unforced.spanContext().traceId, FORCED);
     unforced.end();
+  });
+});
+
+describe('TraceRoot.isTracingActive()', () => {
+  afterEach(() => {
+    _resetForTesting();
+  });
+
+  it('is false before any initialize()', () => {
+    assert.equal(TraceRoot.isTracingActive(), false);
+  });
+
+  it('is true after a clean initialize() (no foreign provider)', () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    assert.equal(TraceRoot.isTracingActive(), true);
+  });
+
+  it('is false after shutdown()', async () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    await TraceRoot.shutdown();
+    assert.equal(TraceRoot.isTracingActive(), false);
+  });
+
+  it('reports and warns loudly when another OTel provider already won global registration', () => {
+    const foreign = new NodeTracerProvider();
+    foreign.register();
+
+    const errors: string[] = [];
+    const restore = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(' '));
+    };
+    try {
+      TraceRoot.initialize({
+        internalExport: { path: '/x', projectId: 'p' },
+      });
+      assert.equal(TraceRoot.isInitialized(), true);
+      assert.equal(TraceRoot.isTracingActive(), false);
+      assert.equal(errors.length, 1);
+      assert.ok(errors[0].includes('tracer-provider registration was rejected'));
+    } finally {
+      console.error = restore;
+      // _resetForTesting() disables the global registration, releasing both
+      // our provider and the foreign one.
+      _resetForTesting();
+    }
+  });
+
+  it('re-registers cleanly after shutdown() then a second initialize()', async () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    assert.equal(TraceRoot.isTracingActive(), true);
+    await TraceRoot.shutdown();
+    TraceRoot.initialize({ apiKey: 'test-key-2', disableBatch: true });
+    assert.equal(TraceRoot.isTracingActive(), true);
   });
 });
