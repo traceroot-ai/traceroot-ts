@@ -129,14 +129,13 @@ async function _observeRegular<A extends unknown[], T>(
   };
 
   if (forcedId !== undefined && shouldForceTraceId(forcedId)) {
-    // ROOT_CONTEXT: an ambient active span would otherwise parent this span and the
-    // generator would never be asked for a trace id.
-    return withForcedTraceId(forcedId, () =>
-      tracer.startActiveSpan(name, {}, ROOT_CONTEXT, (span) => {
-        warnIfForcingFailed(forcedId, span);
-        return run(span);
-      }),
-    );
+    // Force the id around span CREATION only, then run the callback inside the span's
+    // context. Wrapping the whole callback would leave the forced id visible (via
+    // AsyncLocalStorage, which survives await) to any root a user creates inside fn.
+    // ROOT_CONTEXT base: an ambient active span would otherwise parent this root.
+    const span = withForcedTraceId(forcedId, () => tracer.startSpan(name, undefined, ROOT_CONTEXT));
+    warnIfForcingFailed(forcedId, span);
+    return context.with(trace.setSpan(ROOT_CONTEXT, span), () => run(span));
   }
   return tracer.startActiveSpan(name, run);
 }
