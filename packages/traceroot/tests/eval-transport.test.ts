@@ -1,9 +1,8 @@
-// OE-8: transport seam parity (Python OE-5): LocalTransport, FakeTransport, publish().
+// Transport seam parity (Python test_transport.py): FakeTransport wiring + cloud-only default.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Dataset, evaluate } from '../src/eval';
-import { FakeTransport, LocalTransport } from '../src/eval';
+import { Dataset, evaluate, FakeTransport } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 
 function ds(n: number): Dataset {
@@ -14,18 +13,12 @@ function ds(n: number): Dataset {
 const echo = (x: unknown) => x;
 const exact = (ctx: ScorerContext) => (ctx.output === ctx.expected ? 1 : 0);
 
-describe('LocalTransport', () => {
-  it('finishRun is local_only', async () => {
-    const t = new LocalTransport();
-    const run = await t.createRun('r', 'd', null);
-    const state = await t.finishRun(run);
-    assert.equal(state.status, 'local_only');
-    assert.equal(state.dashboardUrl, null);
-  });
-
-  it('default evaluate is local_only', async () => {
-    const result = await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact] });
-    assert.equal(result.uploadState.status, 'local_only');
+describe('cloud-only default', () => {
+  it('bare evaluate requires reporting (no credentials + inline dataset -> throws)', async () => {
+    await assert.rejects(
+      evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact] }),
+      /reports to the TraceRoot platform/,
+    );
   });
 });
 
@@ -68,19 +61,16 @@ describe('FakeTransport wiring', () => {
     assert.deepEqual([...registered].sort(), ['c0', 'c1', 'c2']);
   });
 
-  it('exactly one finish_run', async () => {
+  it('exactly one finish_run, reported uploaded', async () => {
     const fake = new FakeTransport();
-    await evaluate({ name: 'r', data: ds(3), task: echo, scorers: [exact], transport: fake });
+    const result = await evaluate({
+      name: 'r',
+      data: ds(3),
+      task: echo,
+      scorers: [exact],
+      transport: fake,
+    });
     assert.equal(fake.calls.filter((c) => c[0] === 'finish_run').length, 1);
-  });
-});
-
-describe('Dataset.publish', () => {
-  it('returns a local_only PublishResult', async () => {
-    const d = ds(3);
-    const result = await d.publish();
-    assert.equal(result.status, 'local_only');
-    assert.equal(result.datasetName, 'd');
-    assert.equal(result.itemCount, 3);
+    assert.equal(result.uploadState.status, 'uploaded');
   });
 });

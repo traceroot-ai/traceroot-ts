@@ -124,16 +124,17 @@ describe('pull', () => {
   });
 });
 
-describe('reporting default (upload-by-default)', () => {
-  it('no credentials -> local', async () => {
-    // no api key set -> resolveCredentials returns empty -> stays local, no POST
+describe('reporting (cloud-only)', () => {
+  it('no credentials -> throws (nothing to report to)', async () => {
+    // no api key set -> resolveCredentials empty -> no reporting transport -> cloud-only raise
     const ds = new Dataset('d');
     ds.datasetId = 'ds_1';
     ds.datasetVersionId = 'dsv_1';
     ds.upsert({ input: 1, id: 'c0', expected: 1 });
-    const result = await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] });
-    assert.equal(result.uploadState.status, 'local_only');
-    assert.equal(result.runId, null);
+    await assert.rejects(
+      evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] }),
+      /reports to the TraceRoot platform/,
+    );
   });
 
   it('remote dataset + creds -> uploaded by default, with correct payloads', async () => {
@@ -169,23 +170,6 @@ describe('reporting default (upload-by-default)', () => {
 
     const done = calls.find((c) => c.url.endsWith('/complete'))!;
     assert.equal(done.body.main_score, 1); // aggregate
-  });
-
-  it('local:true opts out even with creds + remote dataset', async () => {
-    mockBackend({});
-    const ds = new Dataset('d');
-    ds.datasetId = 'ds_1';
-    ds.datasetVersionId = 'dsv_1';
-    ds.upsert({ input: 1, id: 'c0', expected: 1 });
-    const result = await evaluate({
-      name: 'r',
-      dataset: ds,
-      task: echo,
-      scorers: [exact],
-      local: true,
-    });
-    assert.equal(result.uploadState.status, 'local_only');
-    assert.ok(!calls.some((c) => c.url.endsWith('/evaluation-runs')));
   });
 
   it('never sends a baseline_run_id (comparison is the backend’s job)', async () => {

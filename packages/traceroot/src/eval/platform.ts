@@ -175,7 +175,6 @@ export interface PlatformTransportOptions {
 
 /** Reports an evaluation run to the TraceRoot backend. One instance per run. */
 export class PlatformTransport implements EvalTransport {
-  readonly reportsTraces = true;
   runId: string | null = null;
   /** Absolute UI run link from the backend (resolved against the UI origin), when present. */
   runUrl: string | null = null;
