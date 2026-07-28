@@ -147,9 +147,17 @@ export async function pullDatasetVersion(
 export interface ScorerSpec {
   name: string;
   version?: string | null;
+  scorer_type?: string | null;
   value_type?: string | null;
   direction?: string | null;
   threshold?: number | null;
+  output_type?: string | null;
+  description?: string | null;
+  metadata?: Record<string, unknown> | null;
+  language?: string | null;
+  source?: string | null;
+  model?: string | null;
+  messages?: unknown;
 }
 
 export interface PlatformTransportOptions {
@@ -220,7 +228,20 @@ export class PlatformTransport implements EvalTransport {
           name: spec.name,
           version: spec.version || UNVERSIONED_SCORER,
         };
-        for (const k of ['value_type', 'direction', 'threshold'] as const) {
+        // Comparison metadata + the read-only definition. Absent fields are omitted.
+        for (const k of [
+          'scorer_type',
+          'value_type',
+          'direction',
+          'threshold',
+          'output_type',
+          'description',
+          'metadata',
+          'language',
+          'source',
+          'model',
+          'messages',
+        ] as const) {
           if (spec[k] != null) ref[k] = spec[k];
         }
         return ref;

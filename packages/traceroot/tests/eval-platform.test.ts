@@ -153,7 +153,12 @@ describe('reporting default (upload-by-default)', () => {
     const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
     assert.equal(reg.body.candidate_version, 'v1');
     assert.equal(reg.body.dataset_version_id, 'dsv_1');
-    assert.deepEqual(reg.body.scorers, [{ name: 'exact', version: 'unversioned' }]);
+    const sc = reg.body.scorers[0];
+    assert.equal(sc.name, 'exact');
+    assert.equal(sc.version, 'unversioned');
+    assert.equal(sc.scorer_type, 'code'); // definition rides the manifest
+    assert.equal(sc.language, 'typescript');
+    assert.ok(typeof sc.source === 'string' && sc.source.length > 0);
 
     const res = calls.find((c) => c.url.endsWith('/results'))!;
     assert.equal(res.body.status, 'passed');
