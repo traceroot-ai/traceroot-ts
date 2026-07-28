@@ -31,6 +31,7 @@ import { assertValidProjectId, _resetProjectIdState } from './project-id';
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
 let _isInitialized = false;
+let _tracingActive = false;
 let _provider: NodeTracerProvider | undefined;
 let _exportTarget: ExportTarget | undefined;
 
@@ -105,6 +106,17 @@ export class TraceRoot {
 
   static isInitialized(): boolean {
     return _isInitialized;
+  }
+
+  /**
+   * True only when initialize() completed AND this SDK's tracer provider actually won
+   * the global OpenTelemetry registration. False when never initialized, after
+   * shutdown(), or when another provider was already registered and ours was rejected
+   * (spans flow elsewhere and trace-id forcing does not take effect). Lets callers
+   * detect a lost registration directly instead of probing span behavior.
+   */
+  static isTracingActive(): boolean {
+    return _isInitialized && _tracingActive;
   }
 
   static initialize(options: InitializeOptions = {}): void {
@@ -246,7 +258,44 @@ export class TraceRoot {
     );
     _provider.register();
 
-    wireInstrumentations(options.instrumentModules);
+    // register() calls trace.setGlobalTracerProvider() internally, which is a no-op
+    // (logs via diag, returns false — never throws) if another OTel provider was
+    // already registered. Detect that by checking whether our provider actually became
+    // the global delegate: if not, spans flow through the other provider and trace-id
+    // forcing silently does nothing. Surface it loudly and record it for isTracingActive().
+    const globalProvider = trace.getTracerProvider();
+    const delegate =
+      'getDelegate' in globalProvider &&
+      typeof (globalProvider as { getDelegate: () => unknown }).getDelegate === 'function'
+        ? (globalProvider as { getDelegate: () => unknown }).getDelegate()
+        : globalProvider;
+    _tracingActive = delegate === _provider;
+    if (!_tracingActive) {
+      console.error(
+        '[TraceRoot] tracer-provider registration was rejected: another OpenTelemetry ' +
+          'provider is already registered globally (registered before TraceRoot.initialize()). ' +
+          'Spans flow through that provider and trace-id forcing will not take effect. ' +
+          'Initialize TraceRoot before any other OpenTelemetry SDK.',
+      );
+    }
+
+    // Wire instrumentations under a rollback guard: if this throws, the global is
+    // already taken by our provider but the init did not complete. Undo the
+    // registration and drop the provider so the NEXT initialize() starts clean —
+    // otherwise it would build a second provider whose register() loses to this one,
+    // leaving flush()/shutdown() operating on a provider that never received spans
+    // (silent data loss).
+    try {
+      wireInstrumentations(options.instrumentModules);
+    } catch (err) {
+      trace.disable();
+      context.disable();
+      propagation.disable();
+      void _provider.shutdown().catch(() => {});
+      _provider = undefined;
+      _tracingActive = false;
+      throw err;
+    }
 
     // Flip trusted-mode state only now that every fallible step above has
     // succeeded — a failed init must not leave forced-trace-id behavior
@@ -277,10 +326,17 @@ export class TraceRoot {
       // Reset even when shutdown() rejects (e.g. a flush failure) — otherwise
       // the SDK is left claiming to be initialized with internal mode still on.
       _isInitialized = false;
+      _tracingActive = false;
       _provider = undefined;
       _exportTarget = undefined;
       _setInternalMode(false);
       _resetObserveState();
+
+      // Release the global tracer/context/propagation registration so a later
+      // initialize() re-registers cleanly instead of losing to this dead provider.
+      trace.disable();
+      context.disable();
+      propagation.disable();
     }
   }
 }
@@ -288,6 +344,7 @@ export class TraceRoot {
 /** @internal */
 export function _resetForTesting(): void {
   _isInitialized = false;
+  _tracingActive = false;
   _provider = undefined;
   _exportTarget = undefined;
   _setInternalMode(false);
