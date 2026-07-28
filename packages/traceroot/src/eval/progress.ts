@@ -29,7 +29,9 @@ export function shouldShowProgress(explicit?: boolean): boolean {
   if (explicit !== undefined) return explicit;
   if (typeof process === 'undefined') return false;
   if (process.env?.TRACEROOT_EVAL_PROGRESS === '0') return false;
-  return process.stdout?.isTTY === true;
+  // Gate on the bar's own stream (stderr): show even when stdout is piped, and stay
+  // suppressed when stderr is captured (e.g. some IDE run panels) so it can't stack.
+  return process.stderr?.isTTY === true;
 }
 
 /** Print a clickable run link on its own line (same stream as the bar). */
@@ -48,7 +50,6 @@ export class ConsoleProgress {
   failed = 0;
   errored = 0;
   private t0 = 0;
-  private lastLen = 0;
   private active = false;
 
   constructor(
@@ -81,7 +82,7 @@ export class ConsoleProgress {
   /** Erase the bar so the caller's own output starts on a clean line. */
   finish(): void {
     if (!this.active) return;
-    this.stream.write('\r' + ' '.repeat(this.lastLen) + '\r');
+    this.stream.write('\r\x1b[2K'); // CR + clear whole line
     this.active = false;
   }
 
@@ -111,9 +112,8 @@ export class ConsoleProgress {
     const line =
       `  ${this.label}  ▕${this.bar(frac)}▏ ${this.done}/${this.total}` +
       `  ·  ${rate.toFixed(1)}/s  ·  ${mm}:${String(ss).padStart(2, '0')}${tail}`;
-    const pad = ' '.repeat(Math.max(0, this.lastLen - line.length));
-    this.stream.write('\r' + line + pad);
-    this.lastLen = line.length;
+    // \r returns to column 0; \x1b[2K erases the whole line -> clean in-place redraw.
+    this.stream.write('\r\x1b[2K' + line);
   }
 }
 

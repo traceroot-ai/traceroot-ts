@@ -74,7 +74,7 @@ describe('ConsoleProgress', () => {
     assert.match(out, /demo/);
     assert.match(out, /3\/3/);
     assert.match(out, /off/); // "N off" tail once a case fails/errors
-    assert.match(out, /\r *\r$/); // finish() clears the line
+    assert.ok(out.endsWith('\r\x1b[2K')); // finish() clears the line (CR + erase-line)
   });
 
   it('finish() without start() is a no-op', () => {
