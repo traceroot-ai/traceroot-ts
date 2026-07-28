@@ -32,6 +32,11 @@ export function shouldShowProgress(explicit?: boolean): boolean {
   return process.stdout?.isTTY === true;
 }
 
+/** Print a clickable run link on its own line (same stream as the bar). */
+export function printRunUrl(url: string, stream?: ProgressStream): void {
+  (stream ?? (process.stderr as unknown as ProgressStream)).write(`  → ${url}\n`);
+}
+
 /** A single-line, in-place progress bar for an evaluation run. */
 export class ConsoleProgress {
   readonly total: number;
