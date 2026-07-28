@@ -63,13 +63,13 @@ describe('aggregateScores', () => {
 });
 
 describe('EvalRunResult.toJSON', () => {
-  it('is JSON-serializable with explicit local_only upload', () => {
+  it('is JSON-serializable with explicit uploaded state', () => {
     const items = [item('a', [{ name: 'acc', value: 1 }]), item('b', [{ name: 'acc', value: 0 }])];
-    const run = makeRunResult('routing-v2', items, { status: 'local_only', dashboardUrl: null });
+    const run = makeRunResult('routing-v2', items, { status: 'uploaded', dashboardUrl: null });
     // Python-identical snake_case artifact shape (cross-loadable + runner-readable).
     const json = run.toJSON() as any;
     assert.equal(json.name, 'routing-v2');
-    assert.equal(json.upload.status, 'local_only');
+    assert.equal(json.upload.status, 'uploaded');
     assert.equal(json.score_summary.acc.mean, 0.5);
     assert.equal(json.item_results.length, 2);
     JSON.stringify(json); // must not throw
