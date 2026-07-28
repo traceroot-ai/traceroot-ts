@@ -4,7 +4,7 @@
 // runs with trace_id = run_id, a child span per run, and the marker on every span.
 import { after, afterEach, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { context, propagation, SpanStatusCode, trace } from '@opentelemetry/api';
+import { context, propagation, ROOT_CONTEXT, SpanStatusCode, trace } from '@opentelemetry/api';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
@@ -208,6 +208,27 @@ describe('self-tracing acceptance (worker scenario)', () => {
     const [s] = exporter.getFinishedSpans();
     assert.equal(s.attributes['deployment.environment'], 'prod');
     assert.equal(s.attributes['traceroot.environment'], 'prod');
+  });
+
+  it('forced id does not leak to a detached root created inside the callback', async () => {
+    let innerTraceId = '';
+    await observe({ name: 'detector-run', traceId: RUN_A }, async () => {
+      // A root detached to ROOT_CONTEXT inside the callback, on the same async chain.
+      // It must get its OWN random id — the forced id is scoped to the outer root's
+      // creation, not the whole callback.
+      await context.with(ROOT_CONTEXT, () =>
+        observe({ name: 'inner' }, async () => {
+          innerTraceId = trace.getActiveSpan()!.spanContext().traceId;
+        }),
+      );
+    });
+
+    assert.notEqual(innerTraceId, RUN_A, 'inner detached root must not inherit the forced id');
+    assert.match(innerTraceId, /^[0-9a-f]{32}$/);
+    // The outer forced root still carries the forced id.
+    const outer = exporter.getFinishedSpans().find((s) => s.name === 'detector-run');
+    assert.ok(outer);
+    assert.equal(outer.spanContext().traceId, RUN_A);
   });
 });
 
