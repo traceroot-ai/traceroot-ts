@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 
 import { Dataset, evaluate, pullDataset, pullDatasetVersion } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
+import { PlatformTransport } from '../src/eval/platform';
 
 const echo = (x: unknown) => x;
 const exact = (ctx: ScorerContext) => (ctx.output === ctx.expected ? 1 : 0);
@@ -20,6 +21,7 @@ function mockBackend(
     current?: string;
     versions?: Record<string, any>;
     apiKey?: string;
+    runPath?: string;
   } = {},
 ) {
   const versions = opts.versions ?? {};
@@ -45,7 +47,9 @@ function mockBackend(
       );
     }
     if (u.endsWith('/evaluation-runs')) {
-      return new Response(JSON.stringify({ evaluation_run_id: 'run_1' }), { status: 200 });
+      const resp: Record<string, unknown> = { evaluation_run_id: 'run_1' };
+      if (opts.runPath) resp.run_path = opts.runPath;
+      return new Response(JSON.stringify(resp), { status: 200 });
     }
     return new Response(JSON.stringify({}), { status: 200 }); // results/complete
   }) as any;
@@ -187,5 +191,38 @@ describe('reporting default (upload-by-default)', () => {
     await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact], baseline });
     const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
     assert.equal(reg.body.baseline_run_id, 'run_base');
+  });
+});
+
+describe('run URL (run_path -> dashboardUrl)', () => {
+  it('joins host + run_path into dashboardUrl', async () => {
+    mockBackend({ runPath: '/projects/proj_9/evaluations/run_1' });
+    const ds = new Dataset('d');
+    ds.add({ i: 0 }, { expected: { i: 0 } });
+    const run = await evaluate({
+      name: 'r',
+      dataset: ds,
+      task: echo,
+      scorers: [exact],
+      transport: new PlatformTransport('ds_1'),
+    });
+    // host is whatever resolveCredentials returns; the point is host + run_path joined.
+    const url = run.uploadState.dashboardUrl!;
+    assert.match(url, /^https?:\/\/.+\/projects\/proj_9\/evaluations\/run_1$/);
+  });
+
+  it('leaves dashboardUrl null when the backend omits run_path', async () => {
+    mockBackend();
+    const ds = new Dataset('d');
+    ds.add({ i: 0 }, { expected: { i: 0 } });
+    const run = await evaluate({
+      name: 'r',
+      dataset: ds,
+      task: echo,
+      scorers: [exact],
+      transport: new PlatformTransport('ds_1'),
+    });
+    assert.equal(run.uploadState.dashboardUrl, null);
+    assert.equal(run.uploadState.status, 'uploaded');
   });
 });

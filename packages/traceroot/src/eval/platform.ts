@@ -170,6 +170,8 @@ export interface PlatformTransportOptions {
 export class PlatformTransport implements EvalTransport {
   readonly reportsTraces = true;
   runId: string | null = null;
+  /** UI-relative run path from the backend, when it returns one. */
+  runPath: string | null = null;
 
   private readonly datasetId: string;
   private readonly scorerNames: string[];
@@ -258,6 +260,8 @@ export class PlatformTransport implements EvalTransport {
     if (effectiveClientRun != null) body.client_run_id = effectiveClientRun;
     const resp = await this.request('POST', '/api/v1/public/evaluation-runs', body);
     this.runId = resp.evaluation_run_id;
+    // Optional: absent on older/self-hosted backends -> dashboardUrl stays null.
+    this.runPath = resp.run_path ?? null;
     return { name, datasetName: _datasetName, metadata: _metadata };
   }
 
@@ -304,7 +308,9 @@ export class PlatformTransport implements EvalTransport {
     };
     if (this.mainCount) body.main_score = this.mainSum / this.mainCount;
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/complete`, body);
-    return { status: 'uploaded', dashboardUrl: null };
+    // Join the backend's UI-relative run path with our host; null when absent.
+    const url = this.runPath ? `${this.baseUrl}${this.runPath}` : null;
+    return { status: 'uploaded', dashboardUrl: url };
   }
 
   async publishDataset(datasetName: string, itemCount: number): Promise<PublishResult> {
