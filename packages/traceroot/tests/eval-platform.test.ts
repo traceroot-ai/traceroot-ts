@@ -181,16 +181,15 @@ describe('reporting default (upload-by-default)', () => {
     assert.ok(!calls.some((c) => c.url.endsWith('/evaluation-runs')));
   });
 
-  it('baseline links baseline_run_id on the default path', async () => {
+  it('never sends a baseline_run_id (comparison is the backend’s job)', async () => {
     mockBackend({});
     const ds = new Dataset('d');
     ds.datasetId = 'ds_1';
     ds.datasetVersionId = 'dsv_1';
     ds.upsert({ input: 1, id: 'c0', expected: 1 });
-    const baseline = { runId: 'run_base' } as any;
-    await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact], baseline });
+    await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] });
     const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
-    assert.equal(reg.body.baseline_run_id, 'run_base');
+    assert.equal('baseline_run_id' in reg.body, false);
   });
 });
 

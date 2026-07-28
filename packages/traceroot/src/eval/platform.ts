@@ -159,7 +159,6 @@ export interface PlatformTransportOptions {
   environment?: string;
   mainScoreName?: string | null;
   datasetVersionId?: string | null;
-  baselineRunId?: string | null;
   clientRunId?: string | null;
   passThreshold?: number | null;
   apiKey?: string;
@@ -182,7 +181,6 @@ export class PlatformTransport implements EvalTransport {
   private readonly environment: string;
   private readonly mainScoreName: string | null;
   private readonly datasetVersionId: string | null;
-  private readonly baselineRunId: string | null;
   private readonly clientRunId: string | null;
   private readonly passThreshold: number | null;
   private readonly apiKey: string;
@@ -205,7 +203,6 @@ export class PlatformTransport implements EvalTransport {
     this.environment = opts.environment ?? 'evaluation';
     this.mainScoreName = opts.mainScoreName ?? this.scorerNames[0] ?? null;
     this.datasetVersionId = opts.datasetVersionId ?? null;
-    this.baselineRunId = opts.baselineRunId ?? null;
     this.clientRunId = opts.clientRunId ?? null;
     this.passThreshold = opts.passThreshold ?? null;
     this.apiKey = apiKey;
@@ -255,7 +252,6 @@ export class PlatformTransport implements EvalTransport {
     };
     if (this.datasetVersionId !== null) body.dataset_version_id = this.datasetVersionId;
     if (this.mainScoreName !== null) body.main_score_name = this.mainScoreName;
-    if (this.baselineRunId !== null) body.baseline_run_id = this.baselineRunId;
     const effectiveClientRun = clientRunId ?? this.clientRunId;
     if (effectiveClientRun != null) body.client_run_id = effectiveClientRun;
     const resp = await this.request('POST', '/api/v1/public/evaluation-runs', body);
