@@ -259,6 +259,7 @@ export class EvalRunResult {
       run_scores: this.runScores.map(scoreToJSON),
       run_scorer_errors: this.runScorerErrors,
       metadata: this.metadata,
+      upload: { status: this.uploadState.status, dashboard_url: this.uploadState.dashboardUrl },
     };
   }
 
@@ -337,7 +338,13 @@ export class EvalRunResult {
     });
   }
 
+  save(path: string): void {
+    writeFileSync(path, JSON.stringify(this.toJSON()));
+  }
 
+  static load(path: string): EvalRunResult {
+    return EvalRunResult.fromJSON(JSON.parse(readFileSync(path, 'utf8')));
+  }
 
   /**
    * Explicitly upload this retained run's results/scores (idempotent). Replays the item
@@ -345,6 +352,29 @@ export class EvalRunResult {
    * idempotency key. Without a transport, a PlatformTransport is built from the dataset ref
    * + scorer names (needs credentials).
    */
+  async upload(transport?: import('./transport').EvalTransport): Promise<EvalRunResult> {
+    let active = transport;
+    if (!active) {
+      const { PlatformTransport } = await import('./platform');
+      if (!this.dataset)
+        throw new Error('run.upload() needs a dataset ref or an explicit transport');
+      active = new PlatformTransport(this.dataset.datasetId, {
+        scorerNames: Object.keys(this.scoreSummary),
+        candidateVersion: this.candidateVersion,
+        datasetVersionId: this.dataset.datasetVersionId,
+        clientRunId: this.localRunId,
+      });
+    }
+    const datasetName = this.dataset ? this.dataset.datasetId : '<inline>';
+    const run = await active.createRun(this.name, datasetName, null, this.localRunId);
+    for (const item of this.itemResults) {
+      await active.recordItemResult(run, item);
+      await active.recordScores(run, item.caseId, item.scores);
+    }
+    this.uploadState = await active.finishRun(run, null);
+    this.runId = active.runId ?? null;
+    return this;
+  }
 
   summary(): string {
     const head =
