@@ -87,7 +87,10 @@ export async function pullDataset(datasetId: string, opts: PullOptions = {}): Pr
   if (!apiKey)
     throw new Error('pullDataset needs an API key (initialize TraceRoot or pass apiKey).');
 
-  const meta = await httpGetJson(`${baseUrl}/api/v1/public/datasets/${datasetId}`, apiKey);
+  const meta = await httpGetJson(
+    `${baseUrl}/api/v1/public/datasets/${encodeURIComponent(datasetId)}`,
+    apiKey,
+  );
   const versionId = opts.versionId ?? meta.current_dataset_version_id;
   return pullDatasetVersion(versionId, {
     datasetId,
@@ -120,7 +123,10 @@ export async function pullDatasetVersion(
 
   let snapshot: any;
   try {
-    snapshot = await httpGetJson(`${baseUrl}/api/v1/public/dataset-versions/${versionId}`, apiKey);
+    snapshot = await httpGetJson(
+      `${baseUrl}/api/v1/public/dataset-versions/${encodeURIComponent(versionId)}`,
+      apiKey,
+    );
   } catch (err) {
     if (err instanceof Error && / HTTP 404:/.test(err.message)) {
       throw new Error(`dataset version ${JSON.stringify(versionId)} not found`);
@@ -346,7 +352,7 @@ export class PlatformTransport implements EvalTransport {
     for (const s of item.scores) {
       const entry: Record<string, unknown> = {
         scorer_name: s.name,
-        scorer_version: UNVERSIONED_SCORER,
+        scorer_version: s.version || UNVERSIONED_SCORER,
       };
       if (typeof s.value === 'boolean') entry.bool_value = s.value;
       else if (typeof s.value === 'number') entry.numeric_value = s.value;
