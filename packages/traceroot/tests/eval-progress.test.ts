@@ -2,7 +2,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ConsoleProgress, shouldShowProgress } from '../src/eval/progress';
+import { ConsoleProgress, canAnimate, shouldShowProgress } from '../src/eval/progress';
 import type { EvalItemResult, Score } from '../src/eval';
 
 function item(caseId: string, value: number | 'error' | null): EvalItemResult {
@@ -62,7 +62,7 @@ describe('shouldShowProgress', () => {
 describe('ConsoleProgress', () => {
   it('counts statuses and renders an in-place bar', () => {
     const buf = new Buffer();
-    const bar = new ConsoleProgress(3, 'demo', { stream: buf, width: 10 });
+    const bar = new ConsoleProgress(3, 'demo', { stream: buf, width: 10, animate: true });
     bar.start();
     bar.onCaseComplete(item('a', 1.0), 5); // passed
     bar.onCaseComplete(item('b', 0.0), 5); // failed
@@ -82,5 +82,32 @@ describe('ConsoleProgress', () => {
     const bar = new ConsoleProgress(0, 'empty', { stream: buf });
     bar.finish();
     assert.equal(buf.text, '');
+  });
+});
+
+describe('ConsoleProgress plain fallback', () => {
+  it('plain mode writes clean newline lines (no CR/ANSI, cannot stack)', () => {
+    const buf = new Buffer();
+    const bar = new ConsoleProgress(3, 'demo', { stream: buf, animate: false }); // e.g. Debug Console
+    bar.start();
+    bar.onCaseComplete(item('a', 1.0), 5);
+    bar.onCaseComplete(item('b', 0.0), 5);
+    bar.onCaseComplete(item('c', 'error'), 5);
+    bar.finish();
+    const out = buf.text;
+    assert.ok(!out.includes('\r') && !out.includes('\x1b')); // no CR/ANSI -> cannot stack
+    assert.match(out, /3\/3/);
+    assert.equal((out.match(/\n/g) || []).length, 3); // one clean line per case (small run)
+  });
+
+  it('canAnimate is false when the VS Code JS debugger is attached', () => {
+    const prev = process.env.VSCODE_INSPECTOR_OPTIONS;
+    process.env.VSCODE_INSPECTOR_OPTIONS = '{}';
+    try {
+      assert.equal(canAnimate(), false);
+    } finally {
+      if (prev === undefined) delete process.env.VSCODE_INSPECTOR_OPTIONS;
+      else process.env.VSCODE_INSPECTOR_OPTIONS = prev;
+    }
   });
 });

@@ -39,12 +39,30 @@ export function printRunUrl(url: string, stream?: ProgressStream): void {
   (stream ?? (process.stderr as unknown as ProgressStream)).write(`  → ${url}\n`);
 }
 
-/** A single-line, in-place progress bar for an evaluation run. */
+/**
+ * Whether `process.stderr` supports an in-place (\r/ANSI) redraw. False for pipes,
+ * TERM=dumb, and the VS Code Debug Console (which doesn't honor carriage returns even when
+ * isTTY is spoofed) — there the reporter uses plain newline progress instead of animating.
+ */
+export function canAnimate(): boolean {
+  if (typeof process === 'undefined') return false;
+  if (process.stderr?.isTTY !== true) return false;
+  if (process.env?.TERM === 'dumb') return false;
+  // VS Code JS debugger (Debug Console) sets this; its console doesn't process \r.
+  if (process.env?.VSCODE_INSPECTOR_OPTIONS !== undefined) return false;
+  return true;
+}
+
+/**
+ * Evaluation progress: an animated single-line bar where the terminal supports it, and
+ * clean (non-stacking) plain newline updates everywhere else (Debug Console, dumb term).
+ */
 export class ConsoleProgress {
   readonly total: number;
   readonly label: string;
   private readonly stream: ProgressStream;
   private readonly width: number;
+  private readonly animateMode: boolean;
   done = 0;
   passed = 0;
   failed = 0;
@@ -55,19 +73,20 @@ export class ConsoleProgress {
   constructor(
     total: number,
     label: string,
-    opts: { stream?: ProgressStream; width?: number } = {},
+    opts: { stream?: ProgressStream; width?: number; animate?: boolean } = {},
   ) {
     this.total = Math.max(Math.trunc(total), 0);
     this.label = label;
     this.stream = opts.stream ?? (process.stderr as unknown as ProgressStream);
     this.width = opts.width ?? 24;
+    this.animateMode = opts.animate ?? canAnimate();
   }
 
   // -- lifecycle -------------------------------------------------------
   start(): void {
     this.t0 = nowMs();
     this.active = true;
-    this.render();
+    if (this.animateMode) this.render();
   }
 
   onCaseComplete(item: EvalItemResult, _durationMs: number): void {
@@ -76,14 +95,25 @@ export class ConsoleProgress {
     if (status === 'passed') this.passed += 1;
     else if (status === 'failed') this.failed += 1;
     else if (status === 'errored') this.errored += 1;
-    this.render();
+    if (this.animateMode) this.render();
+    else this.plain();
   }
 
-  /** Erase the bar so the caller's own output starts on a clean line. */
+  /** Erase the animated bar so the caller's output starts clean. No-op in plain mode. */
   finish(): void {
     if (!this.active) return;
-    this.stream.write('\r\x1b[2K'); // CR + clear whole line
+    if (this.animateMode) this.stream.write('\r\x1b[2K'); // CR + clear whole line
     this.active = false;
+  }
+
+  /** A clean newline-terminated line (no \r/ANSI). Throttled to ~deciles for large runs. */
+  private plain(): void {
+    const step = Math.max(1, Math.trunc(this.total / 10));
+    if (this.done === this.total || this.total <= 20 || this.done % step === 0) {
+      const bad = this.failed + this.errored;
+      const tail = bad > 0 ? `  (${bad} off)` : '';
+      this.stream.write(`  ${this.label}  ${this.done}/${this.total}${tail}\n`);
+    }
   }
 
   // -- rendering -------------------------------------------------------
