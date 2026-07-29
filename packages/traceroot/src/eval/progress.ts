@@ -69,9 +69,12 @@ export function shouldShowProgress(explicit?: boolean): boolean {
   return process.stderr?.isTTY === true;
 }
 
-/** Print a clickable run link on its own line (same stream as the bar). */
+/**
+ * Print a clickable run link on its own line, followed by a blank line to space it from the
+ * next evaluate()'s output (same stream as the bar).
+ */
 export function printRunUrl(url: string, stream?: ProgressStream): void {
-  (stream ?? (process.stderr as unknown as ProgressStream)).write(`  → ${url}\n`);
+  (stream ?? (process.stderr as unknown as ProgressStream)).write(`  → ${url}\n\n`);
 }
 
 /**
