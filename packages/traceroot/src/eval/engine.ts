@@ -218,12 +218,18 @@ function recordScorerSpan(span: Span, scores: Score[]): void {
 
 async function withTimeout<T>(p: Promise<T>, timeout?: number): Promise<T> {
   if (timeout === undefined) return p;
-  return Promise.race([
-    p,
-    new Promise<T>((_res, rej) =>
-      setTimeout(() => rej(new Error(`TimeoutError: task exceeded ${timeout}s`)), timeout * 1000),
-    ),
-  ]);
+  let handle: ReturnType<typeof setTimeout>;
+  const timer = new Promise<T>((_res, rej) => {
+    handle = setTimeout(
+      () => rej(new Error(`TimeoutError: task exceeded ${timeout}s`)),
+      timeout * 1000,
+    );
+  });
+  try {
+    return await Promise.race([p, timer]);
+  } finally {
+    clearTimeout(handle!);
+  }
 }
 
 async function runCase(
@@ -251,101 +257,104 @@ async function runCase(
   // A reported run exports its per-case spans, so the result carries the trace id.
   const traceId = !ZERO_TRACE_ID.test(rawTraceId) ? rawTraceId : null;
 
-  const result = await usingSpan(root, async (): Promise<EvalItemResult> => {
-    let output: unknown = null;
-    let error: string | null = null;
-    const scores: Score[] = [];
-    const scorerErrors: Record<string, string> = {};
+  let result: EvalItemResult;
+  try {
+    result = await usingSpan(root, async (): Promise<EvalItemResult> => {
+      let output: unknown = null;
+      let error: string | null = null;
+      const scores: Score[] = [];
+      const scorerErrors: Record<string, string> = {};
 
-    const taskSpan = startSpan(
-      {
-        name: 'task',
-        type: 'task',
-        input: evalCase.input,
-        attributes: {
-          [SpanAttributes.EVAL_RUN_NAME]: identity.name,
-          [SpanAttributes.EVAL_CASE_ID]: evalCase.id as string,
-          [SpanAttributes.EVAL_TASK_NAME]: fnName(task, 'task'),
+      const taskSpan = startSpan(
+        {
+          name: 'task',
+          type: 'task',
+          input: evalCase.input,
+          attributes: {
+            [SpanAttributes.EVAL_RUN_NAME]: identity.name,
+            [SpanAttributes.EVAL_CASE_ID]: evalCase.id as string,
+            [SpanAttributes.EVAL_TASK_NAME]: fnName(task, 'task'),
+          },
         },
-      },
-      tracer,
-    );
-    try {
-      output = await usingSpan(taskSpan, () =>
-        withTimeout(Promise.resolve(task(evalCase.input)), timeout),
+        tracer,
       );
-      taskSpan.update({ output });
-    } catch (err) {
-      error = fmtError(err);
-      taskSpan.setError(err);
-      taskSpan.update({ attributes: { [SpanAttributes.EVAL_ERROR]: error } });
-    } finally {
-      taskSpan.end();
-    }
+      try {
+        output = await usingSpan(taskSpan, () =>
+          withTimeout(Promise.resolve(task(evalCase.input)), timeout),
+        );
+        taskSpan.update({ output });
+      } catch (err) {
+        error = fmtError(err);
+        taskSpan.setError(err);
+        taskSpan.update({ attributes: { [SpanAttributes.EVAL_ERROR]: error } });
+      } finally {
+        taskSpan.end();
+      }
 
-    if (error !== null) {
-      root.setError(error);
-      root.update({ output: error, attributes: { [SpanAttributes.EVAL_ERROR]: error } });
-    } else {
-      root.update({ output });
-      const ctx: ScorerContext = {
+      if (error !== null) {
+        root.setError(error);
+        root.update({ output: error, attributes: { [SpanAttributes.EVAL_ERROR]: error } });
+      } else {
+        root.update({ output });
+        const ctx: ScorerContext = {
+          input: evalCase.input,
+          output,
+          expected: evalCase.expected ?? null,
+          metadata: evalCase.metadata,
+        };
+        for (const scorer of scorers) {
+          const name = fnName(scorer, 'scorer');
+          const scorerInput: Record<string, unknown> = {
+            candidate: output,
+            expected: evalCase.expected ?? null,
+          };
+          if (evalCase.scoreTargetSpanId) scorerInput.target_span_id = evalCase.scoreTargetSpanId;
+          const scorerSpan = startSpan(
+            {
+              name,
+              type: 'scorer',
+              input: scorerInput,
+              attributes: {
+                [SpanAttributes.EVAL_RUN_NAME]: identity.name,
+                [SpanAttributes.EVAL_SCORER_NAME]: name,
+              },
+            },
+            tracer,
+          );
+          try {
+            const raw = await usingSpan(scorerSpan, () => Promise.resolve(scorer(ctx)));
+            const produced = stampScorerVersion(normalizeScoreLike(raw, name), scorer);
+            scores.push(...produced);
+            recordScorerSpan(scorerSpan, produced);
+            if (produced.length > 0) scorerSpan.update({ output: scorerOutputRepr(produced) });
+          } catch (err) {
+            scorerErrors[name] = fmtError(err);
+            scorerSpan.setError(err);
+            scorerSpan.update({
+              output: scorerErrors[name],
+              attributes: { [SpanAttributes.EVAL_ERROR]: scorerErrors[name] },
+            });
+          } finally {
+            scorerSpan.end();
+          }
+        }
+      }
+
+      return {
+        caseId: evalCase.id as string,
         input: evalCase.input,
         output,
         expected: evalCase.expected ?? null,
-        metadata: evalCase.metadata,
+        scores,
+        scorerErrors,
+        error,
+        traceId,
+        durationMs: Math.max(0, performance.now() - startedAt),
       };
-      for (const scorer of scorers) {
-        const name = fnName(scorer, 'scorer');
-        const scorerInput: Record<string, unknown> = {
-          candidate: output,
-          expected: evalCase.expected ?? null,
-        };
-        if (evalCase.scoreTargetSpanId) scorerInput.target_span_id = evalCase.scoreTargetSpanId;
-        const scorerSpan = startSpan(
-          {
-            name,
-            type: 'scorer',
-            input: scorerInput,
-            attributes: {
-              [SpanAttributes.EVAL_RUN_NAME]: identity.name,
-              [SpanAttributes.EVAL_SCORER_NAME]: name,
-            },
-          },
-          tracer,
-        );
-        try {
-          const raw = await usingSpan(scorerSpan, () => Promise.resolve(scorer(ctx)));
-          const produced = stampScorerVersion(normalizeScoreLike(raw, name), scorer);
-          scores.push(...produced);
-          recordScorerSpan(scorerSpan, produced);
-          if (produced.length > 0) scorerSpan.update({ output: scorerOutputRepr(produced) });
-        } catch (err) {
-          scorerErrors[name] = fmtError(err);
-          scorerSpan.setError(err);
-          scorerSpan.update({
-            output: scorerErrors[name],
-            attributes: { [SpanAttributes.EVAL_ERROR]: scorerErrors[name] },
-          });
-        } finally {
-          scorerSpan.end();
-        }
-      }
-    }
-
-    return {
-      caseId: evalCase.id as string,
-      input: evalCase.input,
-      output,
-      expected: evalCase.expected ?? null,
-      scores,
-      scorerErrors,
-      error,
-      traceId,
-      durationMs: Math.max(0, performance.now() - startedAt),
-    };
-  });
-
-  root.end();
+    });
+  } finally {
+    root.end();
+  }
   await transport.recordItemResult(run, result);
   await transport.recordScores(run, result.caseId, result.scores);
   onCaseComplete?.(result, result.durationMs ?? 0);
