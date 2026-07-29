@@ -74,7 +74,12 @@ describe('ConsoleProgress', () => {
     assert.match(out, /demo/);
     assert.match(out, /3\/3/);
     assert.match(out, /off/); // "N off" tail once a case fails/errors
-    assert.ok(out.endsWith('\r\x1b[2K')); // finish() clears the line (CR + erase-line)
+    // finish() persists the completed bar (redraws the final frame) and ends the line,
+    // instead of erasing it -> the 100% bar stays on screen.
+    assert.ok(out.endsWith('\n'));
+    const final = out.split('\r\x1b[2K').pop()!;
+    assert.match(final, /3\/3/); // the persisted frame shows 100%
+    assert.match(final, /█/);
   });
 
   it('finish() without start() is a no-op', () => {

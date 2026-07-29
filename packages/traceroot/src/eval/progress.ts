@@ -136,10 +136,14 @@ export class ConsoleProgress {
     else this.plain();
   }
 
-  /** Erase the animated bar so the caller's output starts clean. No-op in plain mode. */
+  /**
+   * Persist the completed bar: redraw the final (100%) frame and end the line so it stays on
+   * screen, then subsequent output starts cleanly below it. No-op in plain mode (its last
+   * line already shows the final count and is newline-terminated).
+   */
   finish(): void {
     if (!this.active) return;
-    if (this.animateMode) this.stream.write('\r\x1b[2K'); // CR + clear whole line
+    if (this.animateMode) this.stream.write('\r\x1b[2K' + this.frame() + '\n');
     this.active = false;
   }
 
@@ -166,8 +170,8 @@ export class ConsoleProgress {
     return bar;
   }
 
-  private render(): void {
-    if (!this.active) return;
+  /** The current progress line, clamped to one physical terminal row (no wrap). */
+  private frame(): string {
     const total = this.total || 1;
     const frac = this.done / total;
     const elapsed = (nowMs() - this.t0) / 1000;
@@ -182,9 +186,13 @@ export class ConsoleProgress {
     const limit = Math.max((this.cols ?? termCols(this.stream)) - 1, 0);
     const anchor = `  ▕${this.bar(frac)}▏ ${this.done}/${this.total}`; // bar + counts (kept)
     const stats = `  ·  ${rate.toFixed(1)}/s  ·  ${mm}:${String(ss).padStart(2, '0')}${tail}`;
-    const line = fitLine(this.label, anchor, stats, limit);
+    return fitLine(this.label, anchor, stats, limit);
+  }
+
+  private render(): void {
+    if (!this.active) return;
     // \r returns to column 0; \x1b[2K erases the whole line -> clean in-place redraw.
-    this.stream.write('\r\x1b[2K' + line);
+    this.stream.write('\r\x1b[2K' + this.frame());
   }
 }
 
