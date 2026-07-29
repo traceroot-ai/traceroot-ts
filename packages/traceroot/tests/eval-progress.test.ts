@@ -83,6 +83,46 @@ describe('ConsoleProgress', () => {
     bar.finish();
     assert.equal(buf.text, '');
   });
+
+  it('never renders wider than the terminal (would wrap and stack)', () => {
+    // A long run name in a narrow (40-col) terminal must fit on one physical row, or
+    // \r\x1b[2K can't clear it and the overflow stacks (the VS Code terminal bug).
+    const buf = new Buffer();
+    const bar = new ConsoleProgress(6, 'ticket-routing-quality-v2', {
+      stream: buf,
+      animate: true,
+      cols: 40,
+    });
+    bar.start();
+    for (let i = 0; i < 6; i++) bar.onCaseComplete(item(`c${i}`, 1.0), 5);
+    const frames = buf.text.split('\r\x1b[2K').filter((f) => f.length > 0);
+    assert.ok(frames.length > 0, 'expected at least one rendered frame');
+    for (const line of frames) {
+      assert.ok(
+        line.length <= 39,
+        `frame wider than terminal (would wrap): ${JSON.stringify(line)}`,
+      );
+    }
+    // The bar + counts (the actual progress) stay visible even when the label is ellipsized.
+    const last = frames[frames.length - 1];
+    assert.ok(last.includes('…') && last.includes('6/6') && last.includes('█'));
+  });
+
+  it('keeps the full line when the terminal is wide enough', () => {
+    const buf = new Buffer();
+    const bar = new ConsoleProgress(3, 'demo', {
+      stream: buf,
+      width: 10,
+      animate: true,
+      cols: 200,
+    });
+    bar.start();
+    bar.onCaseComplete(item('a', 1.0), 5);
+    const out = buf.text;
+    assert.match(out, /demo/);
+    assert.match(out, /1\/3/);
+    assert.match(out, /\/s/); // stats survive, nothing trimmed
+  });
 });
 
 describe('ConsoleProgress plain fallback', () => {

@@ -18,6 +18,41 @@ const BLOCKS = ' ▏▎▍▌▋▊▉█';
 /** A minimal write target (Node stream or a test buffer). */
 export interface ProgressStream {
   write(chunk: string): unknown;
+  /** Terminal width, when the stream is a TTY (Node WriteStream exposes it). */
+  columns?: number;
+}
+
+/**
+ * Best-effort terminal width (columns) for `stream`, default 80. The animated bar MUST fit
+ * on one physical row: a frame wider than the terminal wraps, and `\r\x1b[2K` then only
+ * clears the last wrapped row — leaving the overflow behind on every frame (the "stacking"
+ * bug). We clamp the rendered line to this width so it never wraps.
+ */
+function termCols(stream: ProgressStream): number {
+  const fromStream = stream.columns;
+  if (typeof fromStream === 'number' && fromStream > 0) return fromStream;
+  const fromStderr = typeof process !== 'undefined' ? process.stderr?.columns : undefined;
+  if (typeof fromStderr === 'number' && fromStderr > 0) return fromStderr;
+  return 80;
+}
+
+/**
+ * Compose one progress line that fits within `limit` columns without wrapping. Keeps the bar
+ * + counts (`anchor`) visible at all costs — a progress bar with no progress is useless.
+ * Shedding order as space runs out: full line -> drop `stats` -> ellipsize `label` ->
+ * (last resort) hard-trim. `label` sits before the anchor, `stats` after it.
+ */
+function fitLine(label: string, anchor: string, stats: string, limit: number): string {
+  const full = `  ${label}${anchor}${stats}`;
+  if (full.length <= limit) return full;
+  const withLabel = `  ${label}${anchor}`;
+  if (withLabel.length <= limit) return withLabel; // dropping stats is enough
+  const room = limit - anchor.length - 2; // 2 leading spaces + label + anchor
+  if (room >= 1) {
+    const lab = label.length <= room ? label : label.slice(0, Math.max(room - 1, 0)) + '…';
+    return `  ${lab}${anchor}`;
+  }
+  return withLabel.slice(0, limit); // too narrow for even the bare anchor: hard-trim
 }
 
 /**
@@ -63,6 +98,7 @@ export class ConsoleProgress {
   private readonly stream: ProgressStream;
   private readonly width: number;
   private readonly animateMode: boolean;
+  private readonly cols?: number;
   done = 0;
   passed = 0;
   failed = 0;
@@ -73,13 +109,14 @@ export class ConsoleProgress {
   constructor(
     total: number,
     label: string,
-    opts: { stream?: ProgressStream; width?: number; animate?: boolean } = {},
+    opts: { stream?: ProgressStream; width?: number; animate?: boolean; cols?: number } = {},
   ) {
     this.total = Math.max(Math.trunc(total), 0);
     this.label = label;
     this.stream = opts.stream ?? (process.stderr as unknown as ProgressStream);
     this.width = opts.width ?? 24;
     this.animateMode = opts.animate ?? canAnimate();
+    this.cols = opts.cols; // terminal width to clamp frames to (auto-detected when undefined)
   }
 
   // -- lifecycle -------------------------------------------------------
@@ -139,9 +176,13 @@ export class ConsoleProgress {
     const ss = Math.trunc(elapsed % 60);
     const badCount = this.failed + this.errored;
     const tail = badCount > 0 ? `  ${badCount} off` : '';
-    const line =
-      `  ${this.label}  ▕${this.bar(frac)}▏ ${this.done}/${this.total}` +
-      `  ·  ${rate.toFixed(1)}/s  ·  ${mm}:${String(ss).padStart(2, '0')}${tail}`;
+    // Clamp to one physical row: a line wider than the terminal wraps, and then \r\x1b[2K
+    // only clears the last wrapped row -> the overflow stacks. Trim to cols-1 (leave the
+    // last column free so an exactly-full line can't auto-wrap).
+    const limit = Math.max((this.cols ?? termCols(this.stream)) - 1, 0);
+    const anchor = `  ▕${this.bar(frac)}▏ ${this.done}/${this.total}`; // bar + counts (kept)
+    const stats = `  ·  ${rate.toFixed(1)}/s  ·  ${mm}:${String(ss).padStart(2, '0')}${tail}`;
+    const line = fitLine(this.label, anchor, stats, limit);
     // \r returns to column 0; \x1b[2K erases the whole line -> clean in-place redraw.
     this.stream.write('\r\x1b[2K' + line);
   }
