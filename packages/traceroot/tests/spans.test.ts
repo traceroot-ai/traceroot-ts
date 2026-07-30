@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
-import { trace } from '@opentelemetry/api';
+import { context, propagation, trace } from '@opentelemetry/api';
 import { applyUsage, applyModel } from '../src/attributes';
 import { startSpan, usingSpan, _resetSpansState } from '../src/spans';
-import { _resetForTesting } from '../src/traceroot';
+import { _resetForTesting, TraceRoot } from '../src/traceroot';
 import { observe, _resetObserveState } from '../src/observe';
 import { getCurrentSpan, updateCurrentSpan } from '../src/context';
 import * as tr from '../src/index';
+import { ContextIdGenerator } from '../src/trace-id';
 
 describe('attribute mapping', () => {
   let exporter: InMemorySpanExporter;
@@ -351,5 +352,118 @@ describe('branch coverage: getCurrentSpan + applyUsage edges', () => {
     assert.equal(s.attributes['llm.token_count.prompt'], 10);
     assert.equal(s.attributes['llm.token_count.prompt_details.cache_read'], 10);
     assert.equal(s.attributes['llm.token_count.completion'], undefined);
+  });
+});
+
+describe('startSpan() trace-id forcing', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+  const FORCED = '11111111111111111111111111111111';
+
+  beforeEach(() => {
+    exporter = new InMemorySpanExporter();
+    // The forcing generator must be on the GLOBALLY REGISTERED provider. The later
+    // TraceRoot.initialize() calls only flip internal-mode state — their register()
+    // is a silent no-op because this provider is already the global one.
+    provider = new NodeTracerProvider({ idGenerator: new ContextIdGenerator() });
+    provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+    provider.register();
+  });
+
+  afterEach(async () => {
+    await provider.shutdown();
+    exporter.reset();
+    _resetForTesting();
+    _resetSpansState();
+    trace.disable();
+    context.disable();
+    propagation.disable();
+  });
+
+  it('internal mode: forces the root id, children inherit, root exports with no parent', () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    const root = startSpan({ name: 'run', traceId: FORCED });
+    assert.equal(root.traceId, FORCED);
+    const child = root.startSpan({ name: 'judge' });
+    assert.equal(child.traceId, FORCED);
+    child.end();
+    root.end();
+
+    const exported = exporter.getFinishedSpans().find((s) => s.name === 'run');
+    assert.ok(exported);
+    assert.equal(exported.spanContext().traceId, FORCED);
+    // Genuine root on the wire — the receiving route keys rootness on absent parent.
+    assert.equal(exported.parentSpanId, undefined);
+  });
+
+  it('forces a fresh root even when called under an active span', () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    const ambient = startSpan({ name: 'ambient' });
+    usingSpan(ambient, () => {
+      const root = startSpan({ name: 'run', traceId: FORCED });
+      assert.equal(root.traceId, FORCED);
+      root.end();
+    });
+    ambient.end();
+    const exported = exporter.getFinishedSpans().find((s) => s.name === 'run');
+    assert.ok(exported);
+    assert.equal(exported.parentSpanId, undefined);
+    assert.notEqual(ambient.traceId, FORCED);
+  });
+
+  it('public mode: passing traceId warns and does NOT force', () => {
+    const messages: string[] = [];
+    const restore = console.warn;
+    console.warn = (...a: unknown[]) => {
+      messages.push(a.map(String).join(' '));
+    };
+    let root;
+    try {
+      TraceRoot.initialize({ apiKey: 'k', disableBatch: true });
+      root = startSpan({ name: 'run', traceId: FORCED });
+    } finally {
+      console.warn = restore;
+    }
+    assert.notEqual(root.traceId, FORCED);
+    assert.ok(messages.some((m) => m.includes('internal export mode')));
+    root.end();
+  });
+
+  it('throws when traceId and parent are both provided', () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    const parent = startSpan({ name: 'parent' });
+    assert.throws(() => startSpan({ name: 'child', traceId: FORCED, parent }), TypeError);
+    parent.end();
+  });
+
+  it('child handles reject traceId at the type level (and at runtime)', () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    const parent = startSpan({ name: 'parent' });
+    assert.throws(
+      // @ts-expect-error traceId is excluded from child-handle startSpan options
+      () => parent.startSpan({ name: 'child', traceId: FORCED }),
+      TypeError,
+    );
+    parent.end();
+  });
+
+  it('throws on a malformed forced id', () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    assert.throws(() => startSpan({ name: 'run', traceId: 'bad' }), TypeError);
   });
 });

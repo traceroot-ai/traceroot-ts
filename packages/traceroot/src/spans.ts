@@ -1,16 +1,19 @@
 // src/spans.ts — imperative span handle API
-import { context, trace, SpanStatusCode, Span as OtelSpan } from '@opentelemetry/api';
+import { context, trace, SpanStatusCode, Span as OtelSpan, ROOT_CONTEXT } from '@opentelemetry/api';
 import { applyCommonAttributes, applyModel, applyUsage, applyIO, trySerialize } from './attributes';
 import { SPAN_METADATA } from './constants';
 import { StartSpanOptions, SpanUpdate } from './types';
 import { TraceRoot } from './traceroot';
+import { shouldForceTraceId, warnIfForcingFailed, withForcedTraceId } from './trace-id';
 
 export interface Span {
   readonly spanId: string;
   readonly traceId: string;
   update(attrs: SpanUpdate): this;
   end(): void;
-  startSpan(options: Omit<StartSpanOptions, 'parent'>): Span;
+  // traceId is excluded: a child handle always parents to `this`, so forcing a
+  // trace id through it can never work — reject it at the type level.
+  startSpan(options: Omit<StartSpanOptions, 'parent' | 'traceId'>): Span;
   setError(err: unknown): this;
 }
 
@@ -39,7 +42,7 @@ class TracerootSpan implements Span {
   end(): void {
     this.otelSpan.end();
   }
-  startSpan(options: Omit<StartSpanOptions, 'parent'>): Span {
+  startSpan(options: Omit<StartSpanOptions, 'parent' | 'traceId'>): Span {
     return startSpan({ ...options, parent: this });
   }
   setError(err: unknown): this {
@@ -70,10 +73,27 @@ export function startSpan(options: StartSpanOptions): Span {
   }
   _tracer ??= trace.getTracer('traceroot-ts');
 
-  const parentOtel = options.parent ? (options.parent as TracerootSpan).otelSpan : undefined;
-  const ctx = parentOtel ? trace.setSpan(context.active(), parentOtel) : context.active();
+  if (options.traceId !== undefined && options.parent !== undefined) {
+    throw new TypeError(
+      '[TraceRoot] startSpan: traceId forces a new root and is mutually exclusive with parent.',
+    );
+  }
+  const tracer = _tracer;
+  const forcedId = options.traceId;
 
-  const otel = _tracer.startSpan(options.name, undefined, ctx);
+  let otel: OtelSpan;
+  if (forcedId !== undefined && shouldForceTraceId(forcedId)) {
+    // ROOT_CONTEXT, not context.active(): an ambient active span would parent this
+    // span and the generator would never be asked for a trace id.
+    otel = withForcedTraceId(forcedId, () =>
+      tracer.startSpan(options.name, undefined, ROOT_CONTEXT),
+    );
+    warnIfForcingFailed(forcedId, otel);
+  } else {
+    const parentOtel = options.parent ? (options.parent as TracerootSpan).otelSpan : undefined;
+    const ctx = parentOtel ? trace.setSpan(context.active(), parentOtel) : context.active();
+    otel = tracer.startSpan(options.name, undefined, ctx);
+  }
   if (!otel.isRecording() && !_hasWarnedUninit) {
     _hasWarnedUninit = true;
     console.warn(

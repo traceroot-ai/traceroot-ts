@@ -12,6 +12,7 @@ import {
 import { TraceRootSpanProcessor } from '../src/processor';
 import { isInternalMode, withForcedTraceId } from '../src/trace-id';
 import { trace } from '@opentelemetry/api';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
 describe('TraceRoot.initialize()', () => {
   afterEach(() => {
@@ -335,6 +336,18 @@ describe('resolveExportTarget()', () => {
     });
     assert.equal(t.headers['x-traceroot-sdk-name'], 'traceroot-ts');
   });
+
+  it('preserves multiple custom headers alongside SDK headers', () => {
+    const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
+      path: '/i',
+      projectId: 'p',
+      headers: { 'X-Internal-Secret': 's', 'X-Trace-Origin': 'worker', 'X-Region': 'us-east-1' },
+    });
+    assert.equal(t.headers['X-Internal-Secret'], 's');
+    assert.equal(t.headers['X-Trace-Origin'], 'worker');
+    assert.equal(t.headers['X-Region'], 'us-east-1');
+    assert.equal(t.headers['x-traceroot-sdk-version'], '9.9.9');
+  });
 });
 
 describe('internal export mode init', () => {
@@ -400,6 +413,20 @@ describe('internal export mode init', () => {
     );
   });
 
+  it('throws TypeError when internalExport.path is missing its leading slash, leaving no state behind', () => {
+    try {
+      assert.throws(() => {
+        TraceRoot.initialize({
+          internalExport: { path: 'api/v1/internal/traces', projectId: 'p' },
+        });
+      }, TypeError);
+      assert.equal(TraceRoot.isInitialized(), false);
+      assert.equal(isInternalMode(), false);
+    } finally {
+      _resetForTesting();
+    }
+  });
+
   it('installs the forcing generator in internal mode only (defense in depth)', () => {
     // Internal init: the globally registered provider carries ContextIdGenerator,
     // so a root created inside a forced scope gets the forced id. Default batching
@@ -417,5 +444,59 @@ describe('internal export mode init', () => {
     const unforced = withForcedTraceId(FORCED, () => trace.getTracer('t').startSpan('root'));
     assert.notEqual(unforced.spanContext().traceId, FORCED);
     unforced.end();
+  });
+});
+
+describe('TraceRoot.isTracingActive()', () => {
+  afterEach(() => {
+    _resetForTesting();
+  });
+
+  it('is false before any initialize()', () => {
+    assert.equal(TraceRoot.isTracingActive(), false);
+  });
+
+  it('is true after a clean initialize() (no foreign provider)', () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    assert.equal(TraceRoot.isTracingActive(), true);
+  });
+
+  it('is false after shutdown()', async () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    await TraceRoot.shutdown();
+    assert.equal(TraceRoot.isTracingActive(), false);
+  });
+
+  it('reports and warns loudly when another OTel provider already won global registration', () => {
+    const foreign = new NodeTracerProvider();
+    foreign.register();
+
+    const errors: string[] = [];
+    const restore = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(' '));
+    };
+    try {
+      TraceRoot.initialize({
+        internalExport: { path: '/x', projectId: 'p' },
+      });
+      assert.equal(TraceRoot.isInitialized(), true);
+      assert.equal(TraceRoot.isTracingActive(), false);
+      assert.equal(errors.length, 1);
+      assert.ok(errors[0].includes('tracer-provider registration was rejected'));
+    } finally {
+      console.error = restore;
+      // _resetForTesting() disables the global registration, releasing both
+      // our provider and the foreign one.
+      _resetForTesting();
+    }
+  });
+
+  it('re-registers cleanly after shutdown() then a second initialize()', async () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    assert.equal(TraceRoot.isTracingActive(), true);
+    await TraceRoot.shutdown();
+    TraceRoot.initialize({ apiKey: 'test-key-2', disableBatch: true });
+    assert.equal(TraceRoot.isTracingActive(), true);
   });
 });
