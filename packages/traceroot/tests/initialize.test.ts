@@ -8,6 +8,7 @@ import {
   _resetForTesting,
   resolveExportTarget,
   _getExportTargetForTesting,
+  shouldDropUnattributed,
 } from '../src/traceroot';
 import { TraceRootSpanProcessor } from '../src/processor';
 import { isInternalMode, withForcedTraceId } from '../src/trace-id';
@@ -205,6 +206,22 @@ describe('TraceRoot.initialize()', () => {
   });
 });
 
+describe('initialize() internalExport projectId validation', () => {
+  it('throws TypeError on an empty-string projectId', () => {
+    try {
+      assert.throws(
+        () =>
+          TraceRoot.initialize({
+            internalExport: { path: '/api/v1/internal/traces', projectId: '' },
+          }),
+        TypeError,
+      );
+    } finally {
+      _resetForTesting();
+    }
+  });
+});
+
 // Shared fixture for TraceRootSpanProcessor unit tests
 function makeProcessorFixture() {
   const attributes: Record<string, unknown> = {};
@@ -347,6 +364,56 @@ describe('resolveExportTarget()', () => {
     assert.equal(t.headers['X-Trace-Origin'], 'worker');
     assert.equal(t.headers['X-Region'], 'us-east-1');
     assert.equal(t.headers['x-traceroot-sdk-version'], '9.9.9');
+  });
+
+  describe('resolveExportTarget without a default projectId', () => {
+    it('omits X-Project-Id when internalExport.projectId is unset', () => {
+      const target = resolveExportTarget(
+        'https://app.example.com',
+        undefined,
+        { 'x-traceroot-sdk-name': 'traceroot-ts' },
+        { path: '/api/v1/internal/traces', headers: { 'X-Internal-Secret': 's' } },
+      );
+      assert.equal(target.internal, true);
+      assert.equal(Object.prototype.hasOwnProperty.call(target.headers, 'X-Project-Id'), false);
+      assert.equal(target.headers['X-Internal-Secret'], 's');
+    });
+
+    it('still sends X-Project-Id when configured', () => {
+      const target = resolveExportTarget(
+        'https://app.example.com',
+        undefined,
+        {},
+        { path: '/api/v1/internal/traces', projectId: 'proj-default' },
+      );
+      assert.equal(target.headers['X-Project-Id'], 'proj-default');
+    });
+  });
+});
+
+describe('shouldDropUnattributed()', () => {
+  it('true when internal, no process-default projectId, and no fallback header', () => {
+    assert.equal(shouldDropUnattributed(true, { path: '/i' }), true);
+  });
+
+  it('false when a process-default projectId is configured', () => {
+    assert.equal(shouldDropUnattributed(true, { path: '/i', projectId: 'proj-1' }), false);
+  });
+
+  it('false when the caller supplies an X-Project-Id fallback header (any casing)', () => {
+    assert.equal(
+      shouldDropUnattributed(true, { path: '/i', headers: { 'X-Project-Id': 'proj-1' } }),
+      false,
+    );
+    assert.equal(
+      shouldDropUnattributed(true, { path: '/i', headers: { 'x-project-id': 'proj-1' } }),
+      false,
+    );
+  });
+
+  it('false when not in internal mode', () => {
+    assert.equal(shouldDropUnattributed(false, { path: '/i' }), false);
+    assert.equal(shouldDropUnattributed(false, undefined), false);
   });
 });
 

@@ -28,6 +28,21 @@ describe('assertValidTraceId()', () => {
   it('throws on the all-zero sentinel', () => {
     assert.throws(() => assertValidTraceId('0'.repeat(32)), TypeError);
   });
+
+  it('throws TypeError (not the underlying error) for a non-string whose toJSON throws', () => {
+    // Mirrors the assertValidProjectId hazard: the type signature says `string`, but
+    // an untyped caller can hand us anything. JSON.stringify() must never be invoked
+    // on the raw value for non-strings.
+    assert.throws(
+      () =>
+        assertValidTraceId({
+          toJSON() {
+            throw new Error('boom');
+          },
+        } as unknown as string),
+      TypeError,
+    );
+  });
 });
 
 describe('ContextIdGenerator', () => {

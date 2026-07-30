@@ -14,7 +14,7 @@ import {
   OpenInferenceSimpleSpanProcessor,
 } from '@arizeai/openinference-vercel';
 import { InitializeOptions } from './types';
-import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
+import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor, _resetProcessorState } from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
@@ -26,6 +26,7 @@ import {
   _resetGitContextCache,
 } from './git_context';
 import { ContextIdGenerator, _resetTraceIdState, _setInternalMode } from './trace-id';
+import { assertValidProjectId, _resetProjectIdState } from './project-id';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
@@ -43,8 +44,9 @@ export interface ExportTarget {
 /**
  * Resolve the OTLP export URL + headers. Public mode targets the public traces route
  * with Bearer auth; internal mode targets the bare baseUrl+path with the project id in
- * an X-Project-Id header (no Authorization; a caller-supplied X-Project-Id overrides
- * the option). SDK identity headers always win on collision with caller-supplied headers.
+ * an X-Project-Id header only when a process-default projectId is configured (no
+ * Authorization; a caller-supplied X-Project-Id overrides the option). SDK identity
+ * headers always win on collision with caller-supplied headers.
  */
 export function resolveExportTarget(
   baseUrl: string,
@@ -54,11 +56,15 @@ export function resolveExportTarget(
 ): ExportTarget {
   if (internalExport) {
     // The OTLP exporter strips query strings from its endpoint URL, so the
-    // project id travels as a header (the route accepts X-Project-Id).
+    // project id travels as a header (the route accepts X-Project-Id). It is a
+    // request-level fallback only — per-span attribution is primary — so when no
+    // default is configured, no header is sent at all.
     return {
       url: `${baseUrl}${internalExport.path}`,
       headers: {
-        'X-Project-Id': internalExport.projectId,
+        ...(internalExport.projectId !== undefined
+          ? { 'X-Project-Id': internalExport.projectId }
+          : {}),
         ...(internalExport.headers ?? {}),
         ...sdkHeaders,
       },
@@ -73,6 +79,26 @@ export function resolveExportTarget(
 /** @internal — the target resolved by the last initialize(); for tests only. */
 export function _getExportTargetForTesting(): ExportTarget | undefined {
   return _exportTarget;
+}
+
+/**
+ * Decide whether unattributed spans should be dropped at export. Only when internal
+ * mode has no request-level fallback at all: no process-default projectId AND no
+ * caller-supplied X-Project-Id header (matched case-insensitively — HTTP header
+ * names are case-insensitive, and a caller may spell it however they like via
+ * `internalExport.headers`) — that header is exactly the same fallback the
+ * process-default projectId would have produced, so it must gate the drop the
+ * same way.
+ */
+export function shouldDropUnattributed(
+  internal: boolean,
+  internalExport: InitializeOptions['internalExport'],
+): boolean {
+  if (!internal || internalExport?.projectId !== undefined) return false;
+  const hasCallerProjectHeader = Object.keys(internalExport?.headers ?? {}).some(
+    (h) => h.toLowerCase() === 'x-project-id',
+  );
+  return !hasCallerProjectHeader;
 }
 
 export class TraceRoot {
@@ -192,6 +218,10 @@ export class TraceRoot {
       );
     }
 
+    if (options.internalExport?.projectId !== undefined) {
+      assertValidProjectId(options.internalExport.projectId);
+    }
+
     // Flush/batch tuning — env vars take precedence over SDK defaults.
     const flushIntervalSec = Number(
       process.env['TRACEROOT_FLUSH_INTERVAL'] || DEFAULT_FLUSH_INTERVAL_SEC,
@@ -223,6 +253,7 @@ export class TraceRoot {
         gitRepo,
         gitRef,
         globalAttributes: options.globalAttributes,
+        dropSpansWithoutProjectId: shouldDropUnattributed(target.internal, options.internalExport),
       }),
     );
     _provider.register();
@@ -318,6 +349,8 @@ export function _resetForTesting(): void {
   _exportTarget = undefined;
   _setInternalMode(false);
   _resetTraceIdState();
+  _resetProjectIdState();
+  _resetProcessorState();
   _resetObserveState();
   _resetGitContextCache();
   trace.disable();

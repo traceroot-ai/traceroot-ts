@@ -1,6 +1,7 @@
 // src/processor.ts
 import { trace as otelTrace, Context, Span } from '@opentelemetry/api';
 import { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { PROJECT_ID_ATTR, projectIdFromContext } from './project-id';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json') as { version: string };
@@ -8,11 +9,26 @@ const { version } = require('../package.json') as { version: string };
 export const SDK_NAME = 'traceroot-ts';
 export const SDK_VERSION = version;
 
+let _hasWarnedUnattributedDrop = false;
+
+/** @internal — reset warn-once state between tests. */
+export function _resetProcessorState(): void {
+  _hasWarnedUnattributedDrop = false;
+}
+
 export interface TraceRootSpanProcessorOptions {
   environment?: string;
   gitRepo?: string;
   gitRef?: string;
   globalAttributes?: Record<string, string | number | boolean>;
+  /**
+   * Drop spans that carry no traceroot.project_id attribute instead of exporting
+   * them. Enabled in internal export mode when no process-default project id is
+   * configured: an unroutable span must go nowhere — exporting it would either
+   * poison the whole batch server-side or land it in a project it doesn't belong
+   * to (cross-tenant safety).
+   */
+  dropSpansWithoutProjectId?: boolean;
 }
 
 /**
@@ -33,6 +49,13 @@ export class TraceRootSpanProcessor implements SpanProcessor {
   private readonly _idsPathBySpanId = new Map<string, string[]>();
   private readonly _namePathBySpanId = new Map<string, string[]>();
 
+  // Project id by spanId, so children created from an explicit parent handle —
+  // where the active context does not carry the root's value — still inherit
+  // their root's project id.
+  private readonly _projectIdBySpanId = new Map<string, string>();
+
+  private readonly _dropSpansWithoutProjectId: boolean;
+
   constructor(
     inner: SpanProcessor, // ← WIDENED
     opts: TraceRootSpanProcessorOptions = {},
@@ -42,6 +65,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     this._gitRepo = opts.gitRepo;
     this._gitRef = opts.gitRef;
     this._globalAttributes = opts.globalAttributes;
+    this._dropSpansWithoutProjectId = opts.dropSpansWithoutProjectId ?? false;
   }
 
   onStart(span: Span, parentContext: Context): void {
@@ -70,20 +94,32 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     // correct trace name even when child spans arrive before the root span.
     // Guard: a bare `{}` context (used in unit tests) has no getValue — skip gracefully.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const parentSpan = (
-      typeof (parentContext as any)?.getValue === 'function'
-        ? otelTrace.getSpan(parentContext)
-        : undefined
-    ) as any;
+    const isRealContext = typeof (parentContext as any)?.getValue === 'function';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const parentSpan = (isRealContext ? otelTrace.getSpan(parentContext) : undefined) as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const spanName = ((span as any).name as string) ?? '';
 
     // `span.name` and `span.parentSpanId` are not on the public @opentelemetry/api
     // Span interface but are stable internal fields on the SDK implementation.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parentSpanId: string | undefined =
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ((span as any).parentSpanId as string | undefined) ||
       (parentSpan?.spanContext?.()?.spanId as string | undefined);
+
+    // Project attribution: the OTel context the span was started under is primary
+    // (descendants — including auto-instrumented spans — inherit it); the in-process
+    // map covers children created from an explicit parent handle; and, when the
+    // parent has already ended (its map entry was deleted in onEnd), fall back to
+    // the project id already stamped on the parent span object itself — same trick
+    // as the parentPath resolution below.
+    const projectId =
+      (isRealContext ? projectIdFromContext(parentContext) : undefined) ??
+      (parentSpanId ? this._projectIdBySpanId.get(parentSpanId) : undefined) ??
+      (parentSpan?.attributes?.[PROJECT_ID_ATTR] as string | undefined);
+    if (projectId !== undefined) {
+      span.setAttribute(PROJECT_ID_ATTR, projectId);
+    }
 
     // Prefer the in-process map over span attributes: OpenInference creates
     // LangGraph node spans with a remote/NonRecordingSpan parent that carries
@@ -111,12 +147,13 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     span.setAttribute('traceroot.span.ids_path', spanIdsPath);
 
     // Store paths so descendant spans can inherit them via map lookup.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const spanId =
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       typeof (span as any).spanContext === 'function' ? span.spanContext().spanId : undefined;
     if (spanId) {
       this._namePathBySpanId.set(spanId, spanPath);
       this._idsPathBySpanId.set(spanId, spanIdsPath);
+      if (projectId !== undefined) this._projectIdBySpanId.set(spanId, projectId);
     }
 
     // Cast required: inner processor expects the internal sdk-trace-base Span,
@@ -132,6 +169,18 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     const spanId = span.spanContext().spanId;
     this._idsPathBySpanId.delete(spanId);
     this._namePathBySpanId.delete(spanId);
+    this._projectIdBySpanId.delete(spanId);
+    if (this._dropSpansWithoutProjectId && span.attributes[PROJECT_ID_ATTR] === undefined) {
+      if (!_hasWarnedUnattributedDrop) {
+        _hasWarnedUnattributedDrop = true;
+        console.warn(
+          `[TraceRoot] dropping span "${span.name}": no traceroot.project_id and no ` +
+            'process-default project is configured, so it cannot be routed. ' +
+            'Further drops will not be logged.',
+        );
+      }
+      return;
+    }
     this.inner.onEnd(span);
   }
 

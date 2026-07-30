@@ -19,9 +19,15 @@ let _hasWarnedPublicIgnore = false;
 
 /** Throws TypeError unless `traceId` is a lowercase 32-hex string (not the zero sentinel). */
 export function assertValidTraceId(traceId: string): void {
-  if (!HEX32.test(traceId) || traceId === INVALID_TRACE_ID) {
+  // Check typeof before running the regex (RegExp#test coerces via ToString, which
+  // is itself a hazard for a poisoned toString()) and before JSON.stringify() below
+  // (poisoned toJSON()) — the parameter is typed `string`, but callers outside
+  // TypeScript are not bound by that. Mirrors the same guard in assertValidProjectId.
+  if (typeof traceId !== 'string' || !HEX32.test(traceId) || traceId === INVALID_TRACE_ID) {
+    const description =
+      typeof traceId === 'string' ? JSON.stringify(traceId) : `a value of type ${typeof traceId}`;
     throw new TypeError(
-      `[TraceRoot] traceId must be a lowercase 32-hex string, got: ${JSON.stringify(traceId)}`,
+      `[TraceRoot] traceId must be a lowercase 32-hex string, got: ${description}`,
     );
   }
 }
