@@ -87,7 +87,10 @@ export async function pullDataset(datasetId: string, opts: PullOptions = {}): Pr
   if (!apiKey)
     throw new Error('pullDataset needs an API key (initialize TraceRoot or pass apiKey).');
 
-  const meta = await httpGetJson(`${baseUrl}/api/v1/public/datasets/${datasetId}`, apiKey);
+  const meta = await httpGetJson(
+    `${baseUrl}/api/v1/public/datasets/${encodeURIComponent(datasetId)}`,
+    apiKey,
+  );
   const versionId = opts.versionId ?? meta.current_dataset_version_id;
   return pullDatasetVersion(versionId, {
     datasetId,
@@ -120,7 +123,10 @@ export async function pullDatasetVersion(
 
   let snapshot: any;
   try {
-    snapshot = await httpGetJson(`${baseUrl}/api/v1/public/dataset-versions/${versionId}`, apiKey);
+    snapshot = await httpGetJson(
+      `${baseUrl}/api/v1/public/dataset-versions/${encodeURIComponent(versionId)}`,
+      apiKey,
+    );
   } catch (err) {
     if (err instanceof Error && / HTTP 404:/.test(err.message)) {
       throw new Error(`dataset version ${JSON.stringify(versionId)} not found`);
@@ -259,6 +265,15 @@ export class PlatformTransport implements EvalTransport {
     return DEFAULT_PASS_THRESHOLD;
   }
 
+  private effectiveDirection(): string {
+    // The main scorer's DECLARED comparison direction (higher_is_better by default).
+    // lower_is_better inverts the threshold comparison; none -> not_scored.
+    for (const spec of this.scorerSpecs ?? []) {
+      if (spec.name === this.mainScoreName && spec.direction != null) return String(spec.direction);
+    }
+    return 'higher_is_better';
+  }
+
   async createRun(
     name: string,
     _datasetName: string,
@@ -346,7 +361,7 @@ export class PlatformTransport implements EvalTransport {
     for (const s of item.scores) {
       const entry: Record<string, unknown> = {
         scorer_name: s.name,
-        scorer_version: UNVERSIONED_SCORER,
+        scorer_version: s.version || UNVERSIONED_SCORER,
       };
       if (typeof s.value === 'boolean') entry.bool_value = s.value;
       else if (typeof s.value === 'number') entry.numeric_value = s.value;
@@ -376,6 +391,12 @@ export class PlatformTransport implements EvalTransport {
       if (this.mainScoreName !== null) break; // named main is categorical -> no numeric main
     }
     if (main === null) return ['not_scored', null];
-    return [main >= this.effectiveThreshold() ? 'passed' : 'failed', main];
+    const threshold = this.effectiveThreshold();
+    const direction = this.effectiveDirection();
+    let passed: boolean;
+    if (direction === 'lower_is_better') passed = main <= threshold;
+    else if (direction === 'none') return ['not_scored', main];
+    else passed = main >= threshold; // higher_is_better (the default)
+    return [passed ? 'passed' : 'failed', main];
   }
 }
