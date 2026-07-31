@@ -117,10 +117,14 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
 
     let resp: any;
     try {
-      resp = await this.request('POST', `/api/v1/public/datasets/${snapshot.datasetId}/versions`, {
-        base_version_id: baseVersionId,
-        changes,
-      });
+      resp = await this.request(
+        'POST',
+        `/api/v1/public/datasets/${encodeURIComponent(snapshot.datasetId)}/versions`,
+        {
+          base_version_id: baseVersionId,
+          changes,
+        },
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes(' HTTP 413:')) {
