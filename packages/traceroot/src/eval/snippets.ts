@@ -14,7 +14,8 @@ const DATASET_ID_PLACEHOLDER = '<dataset_id>';
 const VERSION_ID_PLACEHOLDER = '<dataset_version_id>';
 
 function q(value: string | undefined, placeholder: string): string {
-  return `"${value ?? placeholder}"`;
+  // JSON-encode so quotes/newlines in an id can't break the string literal.
+  return JSON.stringify(value ?? placeholder);
 }
 
 function checkLang(lang: SnippetLang): void {
