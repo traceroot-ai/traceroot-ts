@@ -8,6 +8,7 @@ import { SpanAttributes } from '../constants';
 import { TraceRoot } from '../traceroot';
 import { startSpan, usingSpan, Span } from '../spans';
 import type { Tracer } from '@opentelemetry/api';
+import { context, ROOT_CONTEXT } from '@opentelemetry/api';
 import { evalTracer } from './tracer';
 import { Dataset, DeferredScore, EvalCase, Score, ScorerContext } from './types';
 import {
@@ -18,6 +19,7 @@ import {
   ScoreSummary,
   aggregateScores,
   makeRunResult,
+  UploadState,
 } from './results';
 import { EvalTransport, RunHandle } from './transport';
 import { PlatformTransport } from './platform';
@@ -245,12 +247,17 @@ async function runCase(
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void,
 ): Promise<EvalItemResult> {
   onCaseStart?.(evalCase);
-  await transport.registerItem(run, evalCase);
+  try {
+    await transport.registerItem(run, evalCase);
+  } catch {
+    // reporting is best-effort; a transport blip must not drop the case
+  }
 
   const startedAt = performance.now();
-  const root = startSpan(
-    { name: 'evaluation-item', type: 'evaluation', input: evalCase.input },
-    tracer,
+  // Detach from any ambient span (e.g. evaluate() called inside an @observe'd function)
+  // so each case is its own independent trace, not a child of the caller's span.
+  const root = context.with(ROOT_CONTEXT, () =>
+    startSpan({ name: 'evaluation-item', type: 'evaluation', input: evalCase.input }, tracer),
   );
   setRootAttrs(root, identity, evalCase);
   const rawTraceId = root.traceId;
@@ -355,8 +362,12 @@ async function runCase(
   } finally {
     root.end();
   }
-  await transport.recordItemResult(run, result);
-  await transport.recordScores(run, result.caseId, result.scores);
+  try {
+    await transport.recordItemResult(run, result);
+    await transport.recordScores(run, result.caseId, result.scores);
+  } catch {
+    // reporting is best-effort; the computed result is still returned
+  }
   onCaseComplete?.(result, result.durationMs ?? 0);
   return result;
 }
@@ -463,7 +474,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // Eval structural spans always export (cloud-only) and are linked to the reported results.
   const evalSpanTracer = evalTracer();
   const localRunId = newRunId();
-  const run = await active.createRun(name, datasetName, runMetadata);
+  const run = await active.createRun(name, datasetName, runMetadata, localRunId);
 
   const identity: RunIdentity = {
     name,
@@ -491,6 +502,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   }
 
   let itemResults: EvalItemResult[];
+  let uploadState: UploadState;
   try {
     itemResults = await runBounded(cases.length, maxConcurrency, (i) =>
       runCase(
@@ -508,8 +520,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     );
   } finally {
     reporter?.finish();
+    // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
+    uploadState = await active.finishRun(run);
   }
-  const uploadState = await active.finishRun(run);
 
   const summary = aggregateScores(itemResults);
   const { runScores, runScorerErrors } = await runRunScorers(
