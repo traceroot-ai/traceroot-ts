@@ -174,15 +174,12 @@ export function describeScorers(
   scorers: Scorer[],
   valueTypes: Record<string, ValueType> = {},
 ): ScorerDescriptor[] {
-  return scorers.map((s) => scorerMetadata(s, valueTypes[fnName(s)]));
+  // Key the hint lookup by the DECLARED name (what the rendered descriptor uses), not the raw
+  // implementation function name — otherwise a scorer(fn, { name }) never receives its hint.
+  return scorers.map((s) => scorerMetadata(s, valueTypes[declared(s, 'name') ?? fnName(s)]));
 }
 
 // --- LLM-judge scorer ----------------------------------------------------------------
-
-
-
-
-
 
 /**
  * A first-class LLM-judge scorer: its `model` + `messages` (authored template) are carried
