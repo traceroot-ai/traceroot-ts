@@ -95,15 +95,20 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(norm(value));
 }
 
-/** Clone a case for a snapshot: structuredClone for the common case, falling back to a JSON-safe
- *  structural copy for payloads structuredClone can't handle (e.g. a function or proxy left in the
- *  data). Either way the snapshot is fully isolated and freezable — it never throws mid-capture or
- *  leaves a live object aliased into the snapshot. */
+/** Clone a case for a snapshot. `structuredClone` is a LOSSLESS deep copy for every value a
+ *  dataset case should hold (primitives, plain objects/arrays, Date, Map/Set, typed arrays, nested
+ *  and cyclic graphs), giving full isolation. It only throws on values that aren't valid case data
+ *  (functions, symbols, unclonable class instances) — we reject those explicitly rather than fall
+ *  back to a lossy JSON copy that would silently drop/convert fields and publish an incomplete case. */
 function snapshotClone<T>(v: T): T {
   try {
     return structuredClone(v);
-  } catch {
-    return JSON.parse(JSON.stringify(v)) as T;
+  } catch (err) {
+    throw new Error(
+      `dataset case payload is not snapshottable (not structured-cloneable): ${
+        err instanceof Error ? err.message : String(err)
+      }. Snapshots require plain data — remove functions/symbols/non-cloneable objects from the case.`,
+    );
   }
 }
 
