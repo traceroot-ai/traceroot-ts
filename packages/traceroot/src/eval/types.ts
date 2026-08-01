@@ -132,12 +132,22 @@ function snapshotClone<T>(v: T): T {
   }
 }
 
-/** Recursively freeze a value so a snapshot cannot be mutated after capture. */
-function deepFreeze<T>(o: T): T {
-  if (o && typeof o === 'object' && !Object.isFrozen(o)) {
-    for (const v of Object.values(o as Record<string, unknown>)) deepFreeze(v);
-    Object.freeze(o);
+/** Recursively freeze a value so a snapshot cannot be mutated after capture. Cycle-aware (a
+ *  structuredClone'd graph may be cyclic) and tolerant of built-ins: typed arrays throw on
+ *  Object.freeze when populated, so they're left as-is (the clone already isolated them). */
+function deepFreeze<T>(o: T, seen: WeakSet<object> = new WeakSet()): T {
+  if (!o || typeof o !== 'object' || Object.isFrozen(o)) return o;
+  if (seen.has(o as object)) return o; // already on the active path -> cycle
+  seen.add(o as object);
+  if (ArrayBuffer.isView(o)) return o; // freezing a populated typed array throws
+  if (o instanceof Map) {
+    for (const v of (o as Map<unknown, unknown>).values()) deepFreeze(v, seen);
+  } else if (o instanceof Set) {
+    for (const v of o as Set<unknown>) deepFreeze(v, seen);
+  } else {
+    for (const v of Object.values(o as Record<string, unknown>)) deepFreeze(v, seen);
   }
+  Object.freeze(o);
   return o;
 }
 
@@ -297,7 +307,12 @@ export class Dataset {
     if (d.datasetId) ds.datasetId = d.datasetId;
     ds.baseVersionId = d.baseVersionId ?? null;
     ds.datasetVersionId = d.datasetVersionId;
-    for (const c of d.cases ?? []) ds.casesById.set(c.id as string, c);
+    // Anonymous cases (no id) each get a generated id — otherwise every one keys on `undefined`
+    // and all but the last silently collapse. Mirrors upsert().
+    for (const c of d.cases ?? []) {
+      const stored = c.id == null ? { ...c, id: newTestCaseId() } : c;
+      ds.casesById.set(stored.id as string, stored);
+    }
     return ds;
   }
 
