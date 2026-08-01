@@ -146,10 +146,11 @@ describe('provenance (machine-independent)', () => {
     assert.deepEqual(meta!.ci, { provider: 'github', build_id: '9' });
     void orig;
   });
-  it('nothing available -> null', () => {
-    // No CI env and (likely) no git repo signals from an empty env.
+  it('empty env contributes no CI provenance', () => {
+    // git context is still auto-detected from the checkout's .git, so the result isn't strictly
+    // null here; the invariant an empty env must satisfy is that it yields no `ci` block.
     const meta = collectRunProvenance(undefined, { env: {} as never, detectDirty: false });
-    assert.ok(meta === null || typeof meta === 'object');
+    assert.ok(meta === null || !('ci' in meta), 'empty env must not produce a ci block');
   });
 });
 
