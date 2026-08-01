@@ -33,7 +33,9 @@ let _provider: NodeTracerProvider | undefined;
 // Resolved on initialize() so the offline-eval module can reach the same credentials
 // (parity with the Python client that eval's _resolve_credentials reads).
 let _apiKey: string | undefined;
-let _baseUrl: string = DEFAULT_BASE_URL;
+// Left undefined until initialize() so an offline-eval call made before init still honors the
+// TRACEROOT_HOST_URL env fallback (a hard default here would silently route to the default host).
+let _baseUrl: string | undefined;
 
 export class TraceRoot {
   private constructor() {}

@@ -48,17 +48,22 @@ describe('Dataset authoring + snapshot', () => {
     assert.match(mk().snapshot().revision, /^rev_[0-9a-f]{16}$/);
   });
 
-  it('save/load round-trips (.json and .jsonl)', () => {
+  it('save/load round-trips metadata, archived cases, and value types (.json and .jsonl)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ds-'));
     const ds = new Dataset('tickets', 'd');
-    ds.add({ m: 'hi' }, { id: 'a', expected: { r: 'billing' }, metadata: { s: 1 } });
+    ds.add({ m: 'hi', n: 2, ok: true }, { id: 'a', expected: { r: 'billing' }, metadata: { s: 1 } });
+    ds.add({ m: 'bye' }, { id: 'b' });
+    ds.archive('b'); // archived cases are retained for lineage and must persist
     for (const ext of ['json', 'jsonl']) {
       const p = join(dir, `ds.${ext}`);
       ds.save(p);
       const loaded = Dataset.load(p);
       assert.equal(loaded.name, 'tickets');
-      assert.deepEqual(loaded.get('a')!.input, { m: 'hi' });
+      // number/boolean types survive the JSON round-trip (not coerced to strings).
+      assert.deepEqual(loaded.get('a')!.input, { m: 'hi', n: 2, ok: true });
       assert.deepEqual(loaded.get('a')!.expected, { r: 'billing' });
+      assert.deepEqual(loaded.get('a')!.metadata, { s: 1 }); // metadata preserved
+      assert.ok(loaded.get('b')?.archived, 'archived case must round-trip');
     }
   });
 });
