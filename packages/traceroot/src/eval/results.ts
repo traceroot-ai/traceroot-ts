@@ -342,8 +342,6 @@ export class EvalRunResult {
     });
   }
 
-
-
   /**
    * Explicitly upload this retained run's results/scores (idempotent). Replays the item
    * results through the reporting layer, preserving test_case_ids; localRunId is the

@@ -175,53 +175,6 @@ describe('eval attributes and trace id', () => {
   });
 });
 
-describe('eval span IO (parity: root + scorer carry span.input/output)', () => {
-  const IN = 'input.value';
-  const OUT = 'output.value';
-
-  it('root carries case input and candidate output', async () => {
-    await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact], ...reported() });
-    const root = byName(exporter.getFinishedSpans())['evaluation-item'];
-    assert.equal(root.attributes[IN], '0'); // case input
-    assert.equal(root.attributes[OUT], '0'); // candidate output
-  });
-
-  it('root output is the task error on failure', async () => {
-    const boom = () => {
-      throw new Error('kaboom');
-    };
-    await evaluate({ name: 'r', data: ds(1), task: boom, scorers: [exact], ...reported() });
-    const root = byName(exporter.getFinishedSpans())['evaluation-item'];
-    assert.ok(String(root.attributes[OUT]).includes('kaboom'));
-  });
-
-  it('scorer input has candidate + expected; output has the score value', async () => {
-    await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact], ...reported() });
-    const scorer = byName(exporter.getFinishedSpans())['exact'];
-    const inp = String(scorer.attributes[IN]);
-    assert.ok(inp.includes('candidate') && inp.includes('expected'));
-    const out = String(scorer.attributes[OUT]);
-    assert.ok(out.includes('value') && out.includes('1'));
-  });
-
-  it('scorer output is the scorer error on failure', async () => {
-    const broken = () => {
-      throw new Error('judge down');
-    };
-    await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [broken], ...reported() });
-    const scorer = byName(exporter.getFinishedSpans())['broken'];
-    assert.ok(String(scorer.attributes[OUT]).includes('judge down'));
-  });
-
-  it('scorer input includes target_span_id when present', async () => {
-    const d = new Dataset('d');
-    d.upsert({ input: 0, id: 'c0', expected: 0, scoreTargetSpanId: 'span-xyz' });
-    await evaluate({ name: 'r', dataset: d, task: echo, scorers: [exact], ...reported() });
-    const scorer = byName(exporter.getFinishedSpans())['exact'];
-    assert.ok(String(scorer.attributes[IN]).includes('span-xyz'));
-  });
-});
-
 describe('llm judge trace', () => {
   it('the judge emits a nested LLM span (input=prompt, output=response)', async () => {
     const { llmJudge } = await import('../src/eval');

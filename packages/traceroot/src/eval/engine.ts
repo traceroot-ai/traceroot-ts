@@ -241,7 +241,10 @@ async function withTimeout<T>(p: Promise<T>, timeout?: number, deadline?: number
   const ms = deadline !== undefined ? Math.max(0, deadline - performance.now()) : timeout * 1000;
   let handle: ReturnType<typeof setTimeout>;
   const timer = new Promise<T>((_res, rej) => {
-    handle = setTimeout(() => rej(new EvalTimeoutError(`TimeoutError: case exceeded ${timeout}s`)), ms);
+    handle = setTimeout(
+      () => rej(new EvalTimeoutError(`TimeoutError: case exceeded ${timeout}s`)),
+      ms,
+    );
   });
   try {
     return await Promise.race([p, timer]);
@@ -478,7 +481,11 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   for (const s of scorers) {
     if (typeof s !== 'function') throw new Error(`scorer ${String(s)} is not a function`);
   }
-  if (maxConcurrency < 1) throw new Error("'maxConcurrency' must be >= 1");
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+    // Guard NaN / fractional / non-finite too: runBounded would otherwise launch zero workers and
+    // silently leave every case unprocessed.
+    throw new Error("'maxConcurrency' must be a positive integer");
+  }
 
   let cases = normalizeData(data);
   if (options.select) cases = cases.filter(options.select);
