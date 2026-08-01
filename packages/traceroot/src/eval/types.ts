@@ -71,6 +71,10 @@ function canonicalJson(value: unknown): string {
   const seen = new WeakSet();
   const norm = (v: unknown): unknown => {
     if (v === null || typeof v !== 'object') return v;
+    // Mark the source object seen BEFORE expanding it, so a self-returning or mutually recursive
+    // toJSON() (or a cyclic object graph) terminates instead of overflowing the stack.
+    if (seen.has(v as object)) return null;
+    seen.add(v as object);
     // Non-plain objects have no own enumerable keys, so the generic record path below would
     // collapse them to `{}` and make distinct values (e.g. two different Dates) hash identically —
     // a changed case could then keep its old revision. Canonicalize the ones with a defined
@@ -81,8 +85,6 @@ function canonicalJson(value: unknown): string {
     if (typeof (v as { toJSON?: unknown }).toJSON === 'function') {
       return norm((v as { toJSON: () => unknown }).toJSON());
     }
-    if (seen.has(v as object)) return null;
-    seen.add(v as object);
     if (Array.isArray(v)) return v.map(norm);
     const out: Record<string, unknown> = {};
     for (const k of Object.keys(v as Record<string, unknown>).sort()) {
