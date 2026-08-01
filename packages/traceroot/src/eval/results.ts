@@ -192,7 +192,9 @@ export class EvalRunResult {
 
   // --- inspection ---
   get results(): EvalItemResult[] {
-    return this.itemResults;
+    // Defensive copy: the result is contractually immutable, so callers can't add/remove items
+    // and desynchronize the counts/scoreSummary computed at construction.
+    return [...this.itemResults];
   }
   private byStatus(status: string): EvalItemResult[] {
     return this.itemResults.filter((it) => caseStatus(it) === status);

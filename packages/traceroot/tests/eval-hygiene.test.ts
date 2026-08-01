@@ -86,16 +86,15 @@ describe('Phase 0B — artifact hygiene', () => {
     assert.match(readFileSync(gi, 'utf8'), /^\*$/m);
   });
 
-  it('restricts the artifact directory permissions (POSIX)', () => {
+  it('restricts artifact file and directory permissions (POSIX)', () => {
     if (platform() === 'win32') return; // no POSIX modes
-    const dir = tmp();
-    writeArtifacts(
-      run([item('c0', 1, 1)]),
-      join(dir, 'lr.json'),
-      join(dir, 'lr.cases.jsonl'),
-      opts,
-    );
-    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    // A fresh subdir writeArtifacts must create itself (mkdtemp would already be 0700, making the
+    // dir assertion tautological); this way we actually exercise its chmod + file mode.
+    const dir = join(tmp(), 'runs');
+    const runPath = join(dir, 'lr.json');
+    writeArtifacts(run([item('c0', 1, 1)]), runPath, join(dir, 'lr.cases.jsonl'), opts);
+    assert.equal(statSync(dir).mode & 0o777, 0o700); // dir locked down by writeArtifacts
+    assert.equal(statSync(runPath).mode & 0o777, 0o600); // artifact file is owner-only
   });
 
   it('bounds payloads when maxPayloadBytes is set (marker, not silent drop)', () => {
