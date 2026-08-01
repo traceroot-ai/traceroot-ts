@@ -55,7 +55,11 @@ export class FakeDatasetSync implements DatasetSyncTransport {
   private lastDatasetId: string | null = null;
   readonly pushes: Array<[string, string, string]> = [];
 
-  private stateFor(datasetId: string): { versionId: string | null; counter: number; revision: string | null } {
+  private stateFor(datasetId: string): {
+    versionId: string | null;
+    counter: number;
+    revision: string | null;
+  } {
     let s = this.byDataset.get(datasetId);
     if (!s) {
       s = { versionId: null, counter: 0, revision: null };
@@ -73,7 +77,8 @@ export class FakeDatasetSync implements DatasetSyncTransport {
    *  given dataset, or the most recently pushed one. */
   forceCurrentVersion(versionId: string, datasetId?: string): void {
     const id = datasetId ?? this.lastDatasetId;
-    if (id === null) throw new Error('forceCurrentVersion: push a dataset first, or pass a datasetId');
+    if (id === null)
+      throw new Error('forceCurrentVersion: push a dataset first, or pass a datasetId');
     this.stateFor(id).versionId = versionId;
   }
 

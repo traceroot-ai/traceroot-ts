@@ -175,7 +175,6 @@ describe('eval attributes and trace id', () => {
   });
 });
 
-
 describe('llm judge trace', () => {
   it('the judge emits a nested LLM span (input=prompt, output=response)', async () => {
     const { llmJudge } = await import('../src/eval');

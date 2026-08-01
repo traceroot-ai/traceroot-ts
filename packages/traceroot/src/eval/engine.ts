@@ -229,7 +229,10 @@ async function withTimeout<T>(p: Promise<T>, timeout?: number, deadline?: number
   const ms = deadline !== undefined ? Math.max(0, deadline - performance.now()) : timeout * 1000;
   let handle: ReturnType<typeof setTimeout>;
   const timer = new Promise<T>((_res, rej) => {
-    handle = setTimeout(() => rej(new EvalTimeoutError(`TimeoutError: case exceeded ${timeout}s`)), ms);
+    handle = setTimeout(
+      () => rej(new EvalTimeoutError(`TimeoutError: case exceeded ${timeout}s`)),
+      ms,
+    );
   });
   try {
     return await Promise.race([p, timer]);
