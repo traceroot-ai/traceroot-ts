@@ -366,8 +366,10 @@ async function runCase(
           }
         } catch (err) {
           // Scoring exceeded the case deadline -> the same isolated per-case error path as a
-          // task timeout (errored case, not scored).
+          // task timeout (errored case, not scored). Drop any scores collected before the timeout
+          // so a timed-out case is truly "not scored" and can't contaminate the summaries/results.
           error = fmtError(err);
+          scores.length = 0;
           root.setError(error);
           root.update({ output: error, attributes: { [SpanAttributes.EVAL_ERROR]: error } });
         }
