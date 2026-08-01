@@ -71,6 +71,10 @@ function canonicalJson(value: unknown): string {
   const seen = new WeakSet();
   const norm = (v: unknown): unknown => {
     if (v === null || typeof v !== 'object') return v;
+    // Mark the source object seen BEFORE expanding it, so a self-returning or mutually recursive
+    // toJSON() (or a cyclic object graph) terminates instead of overflowing the stack.
+    if (seen.has(v as object)) return null;
+    seen.add(v as object);
     // Non-plain objects have no own enumerable keys, so the generic record path below would
     // collapse them to `{}` and make distinct values (e.g. two different Dates) hash identically —
     // a changed case could then keep its old revision. Canonicalize the ones with a defined
@@ -81,8 +85,6 @@ function canonicalJson(value: unknown): string {
     if (typeof (v as { toJSON?: unknown }).toJSON === 'function') {
       return norm((v as { toJSON: () => unknown }).toJSON());
     }
-    if (seen.has(v as object)) return null;
-    seen.add(v as object);
     if (Array.isArray(v)) return v.map(norm);
     const out: Record<string, unknown> = {};
     for (const k of Object.keys(v as Record<string, unknown>).sort()) {
@@ -91,6 +93,18 @@ function canonicalJson(value: unknown): string {
     return out;
   };
   return JSON.stringify(norm(value));
+}
+
+/** Clone a case for a snapshot: structuredClone for the common case, falling back to a JSON-safe
+ *  structural copy for payloads structuredClone can't handle (e.g. a function or proxy left in the
+ *  data). Either way the snapshot is fully isolated and freezable — it never throws mid-capture or
+ *  leaves a live object aliased into the snapshot. */
+function snapshotClone<T>(v: T): T {
+  try {
+    return structuredClone(v);
+  } catch {
+    return JSON.parse(JSON.stringify(v)) as T;
+  }
 }
 
 /** Recursively freeze a value so a snapshot cannot be mutated after capture. */
@@ -218,7 +232,7 @@ export class Dataset {
     // Deep-copy + freeze so the snapshot is a stable, content-addressed record: later mutation
     // of the dataset's live case objects can no longer change what this revision describes, and
     // the snapshot itself cannot be edited after capture.
-    const frozen = active.map((c) => deepFreeze(structuredClone(c)));
+    const frozen = active.map((c) => deepFreeze(snapshotClone(c)));
     return Object.freeze({
       datasetId: this.datasetId,
       name: this.name,
