@@ -574,6 +574,10 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
       );
     });
     itemResults = raw.filter((r): r is EvalItemResult => r !== null);
+    // If every case was already in flight when the abort arrived, no worker pulled a new case, so
+    // the flag above never flipped — re-check the signal after runBounded settles so an
+    // in-flight-only cancellation still finalizes as incomplete and raises CancelledError.
+    if (options.signal?.aborted) cancelled = true;
   } finally {
     reporter?.finish();
     // Finish the run inside finally so a mid-run failure never leaves it open on the backend;
