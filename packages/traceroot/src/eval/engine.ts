@@ -226,8 +226,13 @@ function recordScorerSpan(span: Span, scores: Score[]): void {
 class EvalTimeoutError extends Error {}
 
 /** Thrown when a run is cancelled (e.g. SIGINT) so callers can finalize a partial result
- *  instead of a "completed" one. */
-export class CancelledError extends Error {}
+ *  instead of a "completed" one. Carries the ids/upload of the run that was actually created and
+ *  finalized, so the partial artifact stays associated with its backend run. */
+export class CancelledError extends Error {
+  localRunId?: string;
+  runId?: string | null;
+  uploadState?: UploadState;
+}
 
 /** Race `p` against the case's shared deadline. `deadline` is an absolute performance.now() ms
  *  mark covering task + scorers together, so a never-resolving scorer can't outlive the budget. */
@@ -540,12 +545,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   let uploadState: UploadState;
   let cancelled = false;
   try {
-    itemResults = await runBounded(cases.length, maxConcurrency, (i) => {
-      // Cooperative cancellation: once aborted, workers stop pulling new cases (in-flight cases
-      // finish). Throwing unwinds to the finally so the run is closed terminally.
+    const raw = await runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
+      // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
+      // but already-running cases are still awaited by runBounded — so every case that began
+      // finishes recording before we finish the run below (no lost in-flight results).
       if (options.signal?.aborted) {
         cancelled = true;
-        throw new CancelledError('evaluation cancelled');
+        return Promise.resolve(null);
       }
       return runCase(
         cases[i],
@@ -560,11 +566,22 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         onCaseComplete,
       );
     });
+    itemResults = raw.filter((r): r is EvalItemResult => r !== null);
   } finally {
     reporter?.finish();
     // Finish the run inside finally so a mid-run failure never leaves it open on the backend;
-    // a cancelled run is closed 'incomplete', not 'completed'.
+    // a cancelled run is closed 'incomplete', not 'completed'. Runs AFTER all in-flight cases
+    // above have settled.
     uploadState = await active.finishRun(run, cancelled ? 'incomplete' : undefined);
+  }
+  if (cancelled) {
+    // Surface the run's real identity + upload so the caller's partial artifact stays associated
+    // with the backend run that was created and finalized.
+    const err = new CancelledError('evaluation cancelled');
+    err.localRunId = localRunId;
+    err.runId = active.runId ?? null;
+    err.uploadState = uploadState;
+    throw err;
   }
 
   const summary = aggregateScores(itemResults);
