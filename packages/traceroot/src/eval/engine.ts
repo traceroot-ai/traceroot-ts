@@ -67,6 +67,9 @@ export interface EvaluateOptions {
   /** Internal hooks the CLI runner uses to stream per-case events. */
   onCaseStart?: (c: EvalCase) => void;
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void;
+  /** Cooperative cancellation: when aborted, no further cases start and the run finishes
+   *  terminally (incomplete) so callers can finalize a partial result (e.g. SIGINT). */
+  signal?: AbortSignal;
 }
 
 interface RunIdentity {
@@ -221,6 +224,10 @@ function recordScorerSpan(span: Span, scores: Score[]): void {
 /** A per-case deadline expiry. Distinct type so the scorer loop can tell a budget overrun
  *  (which errors the whole case) apart from an ordinary per-scorer failure (which is isolated). */
 class EvalTimeoutError extends Error {}
+
+/** Thrown when a run is cancelled (e.g. SIGINT) so callers can finalize a partial result
+ *  instead of a "completed" one. */
+export class CancelledError extends Error {}
 
 /** Race `p` against the case's shared deadline. `deadline` is an absolute performance.now() ms
  *  mark covering task + scorers together, so a never-resolving scorer can't outlive the budget. */
@@ -529,9 +536,16 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
 
   let itemResults: EvalItemResult[];
   let uploadState: UploadState;
+  let cancelled = false;
   try {
-    itemResults = await runBounded(cases.length, maxConcurrency, (i) =>
-      runCase(
+    itemResults = await runBounded(cases.length, maxConcurrency, (i) => {
+      // Cooperative cancellation: once aborted, workers stop pulling new cases (in-flight cases
+      // finish). Throwing unwinds to the finally so the run is closed terminally.
+      if (options.signal?.aborted) {
+        cancelled = true;
+        throw new CancelledError('evaluation cancelled');
+      }
+      return runCase(
         cases[i],
         task,
         scorers,
@@ -542,12 +556,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         evalSpanTracer,
         options.onCaseStart,
         onCaseComplete,
-      ),
-    );
+      );
+    });
   } finally {
     reporter?.finish();
-    // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
-    uploadState = await active.finishRun(run);
+    // Finish the run inside finally so a mid-run failure never leaves it open on the backend;
+    // a cancelled run is closed 'incomplete', not 'completed'.
+    uploadState = await active.finishRun(run, cancelled ? 'incomplete' : undefined);
   }
 
   const summary = aggregateScores(itemResults);
