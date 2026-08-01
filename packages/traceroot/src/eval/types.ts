@@ -69,28 +69,48 @@ const CONTENT_FIELDS: (keyof EvalCase)[] = [
 /** Deterministic JSON with sorted keys — canonical form for content hashing. */
 function canonicalJson(value: unknown): string {
   const seen = new WeakSet();
+  const byJson = (a: unknown, b: unknown): number => {
+    const ja = JSON.stringify(a);
+    const jb = JSON.stringify(b);
+    return ja < jb ? -1 : ja > jb ? 1 : 0;
+  };
   const norm = (v: unknown): unknown => {
     if (v === null || typeof v !== 'object') return v;
-    // Mark the source object seen BEFORE expanding it, so a self-returning or mutually recursive
-    // toJSON() (or a cyclic object graph) terminates instead of overflowing the stack.
+    // Cycle detection tracks only the ACTIVE recursion path: a true cycle (an ancestor) collapses
+    // to null, but a merely repeated/aliased reference must still hash as its full content (so an
+    // aliased object and an equivalent clone produce the same revision). We therefore delete `v`
+    // from `seen` when its branch ends (below), rather than leaving it marked forever.
     if (seen.has(v as object)) return null;
-    seen.add(v as object);
-    // Non-plain objects have no own enumerable keys, so the generic record path below would
-    // collapse them to `{}` and make distinct values (e.g. two different Dates) hash identically —
-    // a changed case could then keep its old revision. Canonicalize the ones with a defined
-    // serialization first: Dates by ISO instant, anything else exposing toJSON by its JSON form.
+    // Non-plain objects have no own enumerable keys, so the generic record path would collapse them
+    // to `{}` and make distinct values hash identically. Canonicalize the supported built-ins by a
+    // content-bearing form; Date is a leaf (no recursion).
     if (v instanceof Date) {
       return `@date:${Number.isNaN(v.getTime()) ? 'invalid' : v.toISOString()}`;
     }
-    if (typeof (v as { toJSON?: unknown }).toJSON === 'function') {
-      return norm((v as { toJSON: () => unknown }).toJSON());
+    seen.add(v as object);
+    try {
+      if (typeof (v as { toJSON?: unknown }).toJSON === 'function') {
+        return norm((v as { toJSON: () => unknown }).toJSON());
+      }
+      if (v instanceof Map) {
+        // Unordered: sort normalized entries so different contents differ and order doesn't.
+        return { '@map': [...v.entries()].map(([k, val]) => [norm(k), norm(val)]).sort(byJson) };
+      }
+      if (v instanceof Set) {
+        return { '@set': [...v].map(norm).sort(byJson) };
+      }
+      if (ArrayBuffer.isView(v)) {
+        return { '@bytes': Array.from(v as unknown as ArrayLike<number>) };
+      }
+      if (Array.isArray(v)) return v.map(norm);
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(v as Record<string, unknown>).sort()) {
+        out[k] = norm((v as Record<string, unknown>)[k]);
+      }
+      return out;
+    } finally {
+      seen.delete(v as object);
     }
-    if (Array.isArray(v)) return v.map(norm);
-    const out: Record<string, unknown> = {};
-    for (const k of Object.keys(v as Record<string, unknown>).sort()) {
-      out[k] = norm((v as Record<string, unknown>)[k]);
-    }
-    return out;
   };
   return JSON.stringify(norm(value));
 }
