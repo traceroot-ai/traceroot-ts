@@ -71,6 +71,16 @@ function canonicalJson(value: unknown): string {
   const seen = new WeakSet();
   const norm = (v: unknown): unknown => {
     if (v === null || typeof v !== 'object') return v;
+    // Non-plain objects have no own enumerable keys, so the generic record path below would
+    // collapse them to `{}` and make distinct values (e.g. two different Dates) hash identically —
+    // a changed case could then keep its old revision. Canonicalize the ones with a defined
+    // serialization first: Dates by ISO instant, anything else exposing toJSON by its JSON form.
+    if (v instanceof Date) {
+      return `@date:${Number.isNaN(v.getTime()) ? 'invalid' : v.toISOString()}`;
+    }
+    if (typeof (v as { toJSON?: unknown }).toJSON === 'function') {
+      return norm((v as { toJSON: () => unknown }).toJSON());
+    }
     if (seen.has(v as object)) return null;
     seen.add(v as object);
     if (Array.isArray(v)) return v.map(norm);
