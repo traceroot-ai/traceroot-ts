@@ -275,8 +275,10 @@ export function llmJudge(opts: LlmJudgeOptions): Scorer {
     const rendered = renderMessages(opts.messages, ctx);
     // If a provider integration already traces this model's calls, let IT own the LLM span
     // (richer: native semantics) instead of adding our own — otherwise we'd nest an LLM span
-    // inside an LLM span. Self-instrument only when nothing else will.
-    const text = providerIntegrationTraces(opts.model)
+    // inside an LLM span. This only holds for the DEFAULT dispatch: a user-supplied `complete`
+    // is not provider-instrumented, so we must self-instrument it regardless of the model id.
+    const providerTraced = opts.complete === undefined && providerIntegrationTraces(opts.model);
+    const text = providerTraced
       ? await call(rendered)
       : await observe(
           // rendered messages are the span input, the model's response the output, type = llm.

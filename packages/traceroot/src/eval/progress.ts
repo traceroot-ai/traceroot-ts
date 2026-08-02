@@ -36,23 +36,84 @@ function termCols(stream: ProgressStream): number {
   return 80;
 }
 
+/** Terminal columns for one code point: C0/C1 controls & zero-width/combining marks = 0,
+ *  East Asian Wide/Fullwidth (incl. most emoji) = 2, everything else = 1. Best-effort (no full
+ *  Unicode width DB) but enough to keep CJK/emoji/combining input from wrapping the single line. */
+function charWidth(cp: number): number {
+  if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0; // C0 / C1 controls
+  if (
+    (cp >= 0x0300 && cp <= 0x036f) || // combining diacritical marks
+    (cp >= 0x200b && cp <= 0x200f) || // zero-width space .. RLM
+    cp === 0xfeff || // zero-width no-break space
+    (cp >= 0xfe00 && cp <= 0xfe0f) // variation selectors
+  ) {
+    return 0;
+  }
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    (cp >= 0x2e80 && cp <= 0xa4cf) || // CJK .. Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK compatibility ideographs
+    (cp >= 0xfe30 && cp <= 0xfe4f) || // CJK compatibility forms
+    (cp >= 0xff00 && cp <= 0xff60) || // fullwidth forms
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff) || // emoji & pictographs
+    (cp >= 0x20000 && cp <= 0x3fffd) // CJK extension B+
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+/** Display width of a string in terminal columns (surrogate-pair aware). */
+function displayWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) w += charWidth(ch.codePointAt(0) as number);
+  return w;
+}
+
+/** Truncate to at most `maxCols` display columns, never splitting a code point. */
+function sliceToWidth(s: string, maxCols: number): string {
+  if (maxCols <= 0) return '';
+  let w = 0;
+  let out = '';
+  for (const ch of s) {
+    const cw = charWidth(ch.codePointAt(0) as number);
+    if (w + cw > maxCols) break;
+    out += ch;
+    w += cw;
+  }
+  return out;
+}
+
+/** Strip C0/C1 controls (newlines, ANSI escapes, etc.) so a run name can't break the
+ *  single-line reporter or emit stray terminal control sequences. */
+function sanitizeLabel(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim();
+}
+
 /**
  * Compose one progress line that fits within `limit` columns without wrapping. Keeps the bar
  * + counts (`anchor`) visible at all costs — a progress bar with no progress is useless.
  * Shedding order as space runs out: full line -> drop `stats` -> ellipsize `label` ->
- * (last resort) hard-trim. `label` sits before the anchor, `stats` after it.
+ * (last resort) trim the anchor. Widths are display columns, so wide/zero-width characters
+ * can't sneak past the clamp. `label` sits before the anchor, `stats` after it.
  */
 function fitLine(label: string, anchor: string, stats: string, limit: number): string {
   const full = `  ${label}${anchor}${stats}`;
-  if (full.length <= limit) return full;
+  if (displayWidth(full) <= limit) return full;
   const withLabel = `  ${label}${anchor}`;
-  if (withLabel.length <= limit) return withLabel; // dropping stats is enough
-  const room = limit - anchor.length - 2; // 2 leading spaces + label + anchor
+  if (displayWidth(withLabel) <= limit) return withLabel; // dropping stats is enough
+  const room = limit - displayWidth(anchor) - 2; // columns left for the label
   if (room >= 1) {
-    const lab = label.length <= room ? label : label.slice(0, Math.max(room - 1, 0)) + '…';
+    const lab =
+      displayWidth(label) <= room ? label : sliceToWidth(label, Math.max(room - 1, 0)) + '…';
     return `  ${lab}${anchor}`;
   }
-  return withLabel.slice(0, limit); // too narrow for even the bare anchor: hard-trim
+  // Too narrow for even the bare anchor: keep the counts (drop the label) and trim the anchor
+  // itself by display width so it still never wraps.
+  return sliceToWidth(anchor, limit);
 }
 
 /**
@@ -115,7 +176,7 @@ export class ConsoleProgress {
     opts: { stream?: ProgressStream; width?: number; animate?: boolean; cols?: number } = {},
   ) {
     this.total = Math.max(Math.trunc(total), 0);
-    this.label = label;
+    this.label = sanitizeLabel(label);
     this.stream = opts.stream ?? (process.stderr as unknown as ProgressStream);
     this.width = opts.width ?? 24;
     this.animateMode = opts.animate ?? canAnimate();

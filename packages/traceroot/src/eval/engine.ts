@@ -67,6 +67,9 @@ export interface EvaluateOptions {
   /** Internal hooks the CLI runner uses to stream per-case events. */
   onCaseStart?: (c: EvalCase) => void;
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void;
+  /** Cooperative cancellation: when aborted, no further cases start and the run finishes
+   *  terminally (incomplete) so callers can finalize a partial result (e.g. SIGINT). */
+  signal?: AbortSignal;
 }
 
 interface RunIdentity {
@@ -218,14 +221,22 @@ function recordScorerSpan(span: Span, scores: Score[]): void {
   span.update({ attributes: attrs });
 }
 
-async function withTimeout<T>(p: Promise<T>, timeout?: number): Promise<T> {
+/** A per-case deadline expiry. Distinct type so the scorer loop can tell a budget overrun
+ *  (which errors the whole case) apart from an ordinary per-scorer failure (which is isolated). */
+class EvalTimeoutError extends Error {}
+
+/** Thrown when a run is cancelled (e.g. SIGINT) so callers can finalize a partial result
+ *  instead of a "completed" one. */
+export class CancelledError extends Error {}
+
+/** Race `p` against the case's shared deadline. `deadline` is an absolute performance.now() ms
+ *  mark covering task + scorers together, so a never-resolving scorer can't outlive the budget. */
+async function withTimeout<T>(p: Promise<T>, timeout?: number, deadline?: number): Promise<T> {
   if (timeout === undefined) return p;
+  const ms = deadline !== undefined ? Math.max(0, deadline - performance.now()) : timeout * 1000;
   let handle: ReturnType<typeof setTimeout>;
   const timer = new Promise<T>((_res, rej) => {
-    handle = setTimeout(
-      () => rej(new Error(`TimeoutError: task exceeded ${timeout}s`)),
-      timeout * 1000,
-    );
+    handle = setTimeout(() => rej(new EvalTimeoutError(`TimeoutError: case exceeded ${timeout}s`)), ms);
   });
   try {
     return await Promise.race([p, timer]);
@@ -271,6 +282,8 @@ async function runCase(
       let error: string | null = null;
       const scores: Score[] = [];
       const scorerErrors: Record<string, string> = {};
+      // One deadline for the whole case (task + scorers), so a hung scorer cannot outlive it.
+      const deadline = timeout !== undefined ? performance.now() + timeout * 1000 : undefined;
 
       const taskSpan = startSpan(
         {
@@ -287,7 +300,7 @@ async function runCase(
       );
       try {
         output = await usingSpan(taskSpan, () =>
-          withTimeout(Promise.resolve(task(evalCase.input)), timeout),
+          withTimeout(Promise.resolve(task(evalCase.input)), timeout, deadline),
         );
         taskSpan.update({ output });
       } catch (err) {
@@ -309,41 +322,61 @@ async function runCase(
           expected: evalCase.expected ?? null,
           metadata: evalCase.metadata,
         };
-        for (const scorer of scorers) {
-          const name = fnName(scorer, 'scorer');
-          const scorerInput: Record<string, unknown> = {
-            candidate: output,
-            expected: evalCase.expected ?? null,
-          };
-          if (evalCase.scoreTargetSpanId) scorerInput.target_span_id = evalCase.scoreTargetSpanId;
-          const scorerSpan = startSpan(
-            {
-              name,
-              type: 'scorer',
-              input: scorerInput,
-              attributes: {
-                [SpanAttributes.EVAL_RUN_NAME]: identity.name,
-                [SpanAttributes.EVAL_SCORER_NAME]: name,
+        try {
+          for (const scorer of scorers) {
+            const name = fnName(scorer, 'scorer');
+            const scorerInput: Record<string, unknown> = {
+              candidate: output,
+              expected: evalCase.expected ?? null,
+            };
+            if (evalCase.scoreTargetSpanId) scorerInput.target_span_id = evalCase.scoreTargetSpanId;
+            const scorerSpan = startSpan(
+              {
+                name,
+                type: 'scorer',
+                input: scorerInput,
+                attributes: {
+                  [SpanAttributes.EVAL_RUN_NAME]: identity.name,
+                  [SpanAttributes.EVAL_SCORER_NAME]: name,
+                },
               },
-            },
-            tracer,
-          );
-          try {
-            const raw = await usingSpan(scorerSpan, () => Promise.resolve(scorer(ctx)));
-            const produced = stampScorerVersion(normalizeScoreLike(raw, name), scorer);
-            scores.push(...produced);
-            recordScorerSpan(scorerSpan, produced);
-            if (produced.length > 0) scorerSpan.update({ output: scorerOutputRepr(produced) });
-          } catch (err) {
-            scorerErrors[name] = fmtError(err);
-            scorerSpan.setError(err);
-            scorerSpan.update({
-              output: scorerErrors[name],
-              attributes: { [SpanAttributes.EVAL_ERROR]: scorerErrors[name] },
-            });
-          } finally {
-            scorerSpan.end();
+              tracer,
+            );
+            try {
+              const raw = await usingSpan(scorerSpan, () =>
+                withTimeout(Promise.resolve(scorer(ctx)), timeout, deadline),
+              );
+              const produced = stampScorerVersion(normalizeScoreLike(raw, name), scorer);
+              scores.push(...produced);
+              recordScorerSpan(scorerSpan, produced);
+              if (produced.length > 0) scorerSpan.update({ output: scorerOutputRepr(produced) });
+            } catch (err) {
+              // A deadline hit is a case-level budget overrun, not an isolated scorer failure:
+              // record it on the span and rethrow so the whole case errors (below).
+              if (err instanceof EvalTimeoutError) {
+                scorerSpan.setError(err);
+                scorerSpan.update({
+                  output: fmtError(err),
+                  attributes: { [SpanAttributes.EVAL_ERROR]: fmtError(err) },
+                });
+                throw err;
+              }
+              scorerErrors[name] = fmtError(err);
+              scorerSpan.setError(err);
+              scorerSpan.update({
+                output: scorerErrors[name],
+                attributes: { [SpanAttributes.EVAL_ERROR]: scorerErrors[name] },
+              });
+            } finally {
+              scorerSpan.end();
+            }
           }
+        } catch (err) {
+          // Scoring exceeded the case deadline -> the same isolated per-case error path as a
+          // task timeout (errored case, not scored).
+          error = fmtError(err);
+          root.setError(error);
+          root.update({ output: error, attributes: { [SpanAttributes.EVAL_ERROR]: error } });
         }
       }
 
@@ -503,9 +536,16 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
 
   let itemResults: EvalItemResult[];
   let uploadState: UploadState;
+  let cancelled = false;
   try {
-    itemResults = await runBounded(cases.length, maxConcurrency, (i) =>
-      runCase(
+    itemResults = await runBounded(cases.length, maxConcurrency, (i) => {
+      // Cooperative cancellation: once aborted, workers stop pulling new cases (in-flight cases
+      // finish). Throwing unwinds to the finally so the run is closed terminally.
+      if (options.signal?.aborted) {
+        cancelled = true;
+        throw new CancelledError('evaluation cancelled');
+      }
+      return runCase(
         cases[i],
         task,
         scorers,
@@ -516,12 +556,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         evalSpanTracer,
         options.onCaseStart,
         onCaseComplete,
-      ),
-    );
+      );
+    });
   } finally {
     reporter?.finish();
-    // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
-    uploadState = await active.finishRun(run);
+    // Finish the run inside finally so a mid-run failure never leaves it open on the backend;
+    // a cancelled run is closed 'incomplete', not 'completed'.
+    uploadState = await active.finishRun(run, cancelled ? 'incomplete' : undefined);
   }
 
   const summary = aggregateScores(itemResults);
