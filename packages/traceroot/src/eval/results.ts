@@ -369,7 +369,8 @@ export class EvalRunResult {
       });
     }
     const datasetName = this.dataset ? this.dataset.datasetId : '<inline>';
-    const run = await active.createRun(this.name, datasetName, null, this.localRunId);
+    // Preserve the run's metadata/provenance on re-upload instead of registering with null.
+    const run = await active.createRun(this.name, datasetName, this.metadata, this.localRunId);
     for (const item of this.itemResults) {
       await active.recordItemResult(run, item);
       await active.recordScores(run, item.caseId, item.scores);
