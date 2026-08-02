@@ -89,7 +89,9 @@ export function collectRunProvenance(
 ): Record<string, unknown> | null {
   const env = opts.env ?? process.env;
   const meta: Record<string, unknown> = {};
-  const git = gitBlock(env, opts.detectDirty ?? true);
+  // Default OFF: dirty detection spawns a synchronous `git status`, so a direct caller shouldn't
+  // pay that (and block the event loop) unless it explicitly opts in.
+  const git = gitBlock(env, opts.detectDirty ?? false);
   if (git) meta.git = git;
   const ci = ciBlock(env);
   if (ci) meta.ci = ci;
