@@ -50,6 +50,9 @@ export interface EvaluateOptions {
   scorers: ScorerFn[];
   runScorers?: RunScorerFn[];
   candidateVersion?: string;
+  /** The emitted metric that drives pass/fail and the run's main score. Required for a
+   *  reported multi-scorer run; a single scorer resolves it name-agnostically. */
+  mainScore?: string;
   datasetId?: string;
   maxConcurrency?: number;
   /** Bounds each case (seconds); a timeout is an isolated per-case error. */
@@ -406,6 +409,7 @@ function autoTransport(
   scorers: ScorerFn[],
   candidateVersion: string | undefined,
   environment: string | undefined,
+  mainScore: string | undefined,
 ): EvalTransport | null {
   let effectiveId = datasetId;
   let versionId: string | null = null;
@@ -422,6 +426,7 @@ function autoTransport(
     candidateVersion: candidateVersion ?? null,
     environment,
     datasetVersionId: versionId,
+    mainScoreName: mainScore ?? null,
   });
 }
 
@@ -460,12 +465,28 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   if (transport !== undefined) {
     active = transport;
   } else {
-    const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
+    const auto = autoTransport(
+      data,
+      options.datasetId,
+      scorers,
+      candidateVersion,
+      environment,
+      options.mainScore,
+    );
     if (auto === null) {
       throw new Error(
         'evaluate() reports to the TraceRoot platform, but no credentials or synced dataset ' +
           'were found. Set TRACEROOT_API_KEY and pass a pulled dataset (pullDataset(...)), or ' +
           'pass an explicit transport.',
+      );
+    }
+    // A reported multi-scorer run needs an explicit headline metric: refuse to silently pick
+    // one (the old behavior guessed the first scorer's function name).
+    if (options.mainScore === undefined && scorers.length > 1) {
+      throw new Error(
+        `This run reports ${scorers.length} scorers to the platform but no mainScore, so the ` +
+          "headline metric is ambiguous. Pass mainScore: '<scorer/metric name>' to select which " +
+          'one drives the run pass/fail and aggregate main score.',
       );
     }
     active = auto;

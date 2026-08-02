@@ -98,10 +98,18 @@ export interface RunView {
  * (distinct from a scorer error). A case with no numeric/boolean score is 'not_scored'
  * (distinct from a score of zero).
  */
-export function caseStatus(item: EvalItemResult, passThreshold = 1.0): string {
+export function caseStatus(
+  item: EvalItemResult,
+  passThreshold = 1.0,
+  mainScoreName: string | null = null,
+): string {
+  // `mainScoreName` selects the metric that drives pass/fail; when null the first
+  // numeric/boolean score is used (the single-scorer case). Passing the run's resolved main
+  // keeps this local status in agreement with the reported (cloud) status.
   if (item.error !== null) return 'errored';
   let main: number | null = null;
   for (const s of item.scores) {
+    if (mainScoreName !== null && s.name !== mainScoreName) continue;
     if (typeof s.value === 'boolean') {
       main = s.value ? 1.0 : 0.0;
       break;
@@ -110,6 +118,7 @@ export function caseStatus(item: EvalItemResult, passThreshold = 1.0): string {
       main = s.value;
       break;
     }
+    if (mainScoreName !== null) break; // the named main scorer produced a categorical value
   }
   if (main === null) return 'not_scored';
   return main >= passThreshold ? 'passed' : 'failed';
