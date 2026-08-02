@@ -17,6 +17,7 @@
 import type { ScorerContext, Score, DeferredScore } from './types';
 import { observe } from '../observe';
 import { isProviderInstrumented } from '../instrumentation';
+import { TraceRoot } from '../traceroot';
 
 /**
  * Whether an active provider integration already traces this model's calls, so the judge must
@@ -286,6 +287,10 @@ export function llmJudge(opts: LlmJudgeOptions): Scorer {
     // (richer: native semantics) instead of adding our own — otherwise we'd nest an LLM span
     // inside an LLM span. This only holds for the DEFAULT dispatch: a user-supplied `complete`
     // is not provider-instrumented, so we must self-instrument it regardless of the model id.
+    // Mirror observe()'s lazy init BEFORE checking provider wiring: a provider integration only
+    // registers on the first TraceRoot.initialize(), so checking earlier would run before wiring
+    // and self-instrument a default-dispatch call the integration also traces (nested LLM spans).
+    if (opts.complete === undefined && !TraceRoot.isInitialized()) TraceRoot.initialize();
     const providerTraced = opts.complete === undefined && providerIntegrationTraces(opts.model);
     const text = providerTraced
       ? await call(rendered)
