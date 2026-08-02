@@ -322,7 +322,10 @@ export class EvalRunResult {
       scoreSummary: Object.fromEntries(
         Object.entries(d.scores ?? {}).map(([k, v]: [string, any]) => [k, { ...v }]),
       ),
-      uploadState: { status: 'uploaded', dashboardUrl: null },
+      uploadState: {
+        status: d.upload?.status ?? 'uploaded',
+        dashboardUrl: d.upload?.dashboard_url ?? null,
+      },
       localRunId: d.local_run_id ?? '',
       candidateVersion: d.candidate_version ?? null,
       dataset: ds
