@@ -148,13 +148,20 @@ function captureSource(fn: Scorer): string | null {
  */
 export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDescriptor {
   const name = declared(fn, 'name') ?? fnName(fn);
-  const vtype = declared(fn, 'valueType') ?? valueTypeHint ?? null;
+  const declaredOutput: OutputType | null = declared(fn, 'outputType') ?? null;
+  // value type: declared > runtime hint > inferred from outputType. Inferring from outputType
+  // (score -> numeric, classification -> categorical) keeps an llmJudge that only declares
+  // outputType from reporting a null value_type/direction, so run comparisons stay consistent.
+  let vtype = declared(fn, 'valueType') ?? valueTypeHint ?? null;
+  if (vtype === null && declaredOutput !== null) {
+    vtype = declaredOutput === 'classification' ? 'categorical' : 'numeric';
+  }
   let direction = declared(fn, 'direction') ?? null;
   if (direction === null && vtype !== null) {
     direction = vtype === 'categorical' ? 'none' : 'higher_is_better';
   }
   const scorerType: ScorerType = declared(fn, 'scorerType') ?? 'code';
-  let outputType: OutputType | null = declared(fn, 'outputType') ?? null;
+  let outputType: OutputType | null = declaredOutput;
   if (outputType === null && vtype !== null) {
     outputType = vtype === 'categorical' ? 'classification' : 'score';
   }
