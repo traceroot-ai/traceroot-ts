@@ -27,7 +27,14 @@ import { SDK_VERSION } from '../processor';
 import { Evaluation } from './evaluation';
 import { newRunId } from './ids';
 import { Dataset, EvalCase, Score } from './types';
-import { EvalItemResult, EvalRunResult, RunDatasetRef, caseStatus, makeRunResult } from './results';
+import {
+  EvalItemResult,
+  EvalRunResult,
+  RunDatasetRef,
+  UploadState,
+  caseStatus,
+  makeRunResult,
+} from './results';
 import { CancelledError } from './engine';
 
 export const EVAL_API_VERSION = 1;
@@ -497,7 +504,12 @@ async function runOne(
     if ((err as Error)?.name === 'SIGINT' || err instanceof CancelledError) {
       cancelled = true;
       isFinal = false;
-      result = partialResult(evaluation, collected, candidateVersion);
+      const ce = err instanceof CancelledError ? err : undefined;
+      result = partialResult(evaluation, collected, candidateVersion, {
+        localRunId: ce?.localRunId,
+        runId: ce?.runId,
+        uploadState: ce?.uploadState,
+      });
     } else {
       throw err;
     }
@@ -544,6 +556,7 @@ function partialResult(
   evaluation: Evaluation,
   collected: EvalItemResult[],
   candidateVersion: string | null,
+  run?: { localRunId?: string; runId?: string | null; uploadState?: UploadState },
 ): EvalRunResult {
   const data = evaluation.dataset;
   let datasetId = 'ds_inline';
@@ -564,9 +577,12 @@ function partialResult(
   return makeRunResult(
     evaluation.name,
     collected,
-    { status: 'uploaded', dashboardUrl: null },
+    // Reuse the run's real upload/ids so the partial artifact stays associated with the backend
+    // run that was created and finalized; fall back to fresh values only if they're unavailable.
+    run?.uploadState ?? { status: 'uploaded', dashboardUrl: null },
     {
-      localRunId: newRunId(),
+      localRunId: run?.localRunId ?? newRunId(),
+      runId: run?.runId ?? null,
       candidateVersion,
       dataset,
       runScores: [],
