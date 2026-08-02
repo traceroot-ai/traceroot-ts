@@ -201,11 +201,12 @@ export class PlatformTransport implements EvalTransport {
   private readonly apiKey: string;
   private readonly baseUrl: string;
 
-  private scored = 0;
-  private taskErrors = 0;
-  private scorerErrors = 0;
-  private mainSum = 0;
-  private mainCount = 0;
+  // Per-case contribution keyed by test_case_id, so a retried case (or a repeated upload() with
+  // the same transport) REPLACES its contribution instead of double-counting the completion totals.
+  private readonly contrib = new Map<
+    string,
+    { status: string; main: number | null; scorerErrors: number }
+  >();
 
   constructor(datasetId: string, opts: PlatformTransportOptions = {}) {
     const { apiKey, baseUrl } = TraceRoot.resolveCredentials(opts.apiKey, opts.baseUrl);
@@ -319,15 +320,13 @@ export class PlatformTransport implements EvalTransport {
       duration_ms: durationMs(item.durationMs),
       scores: this.scoresPayload(item),
     });
-    // Fold into the completion counts only AFTER the upsert has actually persisted, so a failed
-    // or retried request can't leave the run's counts/main_score inconsistent with stored results.
-    if (status === 'errored') this.taskErrors += 1;
-    else if (status === 'passed' || status === 'failed') this.scored += 1;
-    if (main !== null) {
-      this.mainSum += main;
-      this.mainCount += 1;
-    }
-    this.scorerErrors += Object.keys(item.scorerErrors).length;
+    // Record this case's contribution only AFTER the upsert persisted, keyed by id so a retry or
+    // repeated upload replaces (not adds to) the completion aggregate.
+    this.contrib.set(item.caseId, {
+      status,
+      main,
+      scorerErrors: Object.keys(item.scorerErrors).length,
+    });
   }
 
   async recordScores(): Promise<void> {
@@ -335,16 +334,31 @@ export class PlatformTransport implements EvalTransport {
   }
 
   async finishRun(_run: RunHandle, statusOverride?: string | null): Promise<UploadState> {
+    // Derive the completion aggregate from the per-case map, so counts always match the distinct
+    // cases actually persisted (no inflation from retries/replays).
+    let scored = 0;
+    let taskErrors = 0;
+    let scorerErrors = 0;
+    let mainSum = 0;
+    let mainCount = 0;
+    for (const c of this.contrib.values()) {
+      if (c.status === 'errored') taskErrors += 1;
+      else if (c.status === 'passed' || c.status === 'failed') scored += 1;
+      if (c.main !== null) {
+        mainSum += c.main;
+        mainCount += 1;
+      }
+      scorerErrors += c.scorerErrors;
+    }
     const status =
-      statusOverride ??
-      (this.taskErrors || this.scorerErrors ? 'completed_with_errors' : 'completed');
+      statusOverride ?? (taskErrors || scorerErrors ? 'completed_with_errors' : 'completed');
     const body: Record<string, unknown> = {
       status,
-      scored_count: this.scored,
-      task_error_count: this.taskErrors,
-      scorer_error_count: this.scorerErrors,
+      scored_count: scored,
+      task_error_count: taskErrors,
+      scorer_error_count: scorerErrors,
     };
-    if (this.mainCount) body.main_score = this.mainSum / this.mainCount;
+    if (mainCount) body.main_score = mainSum / mainCount;
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/complete`, body);
     // Join the backend's UI-relative run path with our host; null when absent.
     // Prefer the backend's absolute run_url; fall back to baseUrl + run_path for a control
