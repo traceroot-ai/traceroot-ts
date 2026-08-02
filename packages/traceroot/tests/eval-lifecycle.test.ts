@@ -51,7 +51,10 @@ describe('Dataset authoring + snapshot', () => {
   it('save/load round-trips metadata, archived cases, and value types (.json and .jsonl)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ds-'));
     const ds = new Dataset('tickets', 'd');
-    ds.add({ m: 'hi', n: 2, ok: true }, { id: 'a', expected: { r: 'billing' }, metadata: { s: 1 } });
+    ds.add(
+      { m: 'hi', n: 2, ok: true },
+      { id: 'a', expected: { r: 'billing' }, metadata: { s: 1 } },
+    );
     ds.add({ m: 'bye' }, { id: 'b' });
     ds.archive('b'); // archived cases are retained for lineage and must persist
     for (const ext of ['json', 'jsonl']) {
