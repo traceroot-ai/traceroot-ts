@@ -71,6 +71,16 @@ function canonicalJson(value: unknown): string {
   const seen = new WeakSet();
   const norm = (v: unknown): unknown => {
     if (v === null || typeof v !== 'object') return v;
+    // Non-plain objects have no own enumerable keys, so the generic record path below would
+    // collapse them to `{}` and make distinct values (e.g. two different Dates) hash identically —
+    // a changed case could then keep its old revision. Canonicalize the ones with a defined
+    // serialization first: Dates by ISO instant, anything else exposing toJSON by its JSON form.
+    if (v instanceof Date) {
+      return `@date:${Number.isNaN(v.getTime()) ? 'invalid' : v.toISOString()}`;
+    }
+    if (typeof (v as { toJSON?: unknown }).toJSON === 'function') {
+      return norm((v as { toJSON: () => unknown }).toJSON());
+    }
     if (seen.has(v as object)) return null;
     seen.add(v as object);
     if (Array.isArray(v)) return v.map(norm);
@@ -81,6 +91,15 @@ function canonicalJson(value: unknown): string {
     return out;
   };
   return JSON.stringify(norm(value));
+}
+
+/** Recursively freeze a value so a snapshot cannot be mutated after capture. */
+function deepFreeze<T>(o: T): T {
+  if (o && typeof o === 'object' && !Object.isFrozen(o)) {
+    for (const v of Object.values(o as Record<string, unknown>)) deepFreeze(v);
+    Object.freeze(o);
+  }
+  return o;
 }
 
 export function contentRevision(cases: EvalCase[]): string {
@@ -196,14 +215,18 @@ export class Dataset {
   // --- snapshot ---
   snapshot(): DatasetSnapshot {
     const active = this.cases();
-    return {
+    // Deep-copy + freeze so the snapshot is a stable, content-addressed record: later mutation
+    // of the dataset's live case objects can no longer change what this revision describes, and
+    // the snapshot itself cannot be edited after capture.
+    const frozen = active.map((c) => deepFreeze(structuredClone(c)));
+    return Object.freeze({
       datasetId: this.datasetId,
       name: this.name,
       description: this.description,
       revision: contentRevision(active),
-      cases: active,
+      cases: frozen,
       baseVersionId: this.baseVersionId,
-    };
+    });
   }
 
   // --- serialization (network-free) ---

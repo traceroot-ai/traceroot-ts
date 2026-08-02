@@ -28,6 +28,7 @@ import { Evaluation } from './evaluation';
 import { newRunId } from './ids';
 import { Dataset, EvalCase, Score } from './types';
 import { EvalItemResult, EvalRunResult, RunDatasetRef, caseStatus, makeRunResult } from './results';
+import { CancelledError } from './engine';
 
 export const EVAL_API_VERSION = 1;
 export function capabilities(): Record<string, boolean> {
@@ -43,8 +44,6 @@ export function capabilities(): Record<string, boolean> {
 }
 
 const DEFAULT_RUN_DIR = '.traceroot/eval/runs';
-
-class CancelledError extends Error {}
 
 type EventSink = (line: string) => void;
 type RunnerOptions = Record<string, any>;
@@ -361,6 +360,7 @@ export async function runSuite(
   paths: string[],
   options: RunnerOptions,
   emitter: Emitter,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const reporting = Boolean(options.reporting);
   if (!reporting) enforceLocalOnly();
@@ -398,7 +398,7 @@ export async function runSuite(
   let cancelled = false;
   for (const [, evaluation] of discovered) {
     try {
-      await runOne(evaluation, options, reporting, emitter);
+      await runOne(evaluation, options, reporting, emitter, signal);
       completed += 1;
     } catch (err) {
       if (err instanceof CancelledError) {
@@ -418,6 +418,7 @@ async function runOne(
   options: RunnerOptions,
   reporting: boolean,
   emitter: Emitter,
+  signal?: AbortSignal,
 ): Promise<void> {
   const first = options.first;
   const sample = options.sample;
@@ -472,6 +473,7 @@ async function runOne(
     progress: false,
     onCaseStart,
     onCaseComplete,
+    signal,
   };
   if (options.max_concurrency) overrides.maxConcurrency = Number(options.max_concurrency);
   if (options.timeout != null) overrides.timeout = options.timeout;
@@ -577,12 +579,16 @@ export async function main(argv?: string[]): Promise<number> {
   const options = loadOptions();
 
   let sigint = false;
+  // Abort the active run on Ctrl+C so it stops promptly and finalizes a partial artifact,
+  // instead of running every remaining case and reporting a misleading "completed".
+  const controller = new AbortController();
   process.on('SIGINT', () => {
     sigint = true;
+    controller.abort();
   });
 
   try {
-    const cancelled = await runSuite(paths, options, emitter);
+    const cancelled = await runSuite(paths, options, emitter, controller.signal);
     if (cancelled || sigint) return 130;
   } catch (exc) {
     emitter.emit({ type: 'fatal', kind: 'harness_error', message: fmt(exc) });
