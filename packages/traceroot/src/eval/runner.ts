@@ -112,18 +112,11 @@ function iterPaths(paths: string[]): string[] {
   return files;
 }
 
-// A REAL dynamic import even in the CommonJS build: a plain `import()` is transpiled to
-// `require()` for CJS, which cannot resolve a `file://` URL (nor .mjs). Hiding it behind Function
-// keeps a native `import()` so file-URL specifiers load.
-const nativeImport = new Function('specifier', 'return import(specifier)') as (
-  s: string,
-) => Promise<Record<string, unknown>>;
-
 export async function discover(paths: string[]): Promise<Array<[string, Evaluation]>> {
   const found: Array<[string, Evaluation]> = [];
   const seen = new Set<Evaluation>();
   for (const path of iterPaths(paths)) {
-    const mod = await nativeImport(pathToFileURL(path).href);
+    const mod = await import(pathToFileURL(path).href);
     for (const value of Object.values(mod)) {
       if (value instanceof Evaluation && !seen.has(value)) {
         seen.add(value);
