@@ -307,13 +307,6 @@ export class PlatformTransport implements EvalTransport {
 
   async recordItemResult(_run: RunHandle, item: EvalItemResult): Promise<void> {
     const [status, main] = this.statusAndMain(item);
-    if (status === 'errored') this.taskErrors += 1;
-    else if (status === 'passed' || status === 'failed') this.scored += 1;
-    if (main !== null) {
-      this.mainSum += main;
-      this.mainCount += 1;
-    }
-    this.scorerErrors += Object.keys(item.scorerErrors).length;
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/results`, {
       test_case_id: item.caseId,
       trace_id: item.traceId,
@@ -326,6 +319,15 @@ export class PlatformTransport implements EvalTransport {
       duration_ms: durationMs(item.durationMs),
       scores: this.scoresPayload(item),
     });
+    // Fold into the completion counts only AFTER the upsert has actually persisted, so a failed
+    // or retried request can't leave the run's counts/main_score inconsistent with stored results.
+    if (status === 'errored') this.taskErrors += 1;
+    else if (status === 'passed' || status === 'failed') this.scored += 1;
+    if (main !== null) {
+      this.mainSum += main;
+      this.mainCount += 1;
+    }
+    this.scorerErrors += Object.keys(item.scorerErrors).length;
   }
 
   async recordScores(): Promise<void> {

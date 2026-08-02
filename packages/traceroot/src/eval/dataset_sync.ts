@@ -45,36 +45,61 @@ export class LocalDatasetSync implements DatasetSyncTransport {
 
 /** Deterministic in-memory sync for tests: versions, idempotency, conflicts. */
 export class FakeDatasetSync implements DatasetSyncTransport {
-  currentVersionId: string | null = null;
-  private versionCounter = 0;
-  private lastRevision: string | null = null;
+  // Per-dataset version/idempotency/conflict state, so ONE instance can model several independent
+  // server datasets. A single global cursor previously cross-contaminated them (a second dataset
+  // would inherit the first's version and produce false conflicts or skip a real change).
+  private readonly byDataset = new Map<
+    string,
+    { versionId: string | null; counter: number; revision: string | null }
+  >();
+  private lastDatasetId: string | null = null;
   readonly pushes: Array<[string, string, string]> = [];
 
-  forceCurrentVersion(versionId: string): void {
-    this.currentVersionId = versionId;
+  private stateFor(datasetId: string): { versionId: string | null; counter: number; revision: string | null } {
+    let s = this.byDataset.get(datasetId);
+    if (!s) {
+      s = { versionId: null, counter: 0, revision: null };
+      this.byDataset.set(datasetId, s);
+    }
+    return s;
+  }
+
+  /** Current server version for a dataset (defaults to the most recently pushed one). */
+  get currentVersionId(): string | null {
+    return this.lastDatasetId ? (this.byDataset.get(this.lastDatasetId)?.versionId ?? null) : null;
+  }
+
+  /** Seed a server version to simulate the server moving ahead (test helper). Applies to the
+   *  given dataset, or the most recently pushed one. */
+  forceCurrentVersion(versionId: string, datasetId?: string): void {
+    const id = datasetId ?? this.lastDatasetId;
+    if (id === null) throw new Error('forceCurrentVersion: push a dataset first, or pass a datasetId');
+    this.stateFor(id).versionId = versionId;
   }
 
   async pushDataset(snapshot: DatasetSnapshot, baseVersionId: string | null): Promise<PushResult> {
-    if (this.currentVersionId !== null && baseVersionId !== this.currentVersionId) {
-      throw new DatasetConflictError(baseVersionId, this.currentVersionId);
+    const s = this.stateFor(snapshot.datasetId);
+    this.lastDatasetId = snapshot.datasetId;
+    if (s.versionId !== null && baseVersionId !== s.versionId) {
+      throw new DatasetConflictError(baseVersionId, s.versionId);
     }
-    if (snapshot.revision === this.lastRevision) {
+    if (snapshot.revision === s.revision) {
       return {
         status: 'uploaded',
         datasetId: snapshot.datasetId,
-        datasetVersionId: this.currentVersionId,
-        versionNumber: this.versionCounter,
+        datasetVersionId: s.versionId,
+        versionNumber: s.counter,
       };
     }
-    this.versionCounter += 1;
-    this.currentVersionId = `dsv_${this.versionCounter}`;
-    this.lastRevision = snapshot.revision;
-    this.pushes.push([snapshot.datasetId, snapshot.revision, this.currentVersionId]);
+    s.counter += 1;
+    s.versionId = `dsv_${s.counter}`;
+    s.revision = snapshot.revision;
+    this.pushes.push([snapshot.datasetId, snapshot.revision, s.versionId]);
     return {
       status: 'uploaded',
       datasetId: snapshot.datasetId,
-      datasetVersionId: this.currentVersionId,
-      versionNumber: this.versionCounter,
+      datasetVersionId: s.versionId,
+      versionNumber: s.counter,
     };
   }
 }
