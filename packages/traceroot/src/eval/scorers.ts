@@ -45,6 +45,41 @@ export interface JudgeMessage {
   content: string;
 }
 
+// The ScorerContext fields a scorer may declare it needs. An extensible descriptor (not a
+// narrow reference_based boolean): output-only scorers declare ['output'], a reference
+// scorer adds 'expected', etc. Absent = unknown (never assumed).
+export const REQUIRED_INPUTS = ['input', 'output', 'expected', 'metadata', 'trace'] as const;
+export type RequiredInput = (typeof REQUIRED_INPUTS)[number];
+
+/** Validate + canonically order a declared requiredInputs list. */
+export function validateRequiredInputs(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((x) => typeof x === 'string')) {
+    throw new Error('requiredInputs must be an array of strings');
+  }
+  const unknown = value.filter((x) => !(REQUIRED_INPUTS as readonly string[]).includes(x));
+  if (unknown.length > 0) {
+    throw new Error(
+      `requiredInputs must be a subset of ${REQUIRED_INPUTS.join(', ')}, got ${unknown.join(', ')}`,
+    );
+  }
+  const present = new Set(value);
+  return REQUIRED_INPUTS.filter((x) => present.has(x));
+}
+
+const REQUIRED_INPUT_PLACEHOLDER = /\{\{\s*(input|output|expected)\s*\}\}/g;
+
+/** ScorerContext fields an llm_judge template references, derived from its placeholders
+ *  (canonical order). null when no messages; [] when the prompt references no case fields. */
+function deriveRequiredInputs(messages: JudgeMessage[] | undefined): string[] | null {
+  if (!messages || messages.length === 0) return null;
+  const found = new Set<string>();
+  for (const msg of messages) {
+    const content = typeof msg?.content === 'string' ? msg.content : '';
+    for (const m of content.matchAll(REQUIRED_INPUT_PLACEHOLDER)) found.add(m[1]);
+  }
+  return REQUIRED_INPUTS.filter((x) => found.has(x));
+}
+
 export type ScoreLikeReturn =
   | number
   | boolean
@@ -65,6 +100,7 @@ export interface ScorerMeta {
   outputType?: OutputType;
   description?: string;
   metadata?: Record<string, unknown>;
+  requiredInputs?: string[];
   // Set by llmJudge(); code scorers leave scorerType undefined (defaults to "code").
   scorerType?: ScorerType;
   model?: string;
@@ -83,6 +119,7 @@ export interface ScorerDescriptor {
   output_type: OutputType | null;
   description: string | null;
   metadata: Record<string, unknown> | null;
+  required_inputs?: string[];
   language?: string;
   source?: string;
   model?: string;
@@ -100,6 +137,9 @@ export function scorer(fn: Scorer, opts: ScorerMeta = {}): Scorer {
   if (opts.outputType !== undefined && !OUTPUT_TYPES.includes(opts.outputType)) {
     throw new Error(`outputType must be one of ${OUTPUT_TYPES.join(', ')}, got ${opts.outputType}`);
   }
+  if (opts.requiredInputs !== undefined) {
+    opts = { ...opts, requiredInputs: validateRequiredInputs(opts.requiredInputs) };
+  }
   const prev = (fn as any)[META] as ScorerMeta | undefined;
   const meta: ScorerMeta = { ...prev };
   for (const k of [
@@ -111,6 +151,7 @@ export function scorer(fn: Scorer, opts: ScorerMeta = {}): Scorer {
     'outputType',
     'description',
     'metadata',
+    'requiredInputs',
   ] as const) {
     if (opts[k] !== undefined) (meta as any)[k] = opts[k];
   }
@@ -158,6 +199,13 @@ export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDes
   if (outputType === null && vtype !== null) {
     outputType = vtype === 'categorical' ? 'classification' : 'score';
   }
+  // Declared requirements win; an llm_judge otherwise derives them from its template
+  // placeholders. A bare/undeclared code scorer stays unknown (omitted): we never claim
+  // 'expected' is required just because it exists on the context.
+  let requiredInputs = declared(fn, 'requiredInputs') ?? null;
+  if (requiredInputs === null && scorerType === 'llm_judge') {
+    requiredInputs = deriveRequiredInputs(declared(fn, 'messages'));
+  }
   const desc: ScorerDescriptor = {
     name,
     version: declaredVersion(fn),
@@ -169,6 +217,7 @@ export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDes
     description: declared(fn, 'description') ?? null,
     metadata: declared(fn, 'metadata') ?? null,
   };
+  if (requiredInputs !== null) desc.required_inputs = requiredInputs;
   if (scorerType === 'llm_judge') {
     desc.model = declared(fn, 'model');
     desc.messages = declared(fn, 'messages');
@@ -256,6 +305,8 @@ export interface LlmJudgeOptions {
   metadata?: Record<string, unknown>;
   direction?: Direction;
   valueType?: ValueType;
+  /** Override the derived required inputs (default: from the template placeholders). */
+  requiredInputs?: string[];
   /** Override the model call (tests / custom providers). Default: lazy anthropic/openai. */
   complete?: (model: string, messages: JudgeMessage[]) => string | Promise<string>;
 }
@@ -270,6 +321,8 @@ export function llmJudge(opts: LlmJudgeOptions): Scorer {
   if (!OUTPUT_TYPES.includes(outputType)) {
     throw new Error(`outputType must be one of ${OUTPUT_TYPES.join(', ')}, got ${outputType}`);
   }
+  const requiredInputs =
+    opts.requiredInputs !== undefined ? validateRequiredInputs(opts.requiredInputs) : undefined;
   const call = (msgs: JudgeMessage[]) => (opts.complete ?? defaultComplete)(opts.model, msgs);
   const judge: Scorer = async (ctx: ScorerContext): Promise<Score> => {
     const rendered = renderMessages(opts.messages, ctx);
@@ -306,6 +359,7 @@ export function llmJudge(opts: LlmJudgeOptions): Scorer {
   if (opts.metadata !== undefined) meta.metadata = opts.metadata;
   if (opts.direction !== undefined) meta.direction = opts.direction;
   if (opts.valueType !== undefined) meta.valueType = opts.valueType;
+  if (requiredInputs !== undefined) meta.requiredInputs = requiredInputs;
   (judge as any)[META] = meta;
   return judge;
 }

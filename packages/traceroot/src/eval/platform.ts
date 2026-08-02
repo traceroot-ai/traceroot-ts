@@ -160,6 +160,7 @@ export interface ScorerSpec {
   output_type?: string | null;
   description?: string | null;
   metadata?: Record<string, unknown> | null;
+  required_inputs?: string[] | null;
   language?: string | null;
   source?: string | null;
   model?: string | null;
@@ -244,6 +245,7 @@ export class PlatformTransport implements EvalTransport {
           'output_type',
           'description',
           'metadata',
+          'required_inputs',
           'language',
           'source',
           'model',

@@ -31,10 +31,19 @@ export {
   describeScorers,
   scorerMetadata,
   declaredVersion,
+  validateRequiredInputs,
   VALUE_TYPES,
   DIRECTIONS,
+  REQUIRED_INPUTS,
 } from './scorers';
-export type { Scorer, ScorerMeta, ScorerDescriptor, ValueType, Direction } from './scorers';
+export type {
+  Scorer,
+  ScorerMeta,
+  ScorerDescriptor,
+  ValueType,
+  Direction,
+  RequiredInput,
+} from './scorers';
 export { collectRunProvenance, gitDirty, runProvenance } from './provenance';
 export {
   datasetLatestSnippet,
