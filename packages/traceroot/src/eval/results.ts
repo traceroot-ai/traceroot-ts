@@ -322,7 +322,10 @@ export class EvalRunResult {
       scoreSummary: Object.fromEntries(
         Object.entries(d.scores ?? {}).map(([k, v]: [string, any]) => [k, { ...v }]),
       ),
-      uploadState: { status: 'uploaded', dashboardUrl: null },
+      uploadState: {
+        status: d.upload?.status ?? 'uploaded',
+        dashboardUrl: d.upload?.dashboard_url ?? null,
+      },
       localRunId: d.local_run_id ?? '',
       candidateVersion: d.candidate_version ?? null,
       dataset: ds
@@ -366,7 +369,8 @@ export class EvalRunResult {
       });
     }
     const datasetName = this.dataset ? this.dataset.datasetId : '<inline>';
-    const run = await active.createRun(this.name, datasetName, null, this.localRunId);
+    // Preserve the run's metadata/provenance on re-upload instead of registering with null.
+    const run = await active.createRun(this.name, datasetName, this.metadata, this.localRunId);
     for (const item of this.itemResults) {
       await active.recordItemResult(run, item);
       await active.recordScores(run, item.caseId, item.scores);
