@@ -35,7 +35,7 @@ export {
   DIRECTIONS,
 } from './scorers';
 export type { Scorer, ScorerMeta, ScorerDescriptor, ValueType, Direction } from './scorers';
-export { collectRunProvenance, gitDirty } from './provenance';
+export { collectRunProvenance, gitDirty, runProvenance } from './provenance';
 export {
   datasetLatestSnippet,
   datasetVersionSnippet,

@@ -277,8 +277,9 @@ export class PlatformTransport implements EvalTransport {
   async createRun(
     name: string,
     _datasetName: string,
-    _metadata: Record<string, unknown> | null,
+    metadata: Record<string, unknown> | null,
     clientRunId?: string,
+    provenance?: Record<string, unknown> | null,
   ): Promise<RunHandle> {
     const body: Record<string, unknown> = {
       evaluation_name: name,
@@ -291,6 +292,11 @@ export class PlatformTransport implements EvalTransport {
     if (this.mainScoreName !== null) body.main_score_name = this.mainScoreName;
     const effectiveClientRun = clientRunId ?? this.clientRunId;
     if (effectiveClientRun != null) body.client_run_id = effectiveClientRun;
+    // Typed execution provenance (git/CI/SDK identity) and free-form user metadata. Both
+    // are optional on the backend; omit when empty to match its absent-or-null rules
+    // rather than sending empty objects.
+    if (provenance && Object.keys(provenance).length > 0) body.provenance = provenance;
+    if (metadata && Object.keys(metadata).length > 0) body.metadata = metadata;
     const resp = await this.request('POST', '/api/v1/public/evaluation-runs', body);
     this.runId = resp.evaluation_run_id;
     // Optional, absent on older/self-hosted backends. Prefer the absolute run_url (resolved
@@ -298,7 +304,7 @@ export class PlatformTransport implements EvalTransport {
     // run_path as a same-origin fallback.
     this.runUrl = resp.run_url ?? null;
     this.runPath = resp.run_path ?? null;
-    return { name, datasetName: _datasetName, metadata: _metadata };
+    return { name, datasetName: _datasetName, metadata };
   }
 
   async registerItem(): Promise<void> {

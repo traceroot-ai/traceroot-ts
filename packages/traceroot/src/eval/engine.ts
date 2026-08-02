@@ -23,7 +23,7 @@ import {
 } from './results';
 import { EvalTransport, RunHandle } from './transport';
 import { PlatformTransport } from './platform';
-import { collectRunProvenance } from './provenance';
+import { collectRunProvenance, runProvenance } from './provenance';
 import { declaredVersion, describeScorers } from './scorers';
 import { newRunId } from './ids';
 import { ConsoleProgress, printRunUrl, shouldShowProgress } from './progress';
@@ -447,7 +447,12 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   const datasetName = data instanceof Dataset ? data.name : INLINE_DATASET;
   const snapshotRevision =
     data instanceof Dataset ? data.snapshot().revision : `local-${cases.length}`;
+  // Local run record keeps the combined view (user metadata + git/ci) for the artifact.
+  // The wire form is separate: typed provenance (flat RunProvenance shape) reported at
+  // registration, with the user's free-form metadata sent verbatim alongside it. Dirty
+  // state is observed here (one bounded git-status call at run start).
   const runMetadata = collectRunProvenance(options.metadata, { detectDirty: false });
+  const runProvenanceWire = runProvenance({ detectDirty: true });
 
   // Cloud-only: an explicit transport wins; otherwise build a reporting transport from
   // credentials + a synced dataset. Evaluation always reports -- there is no local run.
@@ -474,7 +479,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // Eval structural spans always export (cloud-only) and are linked to the reported results.
   const evalSpanTracer = evalTracer();
   const localRunId = newRunId();
-  const run = await active.createRun(name, datasetName, runMetadata, localRunId);
+  const run = await active.createRun(
+    name,
+    datasetName,
+    options.metadata ?? null,
+    localRunId,
+    runProvenanceWire,
+  );
 
   const identity: RunIdentity = {
     name,

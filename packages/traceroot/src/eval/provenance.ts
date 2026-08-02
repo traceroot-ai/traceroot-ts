@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 
 import { TraceRoot } from '../traceroot';
 import { autoDetectGitContext, gitContextFromFiles, harvestCiGitContext } from '../git_context';
+import { SDK_VERSION } from '../processor';
 
 // (env flag that marks the provider, provider name, env var holding the build/run id)
 const CI_PROVIDERS: [string, string, string][] = [
@@ -19,6 +20,18 @@ const CI_PROVIDERS: [string, string, string][] = [
   ['CIRCLECI', 'circleci', 'CIRCLE_BUILD_NUM'],
   ['BUILDKITE', 'buildkite', 'BUILDKITE_BUILD_ID'],
   ['JENKINS_URL', 'jenkins', 'BUILD_NUMBER'],
+];
+
+const SDK_LANGUAGE = 'typescript';
+
+// Branch/ref env vars set by common CI providers (distinct from the commit SHA).
+const CI_BRANCH_VARS = [
+  'GITHUB_HEAD_REF',
+  'GITHUB_REF_NAME',
+  'CI_COMMIT_REF_NAME',
+  'CIRCLE_BRANCH',
+  'BUILDKITE_BRANCH',
+  'GIT_BRANCH',
 ];
 
 /** (repository, commit) using the same precedence as the client; prefers the value already
@@ -95,4 +108,57 @@ export function collectRunProvenance(
   if (ci) meta.ci = ci;
   const merged = userMetadata ? { ...meta, ...userMetadata } : meta;
   return Object.keys(merged).length > 0 ? merged : null;
+}
+
+/** Best-effort branch name — distinct from the commit SHA. CI branch env first, then
+ *  `git rev-parse --abbrev-ref HEAD`. null on detached HEAD or when unknown. */
+function gitBranch(env: NodeJS.ProcessEnv): string | null {
+  for (const v of CI_BRANCH_VARS) {
+    const b = env[v];
+    if (b) return b;
+  }
+  try {
+    const out = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out && out !== 'HEAD' ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Typed execution provenance in the backend's flat RunProvenance wire shape (snake_case
+ *  keys). Every value is what the SDK can actually observe; absent values are omitted,
+ *  never inferred. sdk_language/sdk_version identify the SDK and are always reported when
+ *  known.
+ *
+ *  Distinct from free-form user metadata and never a substitute for the candidate_version
+ *  display label. Model/prompt identity is NOT auto-detected — the platform observes actual
+ *  models from task-subtree LLM spans — so declared_model/declared_prompt_version are left
+ *  for the user to declare. */
+export function runProvenance(
+  opts: { env?: NodeJS.ProcessEnv; detectDirty?: boolean } = {},
+): Record<string, unknown> {
+  const env = opts.env ?? process.env;
+  const detectDirty = opts.detectDirty ?? true;
+  const prov: Record<string, unknown> = {};
+  const [repo, commit] = resolvedGit(env);
+  if (repo) prov.git_repository = repo;
+  const branch = gitBranch(env);
+  if (branch) prov.git_ref = branch;
+  if (commit) prov.git_commit = commit;
+  if (detectDirty) {
+    const dirty = gitDirty();
+    if (dirty !== null) prov.git_dirty = dirty;
+  }
+  const ci = ciBlock(env);
+  if (ci) {
+    prov.ci_provider = ci.provider;
+    if (ci.build_id) prov.ci_build_id = ci.build_id;
+  }
+  prov.sdk_language = SDK_LANGUAGE;
+  if (SDK_VERSION) prov.sdk_version = SDK_VERSION;
+  return prov;
 }
