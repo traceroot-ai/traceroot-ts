@@ -36,6 +36,7 @@ import {
   makeRunResult,
 } from './results';
 import { CancelledError } from './engine';
+import { FakeTransport } from './transport';
 
 export const EVAL_API_VERSION = 1;
 export function capabilities(): Record<string, boolean> {
@@ -111,11 +112,18 @@ function iterPaths(paths: string[]): string[] {
   return files;
 }
 
+// A REAL dynamic import even in the CommonJS build: a plain `import()` is transpiled to
+// `require()` for CJS, which cannot resolve a `file://` URL (nor .mjs). Hiding it behind Function
+// keeps a native `import()` so file-URL specifiers load.
+const nativeImport = new Function('specifier', 'return import(specifier)') as (
+  s: string,
+) => Promise<Record<string, unknown>>;
+
 export async function discover(paths: string[]): Promise<Array<[string, Evaluation]>> {
   const found: Array<[string, Evaluation]> = [];
   const seen = new Set<Evaluation>();
   for (const path of iterPaths(paths)) {
-    const mod = await import(pathToFileURL(path).href);
+    const mod = await nativeImport(pathToFileURL(path).href);
     for (const value of Object.values(mod)) {
       if (value instanceof Evaluation && !seen.has(value)) {
         seen.add(value);
@@ -139,6 +147,16 @@ function subset(
   seed: number,
 ): [Set<string> | null, string, boolean] {
   if (first === undefined && sample === undefined) return [null, 'full', true];
+  // Reject nonsensical sizes rather than silently selecting an unintended subset (a negative or
+  // fractional value would slice to an odd count).
+  for (const [label, val] of [
+    ['first', first],
+    ['sample', sample],
+  ] as const) {
+    if (val !== undefined && (!Number.isInteger(val) || val < 0)) {
+      throw new Error(`'${label}' must be a non-negative integer, got ${val}`);
+    }
+  }
   const ids = caseIds(data);
   // Selection is by id (below), so duplicate ids would over-select and blow past the requested
   // size. Reject them with a clear error rather than silently running more cases than asked.
@@ -301,7 +319,21 @@ function truncatePayload(value: unknown, limit: number | null | undefined): [unk
   if (limit == null) return [value, false];
   const text = JSON.stringify(value ?? null) ?? 'null';
   if (Buffer.byteLength(text, 'utf8') <= limit) return [value, false];
-  return [{ truncated: true, preview: text.slice(0, limit) }, true];
+  return [{ truncated: true, preview: sliceToBytes(text, limit) }, true];
+}
+
+/** Truncate a string to at most `maxBytes` UTF-8 bytes, on a whole-code-point boundary — so a
+ *  multi-byte character is never split and the preview never exceeds the advertised byte cap. */
+function sliceToBytes(s: string, maxBytes: number): string {
+  let bytes = 0;
+  let out = '';
+  for (const ch of s) {
+    const chBytes = Buffer.byteLength(ch, 'utf8');
+    if (bytes + chBytes > maxBytes) break;
+    out += ch;
+    bytes += chBytes;
+  }
+  return out;
 }
 
 export function writeArtifacts(
@@ -486,13 +518,18 @@ async function runOne(
   const overrides: Record<string, unknown> = {
     candidateVersion: candidateVersion ?? undefined,
     select,
-    local: !reporting,
     // The runner speaks NDJSON on its own channel; never draw a progress bar.
     progress: false,
     onCaseStart,
     onCaseComplete,
     signal,
   };
+  if (!reporting) {
+    // Local-only guarantee: replace any transport the Evaluation supplied (e.g. report_to) with an
+    // in-memory no-op, so lifecycle requests never leave the process even when a real transport was
+    // configured. (A bare `local` flag was ignored by the engine.)
+    overrides.transport = new FakeTransport();
+  }
   if (options.max_concurrency) overrides.maxConcurrency = Number(options.max_concurrency);
   if (options.timeout != null) overrides.timeout = options.timeout;
 
