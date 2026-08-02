@@ -34,12 +34,24 @@ let _provider: NodeTracerProvider | undefined;
 // (parity with the Python client that eval's _resolve_credentials reads).
 let _apiKey: string | undefined;
 let _baseUrl: string = DEFAULT_BASE_URL;
+// Git context resolved at initialize(), so eval run provenance can reuse the repo/ref supplied
+// through initialization even on packaged deployments with no .git to re-derive from.
+let _gitRepo: string | undefined;
+let _gitRef: string | undefined;
 
 export class TraceRoot {
   private constructor() {}
 
   static isInitialized(): boolean {
     return _isInitialized;
+  }
+
+  /** Git repo/ref resolved at initialize() (undefined until then). Read by eval provenance. */
+  static get gitRepo(): string | undefined {
+    return _gitRepo;
+  }
+  static get gitRef(): string | undefined {
+    return _gitRef;
   }
 
   /**
@@ -142,6 +154,11 @@ export class TraceRoot {
       gitRepo ??= autoGit.gitRepo;
       gitRef ??= autoGit.gitRef;
     }
+
+    // Persist the resolved git context so eval run provenance reuses exactly what was
+    // initialized here (not only what it can independently re-derive from env/.git).
+    _gitRepo = gitRepo;
+    _gitRef = gitRef;
 
     // Warm git-root cache for per-span source paths (cached/idempotent).
     getGitRoot();
