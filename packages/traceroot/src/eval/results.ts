@@ -264,7 +264,6 @@ export class EvalRunResult {
       // the run's status and dashboard URL.
       upload: { status: this.uploadState.status, dashboard_url: this.uploadState.dashboardUrl },
       metadata: this.metadata,
-      upload: { status: this.uploadState.status, dashboard_url: this.uploadState.dashboardUrl },
     };
   }
 
