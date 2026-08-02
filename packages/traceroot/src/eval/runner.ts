@@ -133,6 +133,17 @@ function subset(
 ): [Set<string> | null, string, boolean] {
   if (first === undefined && sample === undefined) return [null, 'full', true];
   const ids = caseIds(data);
+  // Selection is by id (below), so duplicate ids would over-select and blow past the requested
+  // size. Reject them with a clear error rather than silently running more cases than asked.
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) {
+      throw new Error(
+        `cannot sample: duplicate case id ${JSON.stringify(id)} — give each case a unique id.`,
+      );
+    }
+    seen.add(id);
+  }
   if (first !== undefined) return [new Set(ids.slice(0, first)), 'first', false];
   const n = sample !== undefined ? Math.min(sample, ids.length) : ids.length;
   // Deterministic positional sample (seeded LCG) — reproducible across imports.
@@ -576,7 +587,6 @@ function fmt(exc: unknown): string {
 export async function main(argv?: string[]): Promise<number> {
   const paths = argv ?? process.argv.slice(2);
   const emitter = new Emitter(openChannel());
-  const options = loadOptions();
 
   let sigint = false;
   // Abort the active run on Ctrl+C so it stops promptly and finalizes a partial artifact,
@@ -588,6 +598,9 @@ export async function main(argv?: string[]): Promise<number> {
   });
 
   try {
+    // Parse options inside the error boundary so malformed TRACEROOT_EVAL_OPTIONS surfaces as a
+    // `fatal` NDJSON event instead of escaping the harness with an unhandled throw.
+    const options = loadOptions();
     const cancelled = await runSuite(paths, options, emitter, controller.signal);
     if (cancelled || sigint) return 130;
   } catch (exc) {
