@@ -260,6 +260,9 @@ export class EvalRunResult {
       ),
       run_scores: this.runScores.map(scoreToJSON),
       run_scorer_errors: this.runScorerErrors,
+      // fromJSON() reads `upload`, so write it here too — otherwise a save/load round trip loses
+      // the run's status and dashboard URL.
+      upload: { status: this.uploadState.status, dashboard_url: this.uploadState.dashboardUrl },
       metadata: this.metadata,
       upload: { status: this.uploadState.status, dashboard_url: this.uploadState.dashboardUrl },
     };
