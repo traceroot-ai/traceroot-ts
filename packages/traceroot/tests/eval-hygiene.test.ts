@@ -1,4 +1,4 @@
-// Phase 0B: artifact hygiene — dir perms, .gitignore, bounded payloads, and a proof that
+// Artifact hygiene — dir perms, .gitignore, bounded payloads, and a proof that
 // credentials never land in a written artifact.
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,7 +58,7 @@ const opts = {
   provenance: null,
 };
 
-describe('Phase 0B — artifact hygiene', () => {
+describe('artifact hygiene', () => {
   it('credentials in the environment never appear in written artifacts', () => {
     prevKey = process.env['TRACEROOT_API_KEY'];
     process.env['TRACEROOT_API_KEY'] = SENTINEL_KEY;

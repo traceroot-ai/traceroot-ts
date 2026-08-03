@@ -3,7 +3,16 @@
 export { Dataset, DeferredScore, contentRevision } from './types';
 export type { EvalCase, Score, ScorerContext, DatasetSnapshot } from './types';
 export { ulid, newId, newDatasetId, newTestCaseId, newRunId } from './ids';
-export { EvalRunResult, aggregateScores, caseStatus, makeRunResult } from './results';
+export {
+  EvalRunResult,
+  MainScore,
+  MainScoreError,
+  aggregateScores,
+  caseStatus,
+  makeRunResult,
+  resolveMainScoreName,
+  resolveMainScorePolicy,
+} from './results';
 export type { EvalItemResult, UploadState, ScoreSummary, RunDatasetRef, RunView } from './results';
 export { evaluate, evaluateAsync } from './engine';
 export type { EvaluateOptions, TaskFn, ScorerFn, ScoreLike, RunScorerFn } from './engine';
@@ -31,11 +40,20 @@ export {
   describeScorers,
   scorerMetadata,
   declaredVersion,
+  validateRequiredInputs,
   VALUE_TYPES,
   DIRECTIONS,
+  REQUIRED_INPUTS,
 } from './scorers';
-export type { Scorer, ScorerMeta, ScorerDescriptor, ValueType, Direction } from './scorers';
-export { collectRunProvenance, gitDirty } from './provenance';
+export type {
+  Scorer,
+  ScorerMeta,
+  ScorerDescriptor,
+  ValueType,
+  Direction,
+  RequiredInput,
+} from './scorers';
+export { collectRunProvenance, gitDirty, runProvenance } from './provenance';
 export {
   datasetLatestSnippet,
   datasetVersionSnippet,
