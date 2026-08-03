@@ -261,12 +261,24 @@ function renderMessages(messages: JudgeMessage[], ctx: ScorerContext): JudgeMess
   }));
 }
 
+/**
+ * Parse a judge's response into a score. The judge contract is "reply with a single number
+ * and nothing else", so the response itself is the number. To avoid the "first number wins"
+ * footgun (`Step 3: the score is 0.8` must NOT become 3), accept an exact numeric response or
+ * a single unambiguous number in prose, and otherwise throw -- a malformed/ambiguous response
+ * is an isolated scorer error with the raw text preserved, never a wrong silent score.
+ */
 function parseJudgeOutput(text: string, outputType: OutputType): number | string {
   if (outputType === 'classification') return (text ?? '').trim();
-  const match = (text ?? '').match(/-?\d+(?:\.\d+)?/);
-  if (!match)
-    throw new Error(`llmJudge: no numeric score in model output: ${(text ?? '').slice(0, 200)}`);
-  return Number(match[0]);
+  const stripped = (text ?? '').trim();
+  const candidate = stripped.replace(/\.+$/, ''); // tolerate a trailing period on an exact answer
+  if (/^-?\d+(?:\.\d+)?$/.test(candidate)) return Number(candidate);
+  const numbers = stripped.match(/-?\d+(?:\.\d+)?/g) ?? [];
+  if (numbers.length === 1) return Number(numbers[0]);
+  throw new Error(
+    `llmJudge: expected a single numeric score, found ${numbers.length} in model output: ` +
+      JSON.stringify(stripped.slice(0, 200)),
+  );
 }
 
 async function defaultComplete(model: string, messages: JudgeMessage[]): Promise<string> {
