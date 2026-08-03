@@ -197,14 +197,17 @@ describe('llm judge trace', () => {
     assert.match(String(llm.attributes['output.value']), /0\.8/); // model response out
   });
 
-  it('skips its own LLM span when a provider integration already traces the model', async () => {
+  it('self-instruments a custom complete even when a provider integration is active', async () => {
+    // A user-supplied complete is NOT what the provider integration traces (it never calls the
+    // provider SDK), so we must still emit our own LLM span for it — otherwise the judge call
+    // would have no span at all. Deferring to the integration only applies to the default dispatch.
     const { llmJudge } = await import('../src/eval');
     const { __setInstrumentedProvidersForTest } = await import('../src/instrumentation');
-    __setInstrumentedProvidersForTest(['anthropic']); // simulate an active anthropic integration
+    __setInstrumentedProvidersForTest(['anthropic']); // active anthropic integration
     try {
       const judge = llmJudge({
         name: 'conciseness',
-        model: 'claude-sonnet-5', // anthropic model -> checks the anthropic integration
+        model: 'claude-sonnet-5', // anthropic model, but reached via a custom complete below
         messages: [{ role: 'user', content: 'ANSWER:\n{{output}}' }],
         complete: () => '0.8',
       });
@@ -218,8 +221,9 @@ describe('llm judge trace', () => {
         ...reported(),
       });
       const by = byName(exporter.getFinishedSpans());
-      assert.equal(by['llm_judge:conciseness'], undefined); // integration owns the LLM span, not us
-      assert.ok(by['conciseness']); // the scorer span still exists
+      const llm = by['llm_judge:conciseness'];
+      assert.ok(llm, 'a custom complete must be self-instrumented, integration or not');
+      assert.equal(llm.parentSpanId, by['conciseness'].spanContext().spanId); // nested under scorer
       assert.equal(result.itemResults[0].scores[0].value, 0.8); // judge still ran + scored
     } finally {
       __setInstrumentedProvidersForTest([]); // reset for other tests
