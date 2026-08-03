@@ -98,6 +98,46 @@ export interface RunView {
  * (distinct from a scorer error). A case with no numeric/boolean score is 'not_scored'
  * (distinct from a score of zero).
  */
+/** A run-level main-score misconfiguration: the configured main was never emitted, or
+ *  multiple metrics were emitted with no explicit selection. Raised once, after resolution. */
+export class MainScoreError extends Error {}
+
+/**
+ * THE one resolver -- used by both the local result and the cloud reporter so they never
+ * diverge. Returns the single resolved main-metric name (or null when the run produced no
+ * numeric score):
+ *  - explicit `configured` wins, but must have been emitted (else throw);
+ *  - no config + exactly one numeric metric -> that metric (late-bound to what was emitted,
+ *    so a scorer whose function name differs from its emitted Score name resolves to the
+ *    EMITTED name, never the function name);
+ *  - no config + multiple numeric metrics -> ambiguous, throw;
+ *  - no numeric metric at all -> null (unscored; not an error).
+ */
+export function resolveMainScoreName(
+  configured: string | null,
+  numericMetrics: string[],
+): string | null {
+  const distinct = [...new Set(numericMetrics)];
+  if (configured !== null) {
+    if (distinct.includes(configured)) return configured;
+    if (distinct.length > 0) {
+      throw new MainScoreError(
+        `main_score=${JSON.stringify(configured)} was never emitted; the run emitted numeric ` +
+          `metric(s) ${JSON.stringify(distinct)}. Set main_score to one of those (or align the ` +
+          "scorer's Score name with its declared name).",
+      );
+    }
+    return configured; // no numeric scores at all -> keep the label; run is simply unscored
+  }
+  if (distinct.length > 1) {
+    throw new MainScoreError(
+      `multiple numeric metrics emitted ${JSON.stringify(distinct)} but no main_score; pass ` +
+        'main_score to select the headline metric.',
+    );
+  }
+  return distinct.length === 1 ? distinct[0] : null;
+}
+
 export function caseStatus(
   item: EvalItemResult,
   passThreshold = 1.0,
@@ -169,6 +209,7 @@ export interface EvalRunResultInit {
   runScores?: Score[];
   runScorerErrors?: Record<string, string>;
   metadata?: Record<string, unknown> | null;
+  mainScoreName?: string | null;
 }
 
 /** The full, immutable result of an evaluation run. */
@@ -184,6 +225,9 @@ export class EvalRunResult {
   runScores: Score[];
   runScorerErrors: Record<string, string>;
   metadata: Record<string, unknown> | null;
+  // The one resolved main-metric name; every status/summary view derives pass/fail from THIS
+  // metric, agreeing with the reported (cloud) run.
+  mainScoreName: string | null;
 
   constructor(init: EvalRunResultInit) {
     this.name = init.name;
@@ -197,6 +241,7 @@ export class EvalRunResult {
     this.runScores = init.runScores ?? [];
     this.runScorerErrors = init.runScorerErrors ?? {};
     this.metadata = init.metadata ?? null;
+    this.mainScoreName = init.mainScoreName ?? null;
   }
 
   // --- inspection ---
@@ -204,7 +249,7 @@ export class EvalRunResult {
     return this.itemResults;
   }
   private byStatus(status: string): EvalItemResult[] {
-    return this.itemResults.filter((it) => caseStatus(it) === status);
+    return this.itemResults.filter((it) => caseStatus(it, 1.0, this.mainScoreName) === status);
   }
   failures(): EvalItemResult[] {
     return this.byStatus('failed');
@@ -244,6 +289,7 @@ export class EvalRunResult {
       local_run_id: this.localRunId,
       run_id: this.runId,
       candidate_version: this.candidateVersion,
+      main_score_name: this.mainScoreName,
       dataset: this.dataset
         ? {
             dataset_id: this.dataset.datasetId,
@@ -302,6 +348,7 @@ export class EvalRunResult {
       runScores: (d.run_scores ?? []).map((s: any) => ({ ...s, version: s.version ?? null })),
       runScorerErrors: d.run_scorer_errors ?? {},
       metadata: d.metadata ?? null,
+      mainScoreName: d.main_score_name ?? null,
     });
   }
 
@@ -380,7 +427,7 @@ export class EvalRunResult {
       await active.recordItemResult(run, item);
       await active.recordScores(run, item.caseId, item.scores);
     }
-    this.uploadState = await active.finishRun(run, null);
+    this.uploadState = await active.finishRun(run, null, this.mainScoreName);
     this.runId = active.runId ?? null;
     return this;
   }
@@ -393,7 +440,8 @@ export class EvalRunResult {
     const lines = [head];
     for (const [name, s] of Object.entries(this.scoreSummary)) {
       const mean = s.mean === null ? 'n/a' : String(s.mean);
-      lines.push(`  ${name}: mean=${mean} count=${s.count}`);
+      const marker = name === this.mainScoreName ? '  (main)' : '';
+      lines.push(`  ${name}: mean=${mean} count=${s.count}${marker}`);
     }
     return lines.join('\n');
   }
@@ -407,6 +455,7 @@ export interface MakeRunResultOptions {
   metadata?: Record<string, unknown> | null;
   runScores?: Score[];
   runScorerErrors?: Record<string, string>;
+  mainScoreName?: string | null;
 }
 
 /** Build an EvalRunResult (computes the score summary). */

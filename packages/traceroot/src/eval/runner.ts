@@ -206,10 +206,13 @@ function scorerVersions(result: EvalRunResult): Record<string, string | null> {
   return versions;
 }
 
-function caseMetadata(item: EvalItemResult): Record<string, unknown> {
+function caseMetadata(
+  item: EvalItemResult,
+  mainScoreName: string | null = null,
+): Record<string, unknown> {
   return {
     case_id: item.caseId,
-    status: caseStatus(item),
+    status: caseStatus(item, 1.0, mainScoreName),
     scores: item.scores.map(scoreEvent),
     task_error: item.error,
     scorer_errors: scorerErrorEvents(item),
@@ -308,7 +311,7 @@ export function writeArtifacts(
     return JSON.stringify({
       schema_version: '1',
       case_id: item.caseId,
-      status: caseStatus(item),
+      status: caseStatus(item, 1.0, result.mainScoreName),
       input,
       output,
       expected,
@@ -334,6 +337,7 @@ export function writeArtifacts(
     run_id: result.runId,
     created_at: o.createdAt ?? nowIso(),
     evaluation_name: result.name,
+    main_score_name: result.mainScoreName,
     status: o.status,
     candidate_version: o.candidateVersion,
     run_mode: o.runMode,
@@ -356,7 +360,7 @@ export function writeArtifacts(
     scores: Object.fromEntries(Object.entries(result.scoreSummary).map(([k, v]) => [k, { ...v }])),
     upload: { status: result.uploadState.status, dashboard_url: result.uploadState.dashboardUrl },
     artifact,
-    cases: result.itemResults.map(caseMetadata),
+    cases: result.itemResults.map((it) => caseMetadata(it, result.mainScoreName)),
   };
   atomicWrite(runPath, JSON.stringify(runDoc, null, 2));
   return artifact;
@@ -466,7 +470,9 @@ async function runOne(
   const onCaseStart = (c: EvalCase): void => emitter.emit({ type: 'case_started', case_id: c.id });
   const onCaseComplete = (item: EvalItemResult): void => {
     collected.push(item);
-    emitter.emit({ type: 'case_completed', ...caseMetadata(item) });
+    // Live status uses the CONFIGURED main (known up front); a single scorer's late-bound
+    // metric is name-agnostic and resolves to the same value, so live and final agree.
+    emitter.emit({ type: 'case_completed', ...caseMetadata(item, evaluation.mainScore ?? null) });
   };
 
   const overrides: Record<string, unknown> = {

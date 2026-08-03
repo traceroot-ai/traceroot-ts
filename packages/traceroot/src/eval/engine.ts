@@ -14,11 +14,13 @@ import { Dataset, DeferredScore, EvalCase, Score, ScorerContext } from './types'
 import {
   EvalItemResult,
   EvalRunResult,
+  MainScoreError,
   RunDatasetRef,
   RunView,
   ScoreSummary,
   aggregateScores,
   makeRunResult,
+  resolveMainScoreName,
   UploadState,
 } from './results';
 import { EvalTransport, RunHandle } from './transport';
@@ -533,8 +535,11 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     };
   }
 
-  let itemResults: EvalItemResult[];
+  let itemResults: EvalItemResult[] = [];
   let uploadState: UploadState;
+  let summary: Record<string, ScoreSummary> = {};
+  let resolvedMain: string | null = null;
+  let resolveError: MainScoreError | null = null;
   try {
     itemResults = await runBounded(cases.length, maxConcurrency, (i) =>
       runCase(
@@ -550,13 +555,28 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         onCaseComplete,
       ),
     );
+    summary = aggregateScores(itemResults);
+    // The ONE resolution of the run's main metric (late-bound to what was actually emitted).
+    // The same resolved value stamps the local result and the cloud completion.
+    const numeric = Object.entries(summary)
+      .filter(([, s]) => s.mean !== null)
+      .map(([n]) => n);
+    try {
+      resolvedMain = resolveMainScoreName(options.mainScore ?? null, numeric);
+    } catch (e) {
+      if (e instanceof MainScoreError) resolveError = e;
+      else throw e;
+    }
   } finally {
     reporter?.finish();
-    // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
-    uploadState = await active.finishRun(run);
+    // Finish inside finally so a mid-run failure never leaves the run open; a main-score
+    // misconfiguration completes the run in a terminal 'failed' state before we throw, so a
+    // registered run is never left orphaned in 'running'.
+    uploadState = await active.finishRun(run, resolveError !== null ? 'failed' : null, resolvedMain);
   }
 
-  const summary = aggregateScores(itemResults);
+  if (resolveError !== null) throw resolveError;
+
   const { runScores, runScorerErrors } = await runRunScorers(
     options.runScorers,
     name,
@@ -577,6 +597,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     candidateVersion: candidateVersion ?? null,
     dataset: datasetRef,
     metadata: runMetadata,
+    mainScoreName: resolvedMain,
     runScores,
     runScorerErrors,
   });

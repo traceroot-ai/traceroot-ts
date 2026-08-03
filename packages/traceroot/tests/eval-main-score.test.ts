@@ -6,6 +6,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { PlatformTransport } from '../src/eval/platform';
+import { resolveMainScoreName } from '../src/eval';
 
 const realFetch = globalThis.fetch;
 let calls: { url: string; body: any }[] = [];
@@ -59,12 +60,8 @@ describe('deterministic main-score resolution', () => {
     assert.equal(resultBody().main_score, 1.0);
   });
 
-  it('explicit main never emitted fails loud at finish', async () => {
-    mock();
-    const t = new PlatformTransport('ds', { scorerNames: ['grade'], mainScoreName: 'grade' });
-    await t.createRun('e', 'd', null);
-    await t.recordItemResult({} as any, item([{ name: 'quality', value: 1.0 }]));
-    await assert.rejects(() => t.finishRun({} as any), /never emitted/);
+  it('configured main never emitted raises (the one resolver)', () => {
+    assert.throws(() => resolveMainScoreName('grade', ['quality']), /never emitted/);
   });
 
   it('multiple scorers with no main have no headline metric', async () => {
