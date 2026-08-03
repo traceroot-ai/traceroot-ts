@@ -4,11 +4,11 @@
 
 import { TraceRoot } from '../traceroot';
 import { Dataset } from './types';
+import { resolveMainScorePolicy } from './results';
 import type { EvalItemResult, UploadState } from './results';
 import type { EvalTransport, RunHandle, PublishResult } from './transport';
 
 const UNVERSIONED_SCORER = 'unversioned';
-const DEFAULT_PASS_THRESHOLD = 1.0;
 
 // --- HTTP seam (fetch) -------------------------------------------------------
 async function httpGetJson(url: string, apiKey: string): Promise<any> {
@@ -269,20 +269,15 @@ export class PlatformTransport implements EvalTransport {
   }
 
   private effectiveThreshold(): number {
+    // An explicit passThreshold wins; else the OWNING scorer's declared threshold (a single
+    // scorer's declaration governs its emitted metric, even when its function name differs from
+    // the emitted Score name). Uses the SAME policy resolver as the local result -- one rule.
     if (this.passThreshold !== null) return this.passThreshold;
-    for (const spec of this.scorerSpecs ?? []) {
-      if (spec.name === this.mainScoreName && spec.threshold != null) return spec.threshold;
-    }
-    return DEFAULT_PASS_THRESHOLD;
+    return resolveMainScorePolicy(this.scorerSpecs, this.mainScoreName)[0];
   }
 
   private effectiveDirection(): string {
-    // The main scorer's DECLARED comparison direction (higher_is_better by default).
-    // lower_is_better inverts the threshold comparison; none -> not_scored.
-    for (const spec of this.scorerSpecs ?? []) {
-      if (spec.name === this.mainScoreName && spec.direction != null) return String(spec.direction);
-    }
-    return 'higher_is_better';
+    return resolveMainScorePolicy(this.scorerSpecs, this.mainScoreName)[1];
   }
 
   async createRun(
@@ -366,11 +361,10 @@ export class PlatformTransport implements EvalTransport {
       scorer_error_count: this.scorerErrors,
     };
     if (this.mainCount) body.main_score = this.mainSum / this.mainCount;
-    // NOTE: the resolved headline metric NAME is intentionally NOT sent here. The current
-    // CompleteRunRequest schema has no main_score_name field AND rejects unknown keys, so the
-    // late-bound name stays on the local result until the backend adds the field (see the
-    // handoff). The parameter is kept for the eventual wire once it lands.
-    void mainScoreName;
+    // Send the resolved headline metric NAME so a late-bound single-metric run records its true
+    // identity at completion (not just at registration, where it may be unknown). Coordinated with
+    // the backend adding optional main_score_name to CompleteRunRequest -- see the handoff.
+    if (mainScoreName != null) body.main_score_name = mainScoreName;
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/complete`, body);
     // Join the backend's UI-relative run path with our host; null when absent.
     // Prefer the backend's absolute run_url; fall back to baseUrl + run_path for a control

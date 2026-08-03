@@ -138,30 +138,64 @@ export function resolveMainScoreName(
   return distinct.length === 1 ? distinct[0] : null;
 }
 
-export function caseStatus(
-  item: EvalItemResult,
-  passThreshold = 1.0,
-  mainScoreName: string | null = null,
-): string {
-  // `mainScoreName` selects the metric that drives pass/fail; when null the first
-  // numeric/boolean score is used (the single-scorer case). Passing the run's resolved main
-  // keeps this local status in agreement with the reported (cloud) status.
+const DEFAULT_PASS_THRESHOLD = 1.0;
+
+/** The one resolved scoring policy for a run's headline metric: which emitted metric drives
+ *  pass/fail, plus the threshold + direction (from the OWNING scorer's declaration) applied to
+ *  it. The SAME object drives local status and the cloud report -- never separate rules. */
+export class MainScore {
+  constructor(
+    readonly name: string | null,
+    readonly threshold: number = DEFAULT_PASS_THRESHOLD,
+    readonly direction: string = 'higher_is_better',
+  ) {}
+  status(value: number): string {
+    if (this.direction === 'none') return 'not_scored';
+    if (this.direction === 'lower_is_better') return value <= this.threshold ? 'passed' : 'failed';
+    return value >= this.threshold ? 'passed' : 'failed';
+  }
+}
+
+/** (threshold, direction) for the main metric, from the OWNING scorer's declared policy. For a
+ *  single scorer its declaration governs whatever metric it emits -- even when the function name
+ *  differs from the emitted Score name. For an explicit main, the scorer whose declared name
+ *  matches owns it. Falls back to (1.0, higher_is_better). */
+export function resolveMainScorePolicy(
+  scorerSpecs: { name?: string; threshold?: number | null; direction?: string | null }[] | undefined,
+  configured: string | null,
+): [number, string] {
+  const specs = scorerSpecs ?? [];
+  let owner = configured !== null ? (specs.find((s) => s.name === configured) ?? null) : null;
+  if (owner === null && specs.length === 1) owner = specs[0]; // single scorer owns its metric
+  const threshold = owner?.threshold;
+  const direction = owner?.direction;
+  return [
+    threshold != null ? threshold : DEFAULT_PASS_THRESHOLD,
+    direction != null ? String(direction) : 'higher_is_better',
+  ];
+}
+
+export function caseStatus(item: EvalItemResult, mainScore?: MainScore | null): string {
+  // Uses the run's resolved MainScore (metric name + threshold + direction); null -> the first
+  // numeric/boolean score with the default policy. The SAME MainScore keeps this local status
+  // in agreement with the reported (cloud) status -- one policy, not two.
   if (item.error !== null) return 'errored';
-  let main: number | null = null;
+  const ms = mainScore ?? new MainScore(null);
+  let value: number | null = null;
   for (const s of item.scores) {
-    if (mainScoreName !== null && s.name !== mainScoreName) continue;
+    if (ms.name !== null && s.name !== ms.name) continue;
     if (typeof s.value === 'boolean') {
-      main = s.value ? 1.0 : 0.0;
+      value = s.value ? 1.0 : 0.0;
       break;
     }
     if (typeof s.value === 'number') {
-      main = s.value;
+      value = s.value;
       break;
     }
-    if (mainScoreName !== null) break; // the named main scorer produced a categorical value
+    if (ms.name !== null) break; // the named main scorer produced a categorical value
   }
-  if (main === null) return 'not_scored';
-  return main >= passThreshold ? 'passed' : 'failed';
+  if (value === null) return 'not_scored';
+  return ms.status(value);
 }
 
 /**
@@ -210,6 +244,8 @@ export interface EvalRunResultInit {
   runScorerErrors?: Record<string, string>;
   metadata?: Record<string, unknown> | null;
   mainScoreName?: string | null;
+  mainScoreThreshold?: number;
+  mainScoreDirection?: string;
 }
 
 /** The full, immutable result of an evaluation run. */
@@ -225,9 +261,15 @@ export class EvalRunResult {
   runScores: Score[];
   runScorerErrors: Record<string, string>;
   metadata: Record<string, unknown> | null;
-  // The one resolved main-metric name; every status/summary view derives pass/fail from THIS
-  // metric, agreeing with the reported (cloud) run.
+  // The one resolved main-metric policy (name + threshold + direction). Every status/summary
+  // view derives pass/fail from THIS, agreeing with the reported (cloud) run.
   mainScoreName: string | null;
+  mainScoreThreshold: number;
+  mainScoreDirection: string;
+
+  get mainScore(): MainScore {
+    return new MainScore(this.mainScoreName, this.mainScoreThreshold, this.mainScoreDirection);
+  }
 
   constructor(init: EvalRunResultInit) {
     this.name = init.name;
@@ -242,6 +284,8 @@ export class EvalRunResult {
     this.runScorerErrors = init.runScorerErrors ?? {};
     this.metadata = init.metadata ?? null;
     this.mainScoreName = init.mainScoreName ?? null;
+    this.mainScoreThreshold = init.mainScoreThreshold ?? DEFAULT_PASS_THRESHOLD;
+    this.mainScoreDirection = init.mainScoreDirection ?? 'higher_is_better';
   }
 
   // --- inspection ---
@@ -249,7 +293,7 @@ export class EvalRunResult {
     return this.itemResults;
   }
   private byStatus(status: string): EvalItemResult[] {
-    return this.itemResults.filter((it) => caseStatus(it, 1.0, this.mainScoreName) === status);
+    return this.itemResults.filter((it) => caseStatus(it, this.mainScore) === status);
   }
   failures(): EvalItemResult[] {
     return this.byStatus('failed');
@@ -290,6 +334,8 @@ export class EvalRunResult {
       run_id: this.runId,
       candidate_version: this.candidateVersion,
       main_score_name: this.mainScoreName,
+      main_score_threshold: this.mainScoreThreshold,
+      main_score_direction: this.mainScoreDirection,
       dataset: this.dataset
         ? {
             dataset_id: this.dataset.datasetId,
@@ -349,6 +395,8 @@ export class EvalRunResult {
       runScorerErrors: d.run_scorer_errors ?? {},
       metadata: d.metadata ?? null,
       mainScoreName: d.main_score_name ?? null,
+      mainScoreThreshold: d.main_score_threshold ?? DEFAULT_PASS_THRESHOLD,
+      mainScoreDirection: d.main_score_direction ?? 'higher_is_better',
     });
   }
 
@@ -456,6 +504,8 @@ export interface MakeRunResultOptions {
   runScores?: Score[];
   runScorerErrors?: Record<string, string>;
   mainScoreName?: string | null;
+  mainScoreThreshold?: number;
+  mainScoreDirection?: string;
 }
 
 /** Build an EvalRunResult (computes the score summary). */

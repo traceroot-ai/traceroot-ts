@@ -10,7 +10,7 @@
 // so machine-readable channels stay clean. Callers can force it with
 // evaluate({ progress: true | false }).
 
-import { caseStatus, type EvalItemResult } from './results';
+import { caseStatus, MainScore, type EvalItemResult } from './results';
 
 // Eighth-block glyphs for a smooth sub-cell bar edge.
 const BLOCKS = ' ▏▎▍▌▋▊▉█';
@@ -102,6 +102,9 @@ export class ConsoleProgress {
   private readonly width: number;
   private readonly animateMode: boolean;
   private readonly cols?: number;
+  // The run's resolved scoring policy, so live pass/fail matches the final result. null -> the
+  // default policy (single-scorer default).
+  private readonly mainScore: MainScore | null;
   done = 0;
   passed = 0;
   failed = 0;
@@ -112,7 +115,13 @@ export class ConsoleProgress {
   constructor(
     total: number,
     label: string,
-    opts: { stream?: ProgressStream; width?: number; animate?: boolean; cols?: number } = {},
+    opts: {
+      stream?: ProgressStream;
+      width?: number;
+      animate?: boolean;
+      cols?: number;
+      mainScore?: MainScore | null;
+    } = {},
   ) {
     this.total = Math.max(Math.trunc(total), 0);
     this.label = label;
@@ -120,6 +129,7 @@ export class ConsoleProgress {
     this.width = opts.width ?? 24;
     this.animateMode = opts.animate ?? canAnimate();
     this.cols = opts.cols; // terminal width to clamp frames to (auto-detected when undefined)
+    this.mainScore = opts.mainScore ?? null;
   }
 
   // -- lifecycle -------------------------------------------------------
@@ -131,7 +141,7 @@ export class ConsoleProgress {
 
   onCaseComplete(item: EvalItemResult, _durationMs: number): void {
     this.done += 1;
-    const status = caseStatus(item);
+    const status = caseStatus(item, this.mainScore);
     if (status === 'passed') this.passed += 1;
     else if (status === 'failed') this.failed += 1;
     else if (status === 'errored') this.errored += 1;

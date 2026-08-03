@@ -28,7 +28,16 @@ import { TraceRoot } from '../traceroot';
 import { Evaluation } from './evaluation';
 import { newRunId } from './ids';
 import { Dataset, EvalCase, Score } from './types';
-import { EvalItemResult, EvalRunResult, RunDatasetRef, caseStatus, makeRunResult } from './results';
+import {
+  EvalItemResult,
+  EvalRunResult,
+  MainScore,
+  RunDatasetRef,
+  caseStatus,
+  makeRunResult,
+  resolveMainScorePolicy,
+} from './results';
+import { describeScorers } from './scorers';
 
 export const EVAL_API_VERSION = 1;
 export function capabilities(): Record<string, boolean> {
@@ -208,11 +217,11 @@ function scorerVersions(result: EvalRunResult): Record<string, string | null> {
 
 function caseMetadata(
   item: EvalItemResult,
-  mainScoreName: string | null = null,
+  mainScore: MainScore | null = null,
 ): Record<string, unknown> {
   return {
     case_id: item.caseId,
-    status: caseStatus(item, 1.0, mainScoreName),
+    status: caseStatus(item, mainScore),
     scores: item.scores.map(scoreEvent),
     task_error: item.error,
     scorer_errors: scorerErrorEvents(item),
@@ -311,7 +320,7 @@ export function writeArtifacts(
     return JSON.stringify({
       schema_version: '1',
       case_id: item.caseId,
-      status: caseStatus(item, 1.0, result.mainScoreName),
+      status: caseStatus(item, result.mainScore),
       input,
       output,
       expected,
@@ -360,7 +369,7 @@ export function writeArtifacts(
     scores: Object.fromEntries(Object.entries(result.scoreSummary).map(([k, v]) => [k, { ...v }])),
     upload: { status: result.uploadState.status, dashboard_url: result.uploadState.dashboardUrl },
     artifact,
-    cases: result.itemResults.map((it) => caseMetadata(it, result.mainScoreName)),
+    cases: result.itemResults.map((it) => caseMetadata(it, result.mainScore)),
   };
   atomicWrite(runPath, JSON.stringify(runDoc, null, 2));
   return artifact;
@@ -466,13 +475,19 @@ async function runOne(
     },
   });
 
+  // The scoring POLICY (threshold + direction) is known up front from the scorers, so live status
+  // uses the SAME MainScore the final result will -- no default-1.0 divergence. Only the late-bound
+  // single-metric NAME is unknown here, and it's name-agnostic for a single scorer, so they agree.
+  const [liveThreshold, liveDirection] = resolveMainScorePolicy(
+    describeScorers(evaluation.scorers),
+    evaluation.mainScore ?? null,
+  );
+  const liveMain = new MainScore(evaluation.mainScore ?? null, liveThreshold, liveDirection);
   const collected: EvalItemResult[] = [];
   const onCaseStart = (c: EvalCase): void => emitter.emit({ type: 'case_started', case_id: c.id });
   const onCaseComplete = (item: EvalItemResult): void => {
     collected.push(item);
-    // Live status uses the CONFIGURED main (known up front); a single scorer's late-bound
-    // metric is name-agnostic and resolves to the same value, so live and final agree.
-    emitter.emit({ type: 'case_completed', ...caseMetadata(item, evaluation.mainScore ?? null) });
+    emitter.emit({ type: 'case_completed', ...caseMetadata(item, liveMain) });
   };
 
   const overrides: Record<string, unknown> = {

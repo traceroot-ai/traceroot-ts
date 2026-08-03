@@ -5,11 +5,13 @@ export type { EvalCase, Score, ScorerContext, DatasetSnapshot } from './types';
 export { ulid, newId, newDatasetId, newTestCaseId, newRunId } from './ids';
 export {
   EvalRunResult,
+  MainScore,
   MainScoreError,
   aggregateScores,
   caseStatus,
   makeRunResult,
   resolveMainScoreName,
+  resolveMainScorePolicy,
 } from './results';
 export type { EvalItemResult, UploadState, ScoreSummary, RunDatasetRef, RunView } from './results';
 export { evaluate, evaluateAsync } from './engine';

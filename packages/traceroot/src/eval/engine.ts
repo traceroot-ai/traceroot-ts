@@ -20,7 +20,9 @@ import {
   ScoreSummary,
   aggregateScores,
   makeRunResult,
+  MainScore,
   resolveMainScoreName,
+  resolveMainScorePolicy,
   UploadState,
 } from './results';
 import { EvalTransport, RunHandle } from './transport';
@@ -495,9 +497,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   }
 
   // Forward scorer comparison metadata to a transport that accepts specs (before createRun).
+  const specs = describeScorers(scorers);
   if ('scorerSpecs' in active && (active as PlatformTransport).scorerSpecs === undefined) {
-    (active as PlatformTransport).scorerSpecs = describeScorers(scorers);
+    (active as PlatformTransport).scorerSpecs = specs;
   }
+  // The main metric's threshold + direction come from the OWNING scorer's declaration (a single
+  // scorer's policy governs whatever metric it emits). Resolved ONCE and applied identically by
+  // the local result and the cloud reporter -- never two rule sets.
+  const [mainThreshold, mainDirection] = resolveMainScorePolicy(specs, options.mainScore ?? null);
 
   // Eval structural spans always export (cloud-only) and are linked to the reported results.
   const evalSpanTracer = evalTracer();
@@ -526,7 +533,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   let reporter: ConsoleProgress | undefined;
   let onCaseComplete = options.onCaseComplete;
   if (shouldShowProgress(options.progress)) {
-    reporter = new ConsoleProgress(cases.length, name);
+    reporter = new ConsoleProgress(cases.length, name, {
+      mainScore: new MainScore(options.mainScore ?? null, mainThreshold, mainDirection),
+    });
     reporter.start();
     const next = options.onCaseComplete;
     onCaseComplete = (item, durationMs) => {
@@ -598,6 +607,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     dataset: datasetRef,
     metadata: runMetadata,
     mainScoreName: resolvedMain,
+    mainScoreThreshold: mainThreshold,
+    mainScoreDirection: mainDirection,
     runScores,
     runScorerErrors,
   });
