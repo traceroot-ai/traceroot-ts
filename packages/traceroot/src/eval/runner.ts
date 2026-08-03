@@ -24,6 +24,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { SDK_VERSION } from '../processor';
+import { TraceRoot } from '../traceroot';
 import { Evaluation } from './evaluation';
 import { newRunId } from './ids';
 import { Dataset, EvalCase, Score } from './types';
@@ -76,9 +77,14 @@ function loadOptions(): RunnerOptions {
   return raw ? JSON.parse(raw) : {};
 }
 
-/** Guarantee no TraceRoot data leaves this process in local-only mode. */
+/** Guarantee no TraceRoot data leaves this process in local-only mode: disables span export
+ *  (TRACEROOT_ENABLED=false) AND drops credentials so the engine can build no reporting
+ *  transport — a local run never silently uploads eval results on ambient credentials.
+ *  Mirrors traceroot-py's _enforce_local_only (which resets its client). */
 function enforceLocalOnly(): void {
   process.env['TRACEROOT_ENABLED'] = 'false';
+  delete process.env['TRACEROOT_API_KEY'];
+  TraceRoot._clearCredentials();
 }
 
 // --- discovery (module inspection, no registry) ------------------------------
@@ -398,7 +404,7 @@ export async function runSuite(
   let cancelled = false;
   for (const [, evaluation] of discovered) {
     try {
-      await runOne(evaluation, options, reporting, emitter);
+      await runOne(evaluation, options, emitter);
       completed += 1;
     } catch (err) {
       if (err instanceof CancelledError) {
@@ -416,7 +422,6 @@ export async function runSuite(
 async function runOne(
   evaluation: Evaluation,
   options: RunnerOptions,
-  reporting: boolean,
   emitter: Emitter,
 ): Promise<void> {
   const first = options.first;
@@ -467,7 +472,6 @@ async function runOne(
   const overrides: Record<string, unknown> = {
     candidateVersion: candidateVersion ?? undefined,
     select,
-    local: !reporting,
     // The runner speaks NDJSON on its own channel; never draw a progress bar.
     progress: false,
     onCaseStart,
