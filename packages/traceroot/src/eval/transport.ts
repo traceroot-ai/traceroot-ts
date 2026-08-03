@@ -29,11 +29,16 @@ export interface EvalTransport {
     datasetName: string,
     metadata: Record<string, unknown> | null,
     clientRunId?: string,
+    provenance?: Record<string, unknown> | null,
   ): Promise<RunHandle>;
   registerItem(run: RunHandle, evalCase: EvalCase): Promise<void>;
   recordItemResult(run: RunHandle, itemResult: EvalItemResult): Promise<void>;
   recordScores(run: RunHandle, caseId: string, scores: Score[]): Promise<void>;
-  finishRun(run: RunHandle, status?: string | null): Promise<UploadState>;
+  finishRun(
+    run: RunHandle,
+    status?: string | null,
+    mainScoreName?: string | null,
+  ): Promise<UploadState>;
   publishDataset(datasetName: string, itemCount: number): Promise<PublishResult>;
 }
 
@@ -41,14 +46,19 @@ export interface EvalTransport {
  *  (spans export as on a reported run; no real HTTP). */
 export class FakeTransport implements EvalTransport {
   readonly calls: unknown[][] = [];
+  lastRunMetadata: Record<string, unknown> | null = null;
+  lastRunProvenance: Record<string, unknown> | null = null;
 
   async createRun(
     name: string,
     datasetName: string,
     metadata: Record<string, unknown> | null,
     _clientRunId?: string,
+    provenance?: Record<string, unknown> | null,
   ): Promise<RunHandle> {
     this.calls.push(['create_run', name, datasetName]);
+    this.lastRunMetadata = metadata;
+    this.lastRunProvenance = provenance ?? null;
     return { name, datasetName, metadata };
   }
   async registerItem(_run: RunHandle, evalCase: EvalCase): Promise<void> {
@@ -60,8 +70,16 @@ export class FakeTransport implements EvalTransport {
   async recordScores(_run: RunHandle, caseId: string): Promise<void> {
     this.calls.push(['record_scores', caseId]);
   }
-  async finishRun(_run: RunHandle, _status?: string | null): Promise<UploadState> {
-    this.calls.push(['finish_run']);
+  lastFinishStatus: string | null | undefined = undefined;
+  lastMainScoreName: string | null | undefined = undefined;
+  async finishRun(
+    _run: RunHandle,
+    status?: string | null,
+    mainScoreName?: string | null,
+  ): Promise<UploadState> {
+    this.calls.push(['finish_run', status ?? null]);
+    this.lastFinishStatus = status ?? null;
+    this.lastMainScoreName = mainScoreName ?? null;
     return { status: 'uploaded', dashboardUrl: null };
   }
   async publishDataset(datasetName: string, itemCount: number): Promise<PublishResult> {
