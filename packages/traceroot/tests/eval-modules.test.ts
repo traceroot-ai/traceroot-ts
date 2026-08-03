@@ -108,7 +108,7 @@ describe('scorer metadata', () => {
       complete: (model, rendered) => {
         seenModel = model;
         seenRendered = rendered;
-        return 'The score is 0.7 out of 1.';
+        return 'The score is 0.7'; // judge contract: a single unambiguous number
       },
     });
     const md = scorerMetadata(concise);
