@@ -224,6 +224,15 @@ export class TraceRoot {
     _provider = undefined;
     _resetObserveState();
   }
+
+  /** @internal Drop resolved credentials so no reporting transport can be built. The
+   *  local-only eval runner uses this (mirroring traceroot-py resetting its client) to
+   *  guarantee a local run never uploads on ambient credentials. */
+  static _clearCredentials(): void {
+    _apiKey = undefined;
+    _baseUrl = DEFAULT_BASE_URL;
+    _isInitialized = false;
+  }
 }
 
 /** @internal */
