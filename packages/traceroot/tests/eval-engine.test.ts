@@ -122,8 +122,8 @@ describe('failure isolation', () => {
 });
 
 describe('score normalization', () => {
-  const one = async (scorer: (ctx: ScorerContext) => unknown) =>
-    (await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [scorer as never] }))
+  const one = async (scorer: (ctx: ScorerContext) => unknown, mainScore?: string) =>
+    (await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [scorer as never], mainScore }))
       .itemResults[0];
 
   it('number scalar', async () => {
@@ -152,7 +152,8 @@ describe('score normalization', () => {
       { name: 'a', value: 1 },
       { name: 'b', value: 0 },
     ];
-    const names = new Set((await one(s)).scores.map((x) => x.name));
+    // Two emitted metrics -> the run needs an explicit main_score (else it fails clearly).
+    const names = new Set((await one(s, 'a')).scores.map((x) => x.name));
     assert.deepEqual([...names].sort(), ['a', 'b']);
   });
   it('null abstains', async () => {

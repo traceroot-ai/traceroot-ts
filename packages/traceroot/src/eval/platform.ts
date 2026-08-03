@@ -4,11 +4,11 @@
 
 import { TraceRoot } from '../traceroot';
 import { Dataset } from './types';
+import { resolveMainScorePolicy } from './results';
 import type { EvalItemResult, UploadState } from './results';
 import type { EvalTransport, RunHandle, PublishResult } from './transport';
 
 const UNVERSIONED_SCORER = 'unversioned';
-const DEFAULT_PASS_THRESHOLD = 1.0;
 
 // --- HTTP seam (fetch) -------------------------------------------------------
 async function httpGetJson(url: string, apiKey: string): Promise<any> {
@@ -160,6 +160,7 @@ export interface ScorerSpec {
   output_type?: string | null;
   description?: string | null;
   metadata?: Record<string, unknown> | null;
+  required_inputs?: string[] | null;
   language?: string | null;
   source?: string | null;
   model?: string | null;
@@ -195,6 +196,8 @@ export class PlatformTransport implements EvalTransport {
   private readonly candidateVersion: string;
   private readonly environment: string;
   private readonly mainScoreName: string | null;
+  private readonly mainConfigured: boolean;
+  private readonly nameAgnosticMain: boolean;
   private readonly datasetVersionId: string | null;
   private readonly clientRunId: string | null;
   private readonly passThreshold: number | null;
@@ -217,7 +220,14 @@ export class PlatformTransport implements EvalTransport {
     this.scorerSpecs = opts.scorerSpecs;
     this.candidateVersion = opts.candidateVersion || 'sdk';
     this.environment = opts.environment ?? 'evaluation';
-    this.mainScoreName = opts.mainScoreName ?? this.scorerNames[0] ?? null;
+    // Registration reports mainScoreName ONLY when the user configured it. A single scorer's
+    // metric is late-bound (resolved from what it actually emits) and reported at completion --
+    // never fabricated from the scorer's function name here. Per-case status stays
+    // name-agnostic for a single unconfigured scorer.
+    const nScorers = this.scorerNames.length || (this.scorerSpecs?.length ?? 0);
+    this.mainConfigured = opts.mainScoreName != null;
+    this.mainScoreName = opts.mainScoreName ?? null;
+    this.nameAgnosticMain = !this.mainConfigured && nScorers === 1;
     this.datasetVersionId = opts.datasetVersionId ?? null;
     this.clientRunId = opts.clientRunId ?? null;
     this.passThreshold = opts.passThreshold ?? null;
@@ -245,6 +255,7 @@ export class PlatformTransport implements EvalTransport {
           'output_type',
           'description',
           'metadata',
+          'required_inputs',
           'language',
           'source',
           'model',
@@ -259,27 +270,23 @@ export class PlatformTransport implements EvalTransport {
   }
 
   private effectiveThreshold(): number {
+    // An explicit passThreshold wins; else the OWNING scorer's declared threshold (a single
+    // scorer's declaration governs its emitted metric, even when its function name differs from
+    // the emitted Score name). Uses the SAME policy resolver as the local result -- one rule.
     if (this.passThreshold !== null) return this.passThreshold;
-    for (const spec of this.scorerSpecs ?? []) {
-      if (spec.name === this.mainScoreName && spec.threshold != null) return spec.threshold;
-    }
-    return DEFAULT_PASS_THRESHOLD;
+    return resolveMainScorePolicy(this.scorerSpecs, this.mainScoreName)[0];
   }
 
   private effectiveDirection(): string {
-    // The main scorer's DECLARED comparison direction (higher_is_better by default).
-    // lower_is_better inverts the threshold comparison; none -> not_scored.
-    for (const spec of this.scorerSpecs ?? []) {
-      if (spec.name === this.mainScoreName && spec.direction != null) return String(spec.direction);
-    }
-    return 'higher_is_better';
+    return resolveMainScorePolicy(this.scorerSpecs, this.mainScoreName)[1];
   }
 
   async createRun(
     name: string,
     _datasetName: string,
-    _metadata: Record<string, unknown> | null,
+    metadata: Record<string, unknown> | null,
     clientRunId?: string,
+    provenance?: Record<string, unknown> | null,
   ): Promise<RunHandle> {
     const body: Record<string, unknown> = {
       evaluation_name: name,
@@ -292,6 +299,11 @@ export class PlatformTransport implements EvalTransport {
     if (this.mainScoreName !== null) body.main_score_name = this.mainScoreName;
     const effectiveClientRun = clientRunId ?? this.clientRunId;
     if (effectiveClientRun != null) body.client_run_id = effectiveClientRun;
+    // Typed execution provenance (git/CI/SDK identity) and free-form user metadata. Both
+    // are optional on the backend; omit when empty to match its absent-or-null rules
+    // rather than sending empty objects.
+    if (provenance && Object.keys(provenance).length > 0) body.provenance = provenance;
+    if (metadata && Object.keys(metadata).length > 0) body.metadata = metadata;
     const resp = await this.request('POST', '/api/v1/public/evaluation-runs', body);
     this.runId = resp.evaluation_run_id;
     // Optional, absent on older/self-hosted backends. Prefer the absolute run_url (resolved
@@ -299,7 +311,7 @@ export class PlatformTransport implements EvalTransport {
     // run_path as a same-origin fallback.
     this.runUrl = resp.run_url ?? null;
     this.runPath = resp.run_path ?? null;
-    return { name, datasetName: _datasetName, metadata: _metadata };
+    return { name, datasetName: _datasetName, metadata };
   }
 
   async registerItem(): Promise<void> {
@@ -333,7 +345,13 @@ export class PlatformTransport implements EvalTransport {
     // Already sent inside recordItemResult (which carries the full item).
   }
 
-  async finishRun(_run: RunHandle, statusOverride?: string | null): Promise<UploadState> {
+  async finishRun(
+    _run: RunHandle,
+    statusOverride?: string | null,
+    mainScoreName?: string | null,
+  ): Promise<UploadState> {
+    // Pure reporter: the engine owns the ONE main-score resolution and passes the terminal
+    // status (e.g. 'failed' on a misconfiguration) and the resolved mainScoreName.
     // Derive the completion aggregate from the per-case map, so counts always match the distinct
     // cases actually persisted (no inflation from retries/replays).
     let scored = 0;
@@ -359,6 +377,10 @@ export class PlatformTransport implements EvalTransport {
       scorer_error_count: scorerErrors,
     };
     if (mainCount) body.main_score = mainSum / mainCount;
+    // Send the resolved headline metric NAME so a late-bound single-metric run records its true
+    // identity at completion (not just at registration, where it may be unknown). Coordinated with
+    // the backend adding optional main_score_name to CompleteRunRequest.
+    if (mainScoreName != null) body.main_score_name = mainScoreName;
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/complete`, body);
     // Join the backend's UI-relative run path with our host; null when absent.
     // Prefer the backend's absolute run_url; fall back to baseUrl + run_path for a control
@@ -391,21 +413,33 @@ export class PlatformTransport implements EvalTransport {
     return payload;
   }
 
+  private static numericScore(value: unknown): number | null {
+    if (typeof value === 'boolean') return value ? 1.0 : 0.0;
+    if (typeof value === 'number') return value;
+    return null;
+  }
+
+  /** The run's main-metric value for one case, or null when unresolved. Name-agnostic for a
+   *  single unconfigured scorer; matched by name when an explicit main is set; null when
+   *  multiple scorers have no configured main (genuinely no headline metric). */
+  private mainValue(scores: EvalItemResult['scores']): number | null {
+    if (this.nameAgnosticMain) {
+      for (const s of scores) {
+        const v = PlatformTransport.numericScore(s.value);
+        if (v !== null) return v;
+      }
+      return null;
+    }
+    if (this.mainScoreName === null) return null;
+    for (const s of scores) {
+      if (s.name === this.mainScoreName) return PlatformTransport.numericScore(s.value);
+    }
+    return null;
+  }
+
   private statusAndMain(item: EvalItemResult): [string, number | null] {
     if (item.error !== null) return ['errored', null];
-    let main: number | null = null;
-    for (const s of item.scores) {
-      if (this.mainScoreName !== null && s.name !== this.mainScoreName) continue;
-      if (typeof s.value === 'boolean') {
-        main = s.value ? 1.0 : 0.0;
-        break;
-      }
-      if (typeof s.value === 'number') {
-        main = s.value;
-        break;
-      }
-      if (this.mainScoreName !== null) break; // named main is categorical -> no numeric main
-    }
+    const main = this.mainValue(item.scores);
     if (main === null) return ['not_scored', null];
     const threshold = this.effectiveThreshold();
     const direction = this.effectiveDirection();
