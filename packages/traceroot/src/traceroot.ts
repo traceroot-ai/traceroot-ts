@@ -36,12 +36,24 @@ let _apiKey: string | undefined;
 // Left undefined until initialize() so an offline-eval call made before init still honors the
 // TRACEROOT_HOST_URL env fallback (a hard default here would silently route to the default host).
 let _baseUrl: string | undefined;
+// Git context resolved at initialize(), so eval run provenance can reuse the repo/ref supplied
+// through initialization even on packaged deployments with no .git to re-derive from.
+let _gitRepo: string | undefined;
+let _gitRef: string | undefined;
 
 export class TraceRoot {
   private constructor() {}
 
   static isInitialized(): boolean {
     return _isInitialized;
+  }
+
+  /** Git repo/ref resolved at initialize() (undefined until then). Read by eval provenance. */
+  static get gitRepo(): string | undefined {
+    return _gitRepo;
+  }
+  static get gitRef(): string | undefined {
+    return _gitRef;
   }
 
   /**
@@ -145,6 +157,11 @@ export class TraceRoot {
       gitRef ??= autoGit.gitRef;
     }
 
+    // Persist the resolved git context so eval run provenance reuses exactly what was
+    // initialized here (not only what it can independently re-derive from env/.git).
+    _gitRepo = gitRepo;
+    _gitRef = gitRef;
+
     // Warm git-root cache for per-span source paths (cached/idempotent).
     getGitRoot();
 
@@ -206,6 +223,15 @@ export class TraceRoot {
     _isInitialized = false;
     _provider = undefined;
     _resetObserveState();
+  }
+
+  /** @internal Drop resolved credentials so no reporting transport can be built. The
+   *  local-only eval runner uses this (mirroring traceroot-py resetting its client) to
+   *  guarantee a local run never uploads on ambient credentials. */
+  static _clearCredentials(): void {
+    _apiKey = undefined;
+    _baseUrl = DEFAULT_BASE_URL;
+    _isInitialized = false;
   }
 }
 
