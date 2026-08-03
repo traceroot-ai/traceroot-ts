@@ -1,4 +1,4 @@
-// src/eval/runner.ts — stable runner entry point for the CLI (parity with
+// src/eval/runner.ts — stable programmatic runner entry point (parity with
 // traceroot-py/traceroot/eval/runner.py).
 //
 // Invoked out-of-process as: node <dist>/eval/runner.js <eval files...> (or via tsx).
@@ -24,19 +24,23 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { SDK_VERSION } from '../processor';
+import { TraceRoot } from '../traceroot';
 import { Evaluation } from './evaluation';
 import { newRunId } from './ids';
 import { Dataset, EvalCase, Score } from './types';
 import {
   EvalItemResult,
   EvalRunResult,
+  MainScore,
   RunDatasetRef,
   UploadState,
   caseStatus,
   makeRunResult,
+  resolveMainScorePolicy,
 } from './results';
 import { CancelledError } from './engine';
 import { FakeTransport } from './transport';
+import { describeScorers } from './scorers';
 
 export const EVAL_API_VERSION = 1;
 export function capabilities(): Record<string, boolean> {
@@ -83,9 +87,14 @@ function loadOptions(): RunnerOptions {
   return raw ? JSON.parse(raw) : {};
 }
 
-/** Guarantee no TraceRoot data leaves this process in local-only mode. */
+/** Guarantee no TraceRoot data leaves this process in local-only mode: disables span export
+ *  (TRACEROOT_ENABLED=false) AND drops credentials so the engine can build no reporting
+ *  transport — a local run never silently uploads eval results on ambient credentials.
+ *  Mirrors traceroot-py's _enforce_local_only (which resets its client). */
 function enforceLocalOnly(): void {
   process.env['TRACEROOT_ENABLED'] = 'false';
+  delete process.env['TRACEROOT_API_KEY'];
+  TraceRoot._clearCredentials();
 }
 
 // --- discovery (module inspection, no registry) ------------------------------
@@ -228,10 +237,13 @@ function scorerVersions(result: EvalRunResult): Record<string, string | null> {
   return versions;
 }
 
-function caseMetadata(item: EvalItemResult): Record<string, unknown> {
+function caseMetadata(
+  item: EvalItemResult,
+  mainScore: MainScore | null = null,
+): Record<string, unknown> {
   return {
     case_id: item.caseId,
-    status: caseStatus(item),
+    status: caseStatus(item, mainScore),
     scores: item.scores.map(scoreEvent),
     task_error: item.error,
     scorer_errors: scorerErrorEvents(item),
@@ -344,7 +356,7 @@ export function writeArtifacts(
     return JSON.stringify({
       schema_version: '1',
       case_id: item.caseId,
-      status: caseStatus(item),
+      status: caseStatus(item, result.mainScore),
       input,
       output,
       expected,
@@ -370,6 +382,7 @@ export function writeArtifacts(
     run_id: result.runId,
     created_at: o.createdAt ?? nowIso(),
     evaluation_name: result.name,
+    main_score_name: result.mainScoreName,
     status: o.status,
     candidate_version: o.candidateVersion,
     run_mode: o.runMode,
@@ -392,7 +405,7 @@ export function writeArtifacts(
     scores: Object.fromEntries(Object.entries(result.scoreSummary).map(([k, v]) => [k, { ...v }])),
     upload: { status: result.uploadState.status, dashboard_url: result.uploadState.dashboardUrl },
     artifact,
-    cases: result.itemResults.map(caseMetadata),
+    cases: result.itemResults.map((it) => caseMetadata(it, result.mainScore)),
   };
   atomicWrite(runPath, JSON.stringify(runDoc, null, 2));
   return artifact;
@@ -441,7 +454,7 @@ export async function runSuite(
   let cancelled = false;
   for (const [, evaluation] of discovered) {
     try {
-      await runOne(evaluation, options, reporting, emitter, signal);
+      await runOne(evaluation, options, emitter, signal);
       completed += 1;
     } catch (err) {
       if (err instanceof CancelledError) {
@@ -459,7 +472,6 @@ export async function runSuite(
 async function runOne(
   evaluation: Evaluation,
   options: RunnerOptions,
-  reporting: boolean,
   emitter: Emitter,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -501,11 +513,19 @@ async function runOne(
     },
   });
 
+  // The scoring POLICY (threshold + direction) is known up front from the scorers, so live status
+  // uses the SAME MainScore the final result will -- no default-1.0 divergence. Only the late-bound
+  // single-metric NAME is unknown here, and it's name-agnostic for a single scorer, so they agree.
+  const [liveThreshold, liveDirection] = resolveMainScorePolicy(
+    describeScorers(evaluation.scorers),
+    evaluation.mainScore ?? null,
+  );
+  const liveMain = new MainScore(evaluation.mainScore ?? null, liveThreshold, liveDirection);
   const collected: EvalItemResult[] = [];
   const onCaseStart = (c: EvalCase): void => emitter.emit({ type: 'case_started', case_id: c.id });
   const onCaseComplete = (item: EvalItemResult): void => {
     collected.push(item);
-    emitter.emit({ type: 'case_completed', ...caseMetadata(item) });
+    emitter.emit({ type: 'case_completed', ...caseMetadata(item, liveMain) });
   };
 
   const overrides: Record<string, unknown> = {
@@ -517,6 +537,7 @@ async function runOne(
     onCaseComplete,
     signal,
   };
+  const reporting = Boolean(options.reporting);
   if (!reporting) {
     // Local-only guarantee: replace any transport the Evaluation supplied (e.g. report_to) with an
     // in-memory no-op, so lifecycle requests never leave the process even when a real transport was

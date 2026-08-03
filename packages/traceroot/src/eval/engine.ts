@@ -14,16 +14,20 @@ import { Dataset, DeferredScore, EvalCase, Score, ScorerContext } from './types'
 import {
   EvalItemResult,
   EvalRunResult,
+  MainScoreError,
   RunDatasetRef,
   RunView,
   ScoreSummary,
   aggregateScores,
   makeRunResult,
+  MainScore,
+  resolveMainScoreName,
+  resolveMainScorePolicy,
   UploadState,
 } from './results';
 import { EvalTransport, RunHandle } from './transport';
 import { PlatformTransport } from './platform';
-import { collectRunProvenance } from './provenance';
+import { collectRunProvenance, runProvenance } from './provenance';
 import { declaredVersion, describeScorers } from './scorers';
 import { newRunId } from './ids';
 import { ConsoleProgress, printRunUrl, shouldShowProgress } from './progress';
@@ -50,6 +54,9 @@ export interface EvaluateOptions {
   scorers: ScorerFn[];
   runScorers?: RunScorerFn[];
   candidateVersion?: string;
+  /** The emitted metric that drives pass/fail and the run's main score. Required for a
+   *  reported multi-scorer run; a single scorer resolves it name-agnostically. */
+  mainScore?: string;
   datasetId?: string;
   maxConcurrency?: number;
   /** Bounds each case (seconds); a timeout is an isolated per-case error. */
@@ -64,7 +71,7 @@ export interface EvaluateOptions {
    * terminal, off when piped/CI); true/false forces it.
    */
   progress?: boolean;
-  /** Internal hooks the CLI runner uses to stream per-case events. */
+  /** Internal hooks the runner uses to stream per-case events. */
   onCaseStart?: (c: EvalCase) => void;
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void;
   /** Cooperative cancellation: when aborted, no further cases start and the run finishes
@@ -449,6 +456,7 @@ function autoTransport(
   scorers: ScorerFn[],
   candidateVersion: string | undefined,
   environment: string | undefined,
+  mainScore: string | undefined,
 ): EvalTransport | null {
   let effectiveId = datasetId;
   let versionId: string | null = null;
@@ -465,6 +473,7 @@ function autoTransport(
     candidateVersion: candidateVersion ?? null,
     environment,
     datasetVersionId: versionId,
+    mainScoreName: mainScore ?? null,
   });
 }
 
@@ -494,7 +503,12 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   const datasetName = data instanceof Dataset ? data.name : INLINE_DATASET;
   const snapshotRevision =
     data instanceof Dataset ? data.snapshot().revision : `local-${cases.length}`;
+  // Local run record keeps the combined view (user metadata + git/ci) for the artifact.
+  // The wire form is separate: typed provenance (flat RunProvenance shape) reported at
+  // registration, with the user's free-form metadata sent verbatim alongside it. Dirty
+  // state is observed here (one bounded git-status call at run start).
   const runMetadata = collectRunProvenance(options.metadata, { detectDirty: false });
+  const runProvenanceWire = runProvenance({ detectDirty: true });
 
   // Cloud-only: an explicit transport wins; otherwise build a reporting transport from
   // credentials + a synced dataset. Evaluation always reports -- there is no local run.
@@ -502,7 +516,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   if (transport !== undefined) {
     active = transport;
   } else {
-    const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
+    const auto = autoTransport(
+      data,
+      options.datasetId,
+      scorers,
+      candidateVersion,
+      environment,
+      options.mainScore,
+    );
     if (auto === null) {
       throw new Error(
         'evaluate() reports to the TraceRoot platform, but no credentials or synced dataset ' +
@@ -510,18 +531,38 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
           'pass an explicit transport.',
       );
     }
+    // A reported multi-scorer run needs an explicit headline metric: refuse to silently pick
+    // one (the old behavior guessed the first scorer's function name).
+    if (options.mainScore === undefined && scorers.length > 1) {
+      throw new Error(
+        `This run reports ${scorers.length} scorers to the platform but no mainScore, so the ` +
+          "headline metric is ambiguous. Pass mainScore: '<scorer/metric name>' to select which " +
+          'one drives the run pass/fail and aggregate main score.',
+      );
+    }
     active = auto;
   }
 
   // Forward scorer comparison metadata to a transport that accepts specs (before createRun).
+  const specs = describeScorers(scorers);
   if ('scorerSpecs' in active && (active as PlatformTransport).scorerSpecs === undefined) {
-    (active as PlatformTransport).scorerSpecs = describeScorers(scorers);
+    (active as PlatformTransport).scorerSpecs = specs;
   }
+  // The main metric's threshold + direction come from the OWNING scorer's declaration (a single
+  // scorer's policy governs whatever metric it emits). Resolved ONCE and applied identically by
+  // the local result and the cloud reporter -- never two rule sets.
+  const [mainThreshold, mainDirection] = resolveMainScorePolicy(specs, options.mainScore ?? null);
 
   // Eval structural spans always export (cloud-only) and are linked to the reported results.
   const evalSpanTracer = evalTracer();
   const localRunId = newRunId();
-  const run = await active.createRun(name, datasetName, runMetadata, localRunId);
+  const run = await active.createRun(
+    name,
+    datasetName,
+    options.metadata ?? null,
+    localRunId,
+    runProvenanceWire,
+  );
 
   const identity: RunIdentity = {
     name,
@@ -539,7 +580,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   let reporter: ConsoleProgress | undefined;
   let onCaseComplete = options.onCaseComplete;
   if (shouldShowProgress(options.progress)) {
-    reporter = new ConsoleProgress(cases.length, name);
+    reporter = new ConsoleProgress(cases.length, name, {
+      mainScore: new MainScore(options.mainScore ?? null, mainThreshold, mainDirection),
+    });
     reporter.start();
     const next = options.onCaseComplete;
     onCaseComplete = (item, durationMs) => {
@@ -548,9 +591,12 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     };
   }
 
-  let itemResults: EvalItemResult[];
+  let itemResults: EvalItemResult[] = [];
   let uploadState: UploadState;
   let cancelled = false;
+  let summary: Record<string, ScoreSummary> = {};
+  let resolvedMain: string | null = null;
+  let resolveError: MainScoreError | null = null;
   try {
     const raw = await runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
@@ -578,12 +624,28 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     // the flag above never flipped — re-check the signal after runBounded settles so an
     // in-flight-only cancellation still finalizes as incomplete and raises CancelledError.
     if (options.signal?.aborted) cancelled = true;
+    if (!cancelled) {
+      summary = aggregateScores(itemResults);
+      // The ONE resolution of the run's main metric (late-bound to what was actually emitted).
+      // The same resolved value stamps the local result and the cloud completion.
+      const numeric = Object.entries(summary)
+        .filter(([, s]) => s.mean !== null)
+        .map(([n]) => n);
+      try {
+        resolvedMain = resolveMainScoreName(options.mainScore ?? null, numeric);
+      } catch (e) {
+        if (e instanceof MainScoreError) resolveError = e;
+        else throw e;
+      }
+    }
   } finally {
     reporter?.finish();
-    // Finish the run inside finally so a mid-run failure never leaves it open on the backend;
-    // a cancelled run is closed 'incomplete', not 'completed'. Runs AFTER all in-flight cases
-    // above have settled.
-    uploadState = await active.finishRun(run, cancelled ? 'incomplete' : undefined);
+    // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
+    // A cancelled run closes 'incomplete'; a main-score misconfiguration closes terminal 'failed'
+    // (before we throw), so a registered run is never left orphaned in 'running'. Runs AFTER all
+    // in-flight cases above have settled.
+    const status = cancelled ? 'incomplete' : resolveError !== null ? 'failed' : null;
+    uploadState = await active.finishRun(run, status, resolvedMain);
   }
   if (cancelled) {
     // Surface the run's real identity + upload so the caller's partial artifact stays associated
@@ -595,7 +657,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     throw err;
   }
 
-  const summary = aggregateScores(itemResults);
+  if (resolveError !== null) throw resolveError;
+
   const { runScores, runScorerErrors } = await runRunScorers(
     options.runScorers,
     name,
@@ -616,6 +679,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     candidateVersion: candidateVersion ?? null,
     dataset: datasetRef,
     metadata: runMetadata,
+    mainScoreName: resolvedMain,
+    mainScoreThreshold: mainThreshold,
+    mainScoreDirection: mainDirection,
     runScores,
     runScorerErrors,
   });
