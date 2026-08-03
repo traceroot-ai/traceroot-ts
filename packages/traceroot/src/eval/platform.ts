@@ -366,10 +366,11 @@ export class PlatformTransport implements EvalTransport {
       scorer_error_count: this.scorerErrors,
     };
     if (this.mainCount) body.main_score = this.mainSum / this.mainCount;
-    // The resolved headline metric NAME (late-bound for a single scorer). Sent forward-
-    // compatibly; the current CompleteRunRequest schema has NO main_score_name field, so the
-    // backend ignores it until that field is added (see the handoff).
-    if (mainScoreName != null) body.main_score_name = mainScoreName;
+    // NOTE: the resolved headline metric NAME is intentionally NOT sent here. The current
+    // CompleteRunRequest schema has no main_score_name field AND rejects unknown keys, so the
+    // late-bound name stays on the local result until the backend adds the field (see the
+    // handoff). The parameter is kept for the eventual wire once it lands.
+    void mainScoreName;
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/complete`, body);
     // Join the backend's UI-relative run path with our host; null when absent.
     // Prefer the backend's absolute run_url; fall back to baseUrl + run_path for a control
