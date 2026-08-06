@@ -126,6 +126,21 @@ describe('eval attributes and trace id', () => {
     assert.equal(by['exact'].attributes['traceroot.eval.score_value'], 1);
   });
 
+  it('task and scorer spans carry canonical SPAN_TYPE (platform ingests them as eval spans)', async () => {
+    // Regression: TASK and SCORER spans must set traceroot.span.type ('task'/'scorer') exactly as
+    // Python does; without it the platform ingests them as generic SPAN with is_evaluation=0. The
+    // root already set it -- the SDK-created children did not. OpenInference kind + I/O preserved.
+    await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact], ...reported() });
+    const by = byName(exporter.getFinishedSpans());
+    assert.equal(by['evaluation-item'].attributes['traceroot.span.type'], 'evaluation');
+    assert.equal(by['task'].attributes['traceroot.span.type'], 'task');
+    assert.equal(by['exact'].attributes['traceroot.span.type'], 'scorer');
+    // OpenInference classification + input value are preserved on the very same spans.
+    assert.equal(by['task'].attributes['openinference.span.kind'], 'CHAIN');
+    assert.equal(by['exact'].attributes['openinference.span.kind'], 'EVALUATOR');
+    assert.ok('input.value' in by['task'].attributes);
+  });
+
   it('has_expected false when absent, run_name on all spans', async () => {
     const d = new Dataset('d');
     d.upsert({ input: 1, id: 'c0' });

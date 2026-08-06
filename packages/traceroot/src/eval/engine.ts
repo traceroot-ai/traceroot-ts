@@ -306,6 +306,10 @@ async function runCase(
           type: 'task',
           input: evalCase.input,
           attributes: {
+            // Canonical classification (matches Python engine): without it the platform ingests
+            // this SDK-created span as a generic SPAN with is_evaluation=0. OpenInference span.kind
+            // (from `type: 'task'`) and input/output are set separately and stay intact.
+            [SpanAttributes.SPAN_TYPE]: 'task',
             [SpanAttributes.EVAL_RUN_NAME]: identity.name,
             [SpanAttributes.EVAL_CASE_ID]: evalCase.id as string,
             [SpanAttributes.EVAL_TASK_NAME]: fnName(task, 'task'),
@@ -351,6 +355,10 @@ async function runCase(
                 type: 'scorer',
                 input: scorerInput,
                 attributes: {
+                  // Canonical classification (matches Python engine): without it the platform
+                  // ingests this SDK-created span as a generic SPAN with is_evaluation=0. The
+                  // OpenInference EVALUATOR kind (from `type: 'scorer'`) and I/O stay intact.
+                  [SpanAttributes.SPAN_TYPE]: 'scorer',
                   [SpanAttributes.EVAL_RUN_NAME]: identity.name,
                   [SpanAttributes.EVAL_SCORER_NAME]: name,
                 },
