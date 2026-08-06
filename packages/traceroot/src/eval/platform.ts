@@ -9,6 +9,7 @@ import type { EvalItemResult, UploadState } from './results';
 import type { EvalTransport, RunHandle, PublishResult } from './transport';
 
 const UNVERSIONED_SCORER = 'unversioned';
+const DEFAULT_PASS_THRESHOLD = 1.0;
 
 // --- HTTP seam (fetch) -------------------------------------------------------
 async function httpGetJson(url: string, apiKey: string): Promise<any> {
@@ -412,6 +413,8 @@ export class PlatformTransport implements EvalTransport {
       else if (typeof s.value === 'number') entry.numeric_value = s.value;
       else entry.string_value = String(s.value);
       if (s.comment !== undefined && s.comment !== null) entry.explanation = s.comment;
+      const passed = this.scorePassed(s);
+      if (passed !== null) entry.passed = passed;
       payload.push(entry);
     }
     for (const [name, msg] of Object.entries(item.scorerErrors)) {
@@ -424,6 +427,37 @@ export class PlatformTransport implements EvalTransport {
     if (typeof value === 'boolean') return value ? 1.0 : 0.0;
     if (typeof value === 'number') return value;
     return null;
+  }
+
+  /** (threshold, direction) for ONE emitted metric, or null when it can't be resolved without
+   *  guessing. A single scorer's declared policy owns whatever metric it emits, even when the
+   *  function name differs from the emitted Score name (name-agnostic). With multiple scorers the
+   *  emitted name must match a declared scorer; an unmatched metric returns null so the platform is
+   *  told 'unknown', never a fabricated pass/fail. Mirrors resolveMainScorePolicy per-score. */
+  private scorePolicy(name: string | null): [number, string] | null {
+    const specs = this.scorerSpecs ?? [];
+    const owner = specs.length === 1 ? specs[0] : (specs.find((s) => s.name === name) ?? null);
+    if (!owner) return null;
+    return [
+      owner.threshold != null ? owner.threshold : DEFAULT_PASS_THRESHOLD,
+      owner.direction != null ? owner.direction : 'higher_is_better',
+    ];
+  }
+
+  /** SDK-computed pass/fail for one emitted metric, derived at serialization time and never stored
+   *  on the Score. Boolean: true = pass. Numeric: compared against the OWNING scorer's
+   *  threshold+direction (the same policy that decides the case status, so a single scorer's main
+   *  score and its per-score `passed` always agree). Categorical, a 'none'-direction metric, or a
+   *  numeric metric whose policy can't be resolved have no pass/fail -> null (never guessed). */
+  private scorePassed(score: EvalItemResult['scores'][number]): boolean | null {
+    if (typeof score.value === 'boolean') return score.value;
+    if (typeof score.value !== 'number') return null;
+    const policy = this.scorePolicy(score.name);
+    if (policy === null) return null;
+    const [threshold, direction] = policy;
+    if (direction === 'lower_is_better') return score.value <= threshold;
+    if (direction === 'none') return null;
+    return score.value >= threshold; // higher_is_better (the default)
   }
 
   /** The run's main-metric value for one case, or null when unresolved. Name-agnostic for a
