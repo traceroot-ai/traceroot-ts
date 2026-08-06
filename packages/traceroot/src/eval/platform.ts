@@ -196,8 +196,6 @@ export class PlatformTransport implements EvalTransport {
   private readonly candidateVersion: string;
   private readonly environment: string;
   private readonly mainScoreName: string | null;
-  private readonly mainConfigured: boolean;
-  private readonly nameAgnosticMain: boolean;
   private readonly datasetVersionId: string | null;
   private readonly clientRunId: string | null;
   private readonly passThreshold: number | null;
@@ -222,12 +220,10 @@ export class PlatformTransport implements EvalTransport {
     this.environment = opts.environment ?? 'evaluation';
     // Registration reports mainScoreName ONLY when the user configured it. A single scorer's
     // metric is late-bound (resolved from what it actually emits) and reported at completion --
-    // never fabricated from the scorer's function name here. Per-case status stays
-    // name-agnostic for a single unconfigured scorer.
-    const nScorers = this.scorerNames.length || (this.scorerSpecs?.length ?? 0);
-    this.mainConfigured = opts.mainScoreName != null;
+    // never fabricated from the scorer's function name here. Whether a run is name-agnostic is a
+    // getter (see below), not cached here: an explicitly-built transport gets its scorerSpecs from
+    // the engine AFTER construction, so a value frozen now would ignore them.
     this.mainScoreName = opts.mainScoreName ?? null;
-    this.nameAgnosticMain = !this.mainConfigured && nScorers === 1;
     this.datasetVersionId = opts.datasetVersionId ?? null;
     this.clientRunId = opts.clientRunId ?? null;
     this.passThreshold = opts.passThreshold ?? null;
@@ -267,6 +263,17 @@ export class PlatformTransport implements EvalTransport {
       });
     }
     return this.scorerNames.map((n) => ({ name: n, version: UNVERSIONED_SCORER }));
+  }
+
+  /** A single scorer resolves its emitted metric name-agnostically (its one numeric/boolean score
+   *  IS the main metric, even when the fn name differs from the emitted Score name). Derived from
+   *  the CURRENT config on every access -- deliberately NOT cached in the constructor -- so it
+   *  reflects the scorerSpecs the engine injects after construction. An explicit mainScoreName opts
+   *  out (the configured metric owns it); zero or multiple scorers have no single headline metric. */
+  private get nameAgnosticMain(): boolean {
+    if (this.mainScoreName !== null) return false;
+    const nScorers = this.scorerNames.length || (this.scorerSpecs?.length ?? 0);
+    return nScorers === 1;
   }
 
   private effectiveThreshold(): number {

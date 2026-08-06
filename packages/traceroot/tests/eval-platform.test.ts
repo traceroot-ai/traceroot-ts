@@ -182,6 +182,31 @@ describe('reporting (cloud-only)', () => {
     const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
     assert.equal('baseline_run_id' in reg.body, false);
   });
+
+  it('explicit transport resolves a single scorer after specs are injected', async () => {
+    // A caller building PlatformTransport directly (no scorerNames) with scorerSpecs assigned
+    // AFTER construction — exactly what the engine does — must still resolve the single scorer's
+    // emitted metric name-agnostically. Freezing the flag from the empty constructor makes every
+    // case report not_scored / null main. A fn 'grade' emitting {name:'quality'} under
+    // lower_is_better must SCORE the case (0.3 > 0.2 -> failed, main 0.3).
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', {}); // no scorerNames
+    t.scorerSpecs = [{ name: 'grade', threshold: 0.2, direction: 'lower_is_better' }];
+    const run = await t.createRun('r', 'd', null);
+    await t.recordItemResult(run, {
+      caseId: 'c1',
+      input: 'i',
+      output: 'o',
+      expected: 'e',
+      scores: [{ name: 'quality', value: 0.3 }], // emitted 'quality' != fn 'grade'
+      scorerErrors: {},
+      error: null,
+      traceId: 't',
+    });
+    const res = calls.find((c) => c.url.endsWith('/results'))!;
+    assert.equal(res.body.status, 'failed');
+    assert.equal(res.body.main_score, 0.3);
+  });
 });
 
 describe('run URL (run_url preferred, run_path fallback -> dashboardUrl)', () => {
