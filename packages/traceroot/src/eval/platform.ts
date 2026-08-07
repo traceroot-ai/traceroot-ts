@@ -353,10 +353,29 @@ export class PlatformTransport implements EvalTransport {
     // Already sent inside recordItemResult (which carries the full item).
   }
 
+  /** The registration scorer refs augmented with the metrics each DEFINITION actually emitted during
+   *  the run. The platform keys a metric's policy on the EMITTED-metric name, so a definition whose
+   *  function name differs from its emitted metric (`grade` -> `quality`) must declare that ownership
+   *  here or the platform can't resolve the metric's threshold/direction. Each emitted metric carries
+   *  the definition's declared policy (a scorer's declaration governs whatever metric it emits).
+   *  Rebuilt from the SAME refs registration sent, so completion merges by definition name. */
+  private resolvedScorerManifest(emitted: Record<string, string[]>): Record<string, unknown>[] {
+    return this.scorerRefs().map((ref) => {
+      const metrics = emitted[ref.name as string];
+      if (!metrics || metrics.length === 0) return ref;
+      const policy: Record<string, unknown> = {};
+      for (const k of ['value_type', 'direction', 'threshold'] as const) {
+        if (ref[k] != null) policy[k] = ref[k];
+      }
+      return { ...ref, emitted_metrics: metrics.map((name) => ({ name, ...policy })) };
+    });
+  }
+
   async finishRun(
     _run: RunHandle,
     statusOverride?: string | null,
     mainScoreName?: string | null,
+    emittedMetrics?: Record<string, string[]> | null,
   ): Promise<UploadState> {
     // Pure reporter: the engine owns the ONE main-score resolution and passes the terminal
     // status (e.g. 'failed' on a misconfiguration) and the resolved mainScoreName.
@@ -389,6 +408,13 @@ export class PlatformTransport implements EvalTransport {
     // identity at completion (not just at registration, where it may be unknown). Coordinated with
     // the backend adding optional main_score_name to CompleteRunRequest.
     if (mainScoreName != null) body.main_score_name = mainScoreName;
+    // The RESOLVED scorer->emitted-metric manifest, discovered during execution. The platform merges
+    // it (by definition name) into the stored manifest so each emitted metric's policy is keyed on
+    // the metric name for reconciliation, read-back, and comparison. Additive.
+    if (emittedMetrics && Object.keys(emittedMetrics).length > 0) {
+      const manifest = this.resolvedScorerManifest(emittedMetrics);
+      if (manifest.length > 0) body.scorers = manifest;
+    }
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/complete`, body);
     // Join the backend's UI-relative run path with our host; null when absent.
     // Prefer the backend's absolute run_url; fall back to baseUrl + run_path for a control

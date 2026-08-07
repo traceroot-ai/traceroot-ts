@@ -271,6 +271,7 @@ async function runCase(
   tracer: Tracer,
   onCaseStart?: (c: EvalCase) => void,
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void,
+  emittedOwnership?: Map<string, Set<string>>,
 ): Promise<EvalItemResult> {
   onCaseStart?.(evalCase);
   try {
@@ -344,6 +345,11 @@ async function runCase(
         try {
           for (const scorer of scorers) {
             const name = fnName(scorer, 'scorer');
+            // Record scorer->metric ownership AT THE POINT OF PRODUCTION (never inferred afterward
+            // by matching names). Seed the definition now so a scorer that throws before emitting
+            // still appears in the completion manifest with no metrics.
+            if (emittedOwnership && !emittedOwnership.has(name))
+              emittedOwnership.set(name, new Set());
             const scorerInput: Record<string, unknown> = {
               candidate: output,
               expected: evalCase.expected ?? null,
@@ -371,6 +377,10 @@ async function runCase(
               );
               const produced = stampScorerVersion(normalizeScoreLike(raw, name), scorer);
               scores.push(...produced);
+              if (emittedOwnership) {
+                const set = emittedOwnership.get(name)!;
+                for (const s of produced) if (s.name) set.add(s.name);
+              }
               recordScorerSpan(scorerSpan, produced);
               if (produced.length > 0) scorerSpan.update({ output: scorerOutputRepr(produced) });
             } catch (err) {
@@ -605,6 +615,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   let summary: Record<string, ScoreSummary> = {};
   let resolvedMain: string | null = null;
   let resolveError: MainScoreError | null = null;
+  // definition name -> the metric names it emitted, accumulated across cases (union: a metric
+  // emitted by only some cases still counts). Recorded during execution, sent at completion.
+  const emittedOwnership = new Map<string, Set<string>>();
   try {
     const raw = await runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
@@ -625,6 +638,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         evalSpanTracer,
         options.onCaseStart,
         onCaseComplete,
+        emittedOwnership,
       );
     });
     itemResults = raw.filter((r): r is EvalItemResult => r !== null);
@@ -653,7 +667,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     // (before we throw), so a registered run is never left orphaned in 'running'. Runs AFTER all
     // in-flight cases above have settled.
     const status = cancelled ? 'incomplete' : resolveError !== null ? 'failed' : null;
-    uploadState = await active.finishRun(run, status, resolvedMain);
+    const emitted: Record<string, string[]> = {};
+    for (const [def, metrics] of emittedOwnership) emitted[def] = [...metrics].sort();
+    uploadState = await active.finishRun(run, status, resolvedMain, emitted);
   }
   if (cancelled) {
     // Surface the run's real identity + upload so the caller's partial artifact stays associated
