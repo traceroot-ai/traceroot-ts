@@ -13,18 +13,23 @@ Please see the [TypeScript SDK Docs](https://traceroot.ai/docs/tracing/get-start
 
 # Offline Evaluation
 
-Run your AI app over a dataset, score each case with your own scorers, and report the results to
-TraceRoot to compare candidates over time. A runnable end-to-end example lives in
-[`examples/offline-eval.ts`](examples/offline-eval.ts) (it needs no backend — see below).
+Run your AI app over a dataset, score each case with your own scorers, and (optionally) report the
+results to TraceRoot to compare candidates over time. A runnable end-to-end example lives in
+[`examples/offline-eval.ts`](examples/offline-eval.ts) — it runs offline via an in-memory transport.
 
-## Quickstart (5 minutes)
+`evaluate()` is **cloud-first**: by default it reports to TraceRoot and therefore needs
+`TRACEROOT_API_KEY` and a **pulled** dataset (a purely local `Dataset` cannot start a reported run).
+For a self-contained run with no backend, pass an in-memory transport (below). The task, scorer, and
+reporting behavior are identical in both modes — only the dataset source and the transport differ.
+
+## Quickstart — local run (no backend)
 
 ```ts
-import { Dataset, evaluate, scorer } from '@traceroot-ai/traceroot';
+import { Dataset, evaluate, scorer, FakeTransport } from '@traceroot-ai/traceroot';
 import type { ScorerContext } from '@traceroot-ai/traceroot';
 
-// 1. A dataset — cases with an input and an optional expected reference. `add(input, opts?)`:
-//    the input is positional; `expected` / `id` / `metadata` go in the opts object.
+// 1. A local dataset — add(input, opts?): the input is positional; expected/id/metadata go in opts.
+//    (No cloud dataset is created.)
 const dataset = new Dataset('support-routing');
 dataset.add({ message: 'I was charged twice' }, { expected: { route: 'billing' } });
 dataset.add({ message: 'the app keeps crashing' }, { expected: { route: 'technical' } });
@@ -44,23 +49,57 @@ const accuracy = scorer(
   { valueType: 'numeric', direction: 'higher_is_better', threshold: 1.0 },
 );
 
-// 4. Run it. evaluate() pulls its cases from a synced dataset and reports to the platform.
-const run = await evaluate({ name: 'routing-v1', dataset, task: routeTicket, scorers: [accuracy] });
+// 4. Run it locally — FakeTransport keeps everything in-memory (nothing is uploaded).
+const run = await evaluate({
+  name: 'routing-v1', dataset, task: routeTicket, scorers: [accuracy], transport: new FakeTransport(),
+});
 console.log(run.summary());
 ```
 
-## Datasets: create, publish, pull, version
+## Quickstart — cloud run (reports to TraceRoot)
+
+Create the dataset in the **TraceRoot UI**, then pull it and run — the run appears in the platform.
 
 ```ts
-import { Dataset, pullDataset } from '@traceroot-ai/traceroot';
+import { pullDataset, evaluate, scorer } from '@traceroot-ai/traceroot';
+import type { ScorerContext } from '@traceroot-ai/traceroot';
 
-const ds = new Dataset('support-routing');                 // create
-ds.upsert({ input: { message: 'hi' }, id: 'c1', expected: { route: 'general' } });
-await ds.push();                                            // publish to the platform (a version)
+// Needs TRACEROOT_API_KEY. Pull the dataset you created in the UI (the synced dataset a reported run
+// requires); it arrives with its datasetId/datasetVersionId already set.
+const dataset = await pullDataset('<dataset-id>');
 
-const pulled = await pullDataset('<dataset-id>');           // pull current version (needs creds)
-const exact = await pullDataset('<dataset-id>', { versionId: '<version-id>' }); // pinned version
-await ds.push(undefined, '<version-id>');                   // publish a NEW version off an existing one
+const accuracy = scorer(
+  (ctx: ScorerContext) => ((ctx.output as any).route === (ctx.expected as any).route ? 1 : 0),
+  { valueType: 'numeric', direction: 'higher_is_better', threshold: 1.0 },
+);
+
+const run = await evaluate({
+  name: 'routing-v1', dataset, task: routeTicket, scorers: [accuracy], candidateVersion: 'v1',
+}); // routeTicket as in the local quickstart -> a real run visible in the TraceRoot UI
+console.log(run.uploadState.dashboardUrl); // link to the run in the platform
+```
+
+## Datasets
+
+Cases are added locally with `add(input, opts?)` or `upsert(evalCase)`:
+
+```ts
+import { Dataset } from '@traceroot-ai/traceroot';
+
+const ds = new Dataset('support-routing');
+ds.add({ message: 'hi' }, { id: 'c1', expected: { route: 'general' } });
+ds.upsert({ input: { message: 'bye' }, id: 'c2', expected: { route: 'general' } });
+```
+
+**Datasets are created and versioned in the TraceRoot UI, not from the SDK.** `ds.push()` resolves to
+`status: 'local_only'` and does **not** create a platform dataset. To run a reported evaluation,
+create the dataset in the UI and pull it:
+
+```ts
+import { pullDataset } from '@traceroot-ai/traceroot';
+
+const pulled = await pullDataset('<dataset-id>');                              // current version
+const exact = await pullDataset('<dataset-id>', { versionId: '<version-id>' }); // a pinned version
 ```
 
 Pulling a dataset stamps its `datasetId`/`datasetVersionId` onto the returned `Dataset`, so a run
