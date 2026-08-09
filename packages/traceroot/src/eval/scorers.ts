@@ -327,6 +327,8 @@ async function defaultComplete(model: string, messages: JudgeMessage[]): Promise
 
 export interface LlmJudgeOptions {
   name: string;
+  /** Stable cross-language identity (defaults to `name`). */
+  key?: string;
   model: string;
   messages: JudgeMessage[];
   version?: string;
@@ -390,6 +392,7 @@ export function llmJudge(opts: LlmJudgeOptions): Scorer {
     messages: opts.messages,
     outputType,
   };
+  if (opts.key !== undefined) meta.key = opts.key;
   if (opts.version !== undefined) meta.version = opts.version;
   if (opts.threshold !== undefined) meta.threshold = opts.threshold;
   if (opts.description !== undefined) meta.description = opts.description;
