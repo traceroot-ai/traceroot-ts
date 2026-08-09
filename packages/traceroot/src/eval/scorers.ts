@@ -238,6 +238,13 @@ export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDes
   if (scorerType === 'llm_judge') {
     desc.model = declared(fn, 'model');
     desc.messages = declared(fn, 'messages');
+    // A DYNAMIC judge also carries its builder-callback provenance; a static judge has none (its
+    // declarative config IS its source, via the config-hash version).
+    const builderSource = (declared(fn, 'builderSource' as any) as string | undefined) ?? null;
+    if (builderSource !== null) {
+      desc.language = 'typescript';
+      desc.source = builderSource;
+    }
   } else {
     const src = captureSource(fn);
     if (src !== null) {
@@ -498,6 +505,9 @@ export function llmJudge(opts: LlmJudgeOptions, builder?: JudgeBuilder): Scorer 
     version: resolvedVersion, // the declarative config hash (or an explicit version)
   };
   if (opts.key !== undefined) meta.key = opts.key;
+  // Dynamic judge: capture the builder-callback provenance (source string; honest fallback under
+  // minification). A static judge records none — its config-hash version is its source.
+  if (builder) (meta as unknown as Record<string, unknown>).builderSource = String(builder);
   if (opts.threshold !== undefined) meta.threshold = opts.threshold;
   if (opts.description !== undefined) meta.description = opts.description;
   if (opts.metadata !== undefined) meta.metadata = opts.metadata;
