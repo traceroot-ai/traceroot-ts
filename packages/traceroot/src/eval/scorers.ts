@@ -94,6 +94,10 @@ export type ScoreLikeReturn =
 export type Scorer = (ctx: ScorerContext) => ScoreLikeReturn | Promise<ScoreLikeReturn>;
 
 export interface ScorerMeta {
+  /** Stable SEMANTIC identity, independent of function spelling/language. Set it identically in
+   *  Python and TypeScript to make the SAME logical scorer resolve across languages. Defaults to
+   *  the definition name; never derived from source (code/language/version are provenance). */
+  key?: string;
   name?: string;
   version?: string;
   valueType?: ValueType;
@@ -112,6 +116,7 @@ export interface ScorerMeta {
 const META = Symbol.for('traceroot.scorer.meta');
 
 export interface ScorerDescriptor {
+  key: string;
   name: string;
   version: string | null;
   scorer_type: ScorerType;
@@ -145,6 +150,7 @@ export function scorer(fn: Scorer, opts: ScorerMeta = {}): Scorer {
   const prev = (fn as any)[META] as ScorerMeta | undefined;
   const meta: ScorerMeta = { ...prev };
   for (const k of [
+    'key',
     'name',
     'version',
     'valueType',
@@ -191,6 +197,7 @@ function captureSource(fn: Scorer): string | null {
  */
 export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDescriptor {
   const name = declared(fn, 'name') ?? fnName(fn);
+  const key = declared(fn, 'key') ?? name; // stable semantic identity; defaults to the definition name
   const declaredOutput: OutputType | null = declared(fn, 'outputType') ?? null;
   // value type: declared > runtime hint > inferred from outputType. Inferring from outputType
   // (score -> numeric, classification -> categorical) keeps an llmJudge that only declares
@@ -216,6 +223,7 @@ export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDes
     requiredInputs = deriveRequiredInputs(declared(fn, 'messages'));
   }
   const desc: ScorerDescriptor = {
+    key,
     name,
     version: declaredVersion(fn),
     scorer_type: scorerType,

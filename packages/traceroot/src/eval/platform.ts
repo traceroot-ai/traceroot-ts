@@ -153,6 +153,7 @@ export async function pullDatasetVersion(
 
 export interface ScorerSpec {
   name: string;
+  key?: string | null; // stable semantic identity (cross-language); defaults to `name`
   version?: string | null;
   scorer_type?: string | null;
   value_type?: string | null;
@@ -243,8 +244,10 @@ export class PlatformTransport implements EvalTransport {
           name: spec.name,
           version: spec.version || UNVERSIONED_SCORER,
         };
-        // Comparison metadata + the read-only definition. Absent fields are omitted.
+        // Comparison metadata + the read-only definition. `key` is the stable semantic identity
+        // (cross-language); language/source are provenance. Absent fields are omitted.
         for (const k of [
+          'key',
           'scorer_type',
           'value_type',
           'direction',
