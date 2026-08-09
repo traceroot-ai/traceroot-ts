@@ -37,6 +37,7 @@ export type { PushResult, DatasetSyncTransport } from './dataset_sync';
 export {
   scorer,
   llmJudge,
+  Scorer,
   describeScorers,
   scorerMetadata,
   declaredVersion,
@@ -45,14 +46,7 @@ export {
   DIRECTIONS,
   REQUIRED_INPUTS,
 } from './scorers';
-export type {
-  Scorer,
-  ScorerMeta,
-  ScorerDescriptor,
-  ValueType,
-  Direction,
-  RequiredInput,
-} from './scorers';
+export type { ScorerMeta, ScorerDescriptor, ValueType, Direction, RequiredInput } from './scorers';
 export { collectRunProvenance, gitDirty, runProvenance } from './provenance';
 export {
   datasetLatestSnippet,
