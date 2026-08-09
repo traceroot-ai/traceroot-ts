@@ -39,6 +39,7 @@ export type ScoreLike =
   | string
   | Score
   | Score[]
+  | Record<string, number | boolean | string> // a metric -> value map (one Score per entry)
   | DeferredScore
   | null
   | undefined;
@@ -144,8 +145,23 @@ function normalizeScoreLike(raw: ScoreLike, defaultName: string): Score[] {
     });
   }
   if (typeof raw === 'object') {
-    assertScoreShape(raw);
-    return [toScore(raw)];
+    const obj = raw as Record<string, unknown>;
+    // Presence of EITHER reserved key means the single-Score shape is intended (both required);
+    // an object with neither is a metric->value mapping, one Score per entry.
+    if ('name' in obj || 'value' in obj) {
+      assertScoreShape(raw);
+      return [toScore(raw as Score)];
+    }
+    const scores: Score[] = [];
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v !== 'number' && typeof v !== 'boolean' && typeof v !== 'string') {
+        throw new Error(
+          `metric-map value for '${k}' must be a scalar (number/boolean/string), got ${typeof v}`,
+        );
+      }
+      scores.push({ name: k, value: v, comment: null, metadata: null });
+    }
+    return scores;
   }
   return [{ name: defaultName, value: raw, comment: null, metadata: null }];
 }
