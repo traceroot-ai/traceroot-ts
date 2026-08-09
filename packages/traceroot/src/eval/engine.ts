@@ -58,6 +58,8 @@ export interface EvaluateOptions {
   /** The emitted metric that drives pass/fail and the run's main score. Required for a
    *  reported multi-scorer run; a single scorer resolves it name-agnostically. */
   mainScore?: string;
+  /** Alias for `mainScore` — the headline metric that drives the run's pass/fail. */
+  primaryMetric?: string;
   datasetId?: string;
   maxConcurrency?: number;
   /** Bounds each case (seconds); a timeout is an isolated per-case error. */
@@ -513,6 +515,8 @@ function autoTransport(
 
 /** Run an evaluation. Async-first; `evaluate` is an alias of `evaluateAsync`. */
 export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunResult> {
+  // `primaryMetric` is an alias for `mainScore` (the headline metric); normalize once.
+  options = { ...options, mainScore: options.mainScore ?? options.primaryMetric };
   const { name, task, scorers, maxConcurrency = 10, transport, candidateVersion } = options;
   const environment = options.environment ?? 'evaluation';
   const data = options.dataset ?? options.data;
@@ -565,15 +569,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
           'pass an explicit transport.',
       );
     }
-    // A reported multi-scorer run needs an explicit headline metric: refuse to silently pick
-    // one (the old behavior guessed the first scorer's function name).
-    if (options.mainScore === undefined && scorers.length > 1) {
-      throw new Error(
-        `This run reports ${scorers.length} scorers to the platform but no mainScore, so the ` +
-          "headline metric is ambiguous. Pass mainScore: '<scorer/metric name>' to select which " +
-          'one drives the run pass/fail and aggregate main score.',
-      );
-    }
+    // A reported multi-scorer run no longer REQUIRES a headline metric: every score is recorded and
+    // no overall pass/fail is invented when none is selected (Phase 2 — primary metric is optional).
     active = auto;
   }
 

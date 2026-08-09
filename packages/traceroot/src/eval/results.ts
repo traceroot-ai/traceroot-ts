@@ -129,12 +129,10 @@ export function resolveMainScoreName(
     }
     return configured; // no numeric scores at all -> keep the label; run is simply unscored
   }
-  if (distinct.length > 1) {
-    throw new MainScoreError(
-      `multiple numeric metrics emitted ${JSON.stringify(distinct)} but no main_score; pass ` +
-        'main_score to select the headline metric.',
-    );
-  }
+  // No primary is required merely to record multiple metrics: every score is still stored; we
+  // select no headline metric (null) and invent no overall pass/fail. A CI gate that wants a
+  // verdict selects its own metric via mainScore / primaryMetric.
+  if (distinct.length > 1) return null;
   return distinct.length === 1 ? distinct[0] : null;
 }
 
@@ -183,6 +181,16 @@ export function caseStatus(item: EvalItemResult, mainScore?: MainScore | null): 
   // in agreement with the reported (cloud) status -- one policy, not two.
   if (item.error !== null) return 'errored';
   const ms = mainScore ?? new MainScore(null);
+  if (ms.name === null) {
+    // No primary metric selected: with MULTIPLE numeric/boolean metrics there is no headline to
+    // judge, so the case is scored but carries no invented pass/fail (never "first of many").
+    const numericNames = new Set(
+      item.scores
+        .filter((s) => typeof s.value === 'boolean' || typeof s.value === 'number')
+        .map((s) => s.name),
+    );
+    if (numericNames.size > 1) return 'not_scored';
+  }
   let value: number | null = null;
   for (const s of item.scores) {
     if (ms.name !== null && s.name !== ms.name) continue;

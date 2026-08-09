@@ -82,8 +82,8 @@ describe('main-score closure', () => {
     assert.equal(fake.lastFinishStatus, null); // completed normally, not 'failed'
   });
 
-  it('multiple emitted metrics without a main are ambiguous (the one resolver)', () => {
-    assert.throws(() => resolveMainScoreName(null, ['a', 'b']), MainScoreError);
+  it('multiple emitted metrics without a main select no primary (the one resolver)', () => {
+    assert.equal(resolveMainScoreName(null, ['a', 'b']), null); // multiple + no main -> no primary
     assert.equal(resolveMainScoreName(null, ['only']), 'only'); // single -> late-bound
     assert.equal(resolveMainScoreName(null, []), null); // none -> unscored
   });

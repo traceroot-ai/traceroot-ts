@@ -463,12 +463,14 @@ export class PlatformTransport implements EvalTransport {
    *  function name differs from the emitted Score name (name-agnostic). With multiple scorers the
    *  emitted name must match a declared scorer; an unmatched metric returns null so the platform is
    *  told 'unknown', never a fabricated pass/fail. Mirrors resolveMainScorePolicy per-score. */
-  private scorePolicy(name: string | null): [number, string] | null {
+  private scorePolicy(name: string | null): [number | null, string] | null {
     const specs = this.scorerSpecs ?? [];
     const owner = specs.length === 1 ? specs[0] : (specs.find((s) => s.name === name) ?? null);
     if (!owner) return null;
+    // RAW declared threshold (may be null): a numeric metric with no declared threshold is scored
+    // but gets no fabricated pass/fail. Direction still defaults for a declared metric.
     return [
-      owner.threshold != null ? owner.threshold : DEFAULT_PASS_THRESHOLD,
+      owner.threshold != null ? owner.threshold : null,
       owner.direction != null ? owner.direction : 'higher_is_better',
     ];
   }
@@ -484,8 +486,8 @@ export class PlatformTransport implements EvalTransport {
     const policy = this.scorePolicy(score.name);
     if (policy === null) return null;
     const [threshold, direction] = policy;
+    if (threshold === null || direction === 'none') return null; // no declared threshold -> no verdict
     if (direction === 'lower_is_better') return score.value <= threshold;
-    if (direction === 'none') return null;
     return score.value >= threshold; // higher_is_better (the default)
   }
 
