@@ -50,7 +50,6 @@ export function capabilities(): Record<string, boolean> {
     compare: true,
     dataset_push: true,
     sampling: true,
-    provenance: true,
     cancellation: true,
   };
 }
@@ -309,7 +308,6 @@ export interface WriteArtifactsOptions {
   sampleCount: number | null;
   sampleSeed: number | null;
   candidateVersion: string | null;
-  provenance: Record<string, unknown> | null;
   createdAt?: string;
   /** Opt-in per-payload byte cap (parity with Python `max_payload_bytes`). */
   maxPayloadBytes?: number | null;
@@ -388,7 +386,6 @@ export function writeArtifacts(
     run_mode: o.runMode,
     is_final: o.isFinal,
     sample: { count: o.sampleCount, seed: o.sampleSeed },
-    provenance: o.provenance,
     dataset: result.dataset
       ? {
           dataset_id: result.dataset.datasetId,
@@ -479,7 +476,6 @@ async function runOne(
   const sample = options.sample;
   const seed = Number(options.sample_seed ?? 0) || 0;
   const candidateVersion = options.candidate_version ?? evaluation.candidateVersion ?? null;
-  const provenance = options.provenance ?? null;
   const createdAt = nowIso();
   const identity = datasetIdentity(evaluation.dataset as Dataset | EvalCase[]);
 
@@ -577,7 +573,6 @@ async function runOne(
       sampleCount: chosen !== null ? chosen.size : null,
       sampleSeed: chosen !== null ? seed : null,
       candidateVersion,
-      provenance,
       createdAt,
       maxPayloadBytes: options.max_payload_bytes != null ? Number(options.max_payload_bytes) : null,
     });

@@ -29,7 +29,6 @@ export interface EvalTransport {
     datasetName: string,
     metadata: Record<string, unknown> | null,
     clientRunId?: string,
-    provenance?: Record<string, unknown> | null,
   ): Promise<RunHandle>;
   registerItem(run: RunHandle, evalCase: EvalCase): Promise<void>;
   recordItemResult(run: RunHandle, itemResult: EvalItemResult): Promise<void>;
@@ -48,18 +47,15 @@ export interface EvalTransport {
 export class FakeTransport implements EvalTransport {
   readonly calls: unknown[][] = [];
   lastRunMetadata: Record<string, unknown> | null = null;
-  lastRunProvenance: Record<string, unknown> | null = null;
 
   async createRun(
     name: string,
     datasetName: string,
     metadata: Record<string, unknown> | null,
     _clientRunId?: string,
-    provenance?: Record<string, unknown> | null,
   ): Promise<RunHandle> {
     this.calls.push(['create_run', name, datasetName]);
     this.lastRunMetadata = metadata;
-    this.lastRunProvenance = provenance ?? null;
     return { name, datasetName, metadata };
   }
   async registerItem(_run: RunHandle, evalCase: EvalCase): Promise<void> {
