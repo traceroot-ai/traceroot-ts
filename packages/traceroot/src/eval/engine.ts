@@ -541,9 +541,11 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   const datasetName = data instanceof Dataset ? data.name : INLINE_DATASET;
   const snapshotRevision =
     data instanceof Dataset ? data.snapshot().revision : `local-${cases.length}`;
-  // Local run record keeps the combined view (user metadata + git/ci) for the artifact.
-  // A run is not identified by which SDK produced it, so no typed SDK/identity provenance
-  // is reported to the platform — only the user's free-form metadata rides the wire.
+  // A run is not identified by which SDK produced it, so no SDK-language identity is reported.
+  // But git/CI provenance (commit/branch/dirty, CI build) is NON-IDENTITY reproducibility
+  // metadata — it rides the wire as free-form run metadata (user keys win on conflict), so the
+  // platform can tie a run to the exact commit + dataset version. Same combined view backs the
+  // local artifact.
   const runMetadata = collectRunProvenance(options.metadata, { detectDirty: false });
 
   // Cloud-only: an explicit transport wins; otherwise build a reporting transport from
@@ -585,7 +587,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // Eval structural spans always export (cloud-only) and are linked to the reported results.
   const evalSpanTracer = evalTracer();
   const localRunId = newRunId();
-  const run = await active.createRun(name, datasetName, options.metadata ?? null, localRunId);
+  const run = await active.createRun(name, datasetName, runMetadata ?? null, localRunId);
 
   const identity: RunIdentity = {
     name,

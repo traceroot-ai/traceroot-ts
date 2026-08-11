@@ -153,6 +153,25 @@ describe('provenance (machine-independent)', () => {
     const meta = collectRunProvenance(undefined, { env: {} as never, detectDirty: false });
     assert.ok(meta === null || !('ci' in meta), 'empty env must not produce a ci block');
   });
+
+  it('git provenance rides the run metadata on the wire (non-identity), never SDK identity', async () => {
+    // Parity with traceroot-py test_provenance TestProvenanceReachesWire: git/CI reproducibility
+    // metadata reaches createRun as run metadata (auto-detected from the checkout's .git); user
+    // keys are kept and no SDK-language identity is sent.
+    const fake = new FakeTransport();
+    await evaluate({
+      name: 'r',
+      dataset: [{ input: { m: 1 } }],
+      task: (x) => x,
+      scorers: [() => 1],
+      metadata: { team: 'eval' },
+      transport: fake,
+    });
+    const md = fake.lastRunMetadata!;
+    assert.equal(md.team, 'eval');
+    assert.ok(md.git, 'git provenance rides the wire');
+    assert.ok(!('sdk' in md) && !('language' in md), 'no SDK-language identity');
+  });
 });
 
 // ---------------------------------------------------------------------------
