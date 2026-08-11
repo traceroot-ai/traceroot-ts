@@ -23,6 +23,7 @@ import {
 } from './results';
 import { EvalTransport, RunHandle } from './transport';
 import { PlatformTransport } from './platform';
+import { PlatformDatasetSync } from './dataset_sync';
 import { collectRunProvenance } from './provenance';
 import { declaredVersion, describeScorers } from './scorers';
 import { newRunId } from './ids';
@@ -541,12 +542,33 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   if (transport !== undefined) {
     active = transport;
   } else {
+    // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
+    // server-side version to attach to -- the user never writes a manual "sync then run" step
+    // (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses the
+    // current version; a changed dataset under an existing name prompts to confirm the new version
+    // (TTY) before publishing. Only for a local Dataset with credentials; a pulled dataset, an
+    // explicit datasetId, or an explicit transport skip this.
+    if (
+      data instanceof Dataset &&
+      data.datasetVersionId === undefined &&
+      options.datasetId === undefined
+    ) {
+      const { apiKey } = TraceRoot.resolveCredentials();
+      if (apiKey) {
+        const res = await new PlatformDatasetSync().pushDataset(
+          data.snapshot(),
+          data.baseVersionId,
+        );
+        if (res.status === 'uploaded' && res.datasetVersionId)
+          data.datasetVersionId = res.datasetVersionId;
+      }
+    }
     const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
     if (auto === null) {
       throw new Error(
-        'evaluate() reports to the TraceRoot platform, but no credentials or synced dataset ' +
-          'were found. Set TRACEROOT_API_KEY and pass a pulled dataset (pullDataset(...)), or ' +
-          'pass an explicit transport.',
+        'evaluate() reports to the TraceRoot platform, but no credentials were found. Set ' +
+          'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass an explicit ' +
+          'transport (e.g. new FakeTransport() to run offline).',
       );
     }
     // A reported run records every score with a per-metric `passed`; no overall run-level pass/fail

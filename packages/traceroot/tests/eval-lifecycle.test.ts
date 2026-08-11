@@ -99,7 +99,7 @@ describe('push seam', () => {
 // --- Existing-dataset confirmation on push (parity with test_dataset_sync.py) ---------------
 import { PlatformDatasetSync, DatasetPublishAborted } from '../src/eval';
 
-function mockPlatformSync(exists: boolean) {
+function mockPlatformSync(exists: boolean, publishedRev: string | null = 'rev_different') {
   const sync = Object.create(PlatformDatasetSync.prototype) as PlatformDatasetSync & {
     calls: string[];
   };
@@ -115,6 +115,8 @@ function mockPlatformSync(exists: boolean) {
     if (path.endsWith('/versions')) return { dataset_version_id: 'dsv_10', version_number: 2 };
     return {};
   };
+  // Stub the published-revision fetch: `publishedRev` drives changed-vs-unchanged detection.
+  (sync as unknown as { publishedRevision: unknown }).publishedRevision = async () => publishedRev;
   return sync;
 }
 
@@ -125,7 +127,22 @@ function snap() {
 }
 
 describe('existing-dataset confirmation on push (TS)', () => {
-  it('declined publish to an existing dataset aborts without creating a version', async () => {
+  it('unchanged content is a no-op without prompting', async () => {
+    const s = snap();
+    const sync = mockPlatformSync(true, s.revision) as PlatformDatasetSync & { calls: string[] };
+    let called = false;
+    const res = await sync.pushDataset(s, null, {
+      onExisting: () => {
+        called = true;
+        return true;
+      },
+    });
+    assert.equal(res.datasetVersionId, 'dsv_9'); // reuses the current version
+    assert.equal(called, false); // unchanged -> never prompts
+    assert.ok(!sync.calls.some((c) => c.endsWith('/versions'))); // no new version published
+  });
+
+  it('declined publish to an existing (changed) dataset aborts without creating a version', async () => {
     const sync = mockPlatformSync(true) as PlatformDatasetSync & { calls: string[] };
     await assert.rejects(
       () => sync.pushDataset(snap(), null, { onExisting: () => false }),

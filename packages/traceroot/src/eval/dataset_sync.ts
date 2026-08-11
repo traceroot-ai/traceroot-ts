@@ -7,7 +7,7 @@
 // PlatformDatasetSync publishes to POST /api/v1/public/datasets + .../{id}/versions.
 
 import { TraceRoot } from '../traceroot';
-import { httpJson } from './platform';
+import { httpJson, pullDatasetVersion } from './platform';
 import type { DatasetSnapshot } from './types';
 
 export class DatasetConflictError extends Error {
@@ -203,16 +203,43 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
     }
   }
 
+  /** The content revision of the dataset's current published version, for change detection. Null
+   *  when it can't be fetched (then we fall through to confirm rather than assume unchanged). */
+  private async publishedRevision(datasetId: string, versionId: string): Promise<string | null> {
+    try {
+      const current = await pullDatasetVersion(versionId, {
+        datasetId,
+        apiKey: this.apiKey,
+        baseUrl: this.baseUrl,
+      });
+      return current.snapshot().revision;
+    } catch {
+      return null;
+    }
+  }
+
   async pushDataset(
     snapshot: DatasetSnapshot,
     baseVersionId: string | null,
     opts?: { onExisting?: OnExisting },
   ): Promise<PushResult> {
     // A dataset's identity is its name: re-pushing the same name updates the SAME dataset with a
-    // new version. Double-check first when it already exists (default: prompt on an interactive
-    // TTY, proceed otherwise) so a name reused by accident does not silently add a version.
+    // new version. If the content is UNCHANGED from the current version, this is a no-op (reuse it,
+    // no prompt). If it CHANGED, double-check before creating a new version (default: prompt on an
+    // interactive TTY, proceed otherwise) so a reused name never silently adds a version.
     const existing = await this.existingDataset(snapshot.datasetId);
     if (existing) {
+      const currentVersion = existing.current_dataset_version_id as string;
+      if (
+        (await this.publishedRevision(snapshot.datasetId, currentVersion)) === snapshot.revision
+      ) {
+        // Identical content -> idempotent no-op; keep the current version, never prompt.
+        return {
+          status: 'uploaded',
+          datasetId: snapshot.datasetId,
+          datasetVersionId: currentVersion,
+        };
+      }
       const confirm = opts?.onExisting ?? confirmNewVersion;
       if (!(await confirm(existing)))
         throw new DatasetPublishAborted(
