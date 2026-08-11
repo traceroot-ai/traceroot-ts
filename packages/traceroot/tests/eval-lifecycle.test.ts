@@ -95,3 +95,66 @@ describe('push seam', () => {
     await assert.rejects(() => ds.push(sync, 'dsv_stale'), DatasetConflictError);
   });
 });
+
+// --- Existing-dataset confirmation on push (parity with test_dataset_sync.py) ---------------
+import { PlatformDatasetSync, DatasetPublishAborted } from '../src/eval';
+
+function mockPlatformSync(exists: boolean) {
+  const sync = Object.create(PlatformDatasetSync.prototype) as PlatformDatasetSync & {
+    calls: string[];
+  };
+  (sync as unknown as { apiKey: string }).apiKey = 'k';
+  (sync as unknown as { baseUrl: string }).baseUrl = 'https://h';
+  (sync as unknown as { calls: string[] }).calls = [];
+  (sync as unknown as { request: unknown }).request = async (method: string, path: string) => {
+    (sync as unknown as { calls: string[] }).calls.push(`${method} ${path}`);
+    if (method === 'GET') {
+      if (exists) return { name: 'd', current_dataset_version_id: 'dsv_9' };
+      throw new Error('GET .../datasets/x -> HTTP 404: not found');
+    }
+    if (path.endsWith('/versions')) return { dataset_version_id: 'dsv_10', version_number: 2 };
+    return {};
+  };
+  return sync;
+}
+
+function snap() {
+  const d = new Dataset('d');
+  d.add({ q: 'a' });
+  return d.snapshot();
+}
+
+describe('existing-dataset confirmation on push (TS)', () => {
+  it('declined publish to an existing dataset aborts without creating a version', async () => {
+    const sync = mockPlatformSync(true) as PlatformDatasetSync & { calls: string[] };
+    await assert.rejects(
+      () => sync.pushDataset(snap(), null, { onExisting: () => false }),
+      DatasetPublishAborted,
+    );
+    assert.ok(!sync.calls.some((c) => c.endsWith('/versions'))); // no version was published
+  });
+
+  it('accepted publish to an existing dataset creates a new version', async () => {
+    const sync = mockPlatformSync(true) as PlatformDatasetSync & { calls: string[] };
+    const res = await sync.pushDataset(snap(), null, { onExisting: () => true });
+    assert.equal(res.datasetVersionId, 'dsv_10');
+  });
+
+  it('a brand-new dataset never prompts', async () => {
+    let called = false;
+    const sync = mockPlatformSync(false);
+    await sync.pushDataset(snap(), null, {
+      onExisting: () => {
+        called = true;
+        return true;
+      },
+    });
+    assert.equal(called, false); // 404 -> new -> confirmation never invoked
+  });
+
+  it('default confirmer proceeds when non-interactive (no TTY)', async () => {
+    const sync = mockPlatformSync(true); // existing, but no onExisting -> default confirmer
+    const res = await sync.pushDataset(snap(), null); // process.stdin.isTTY is falsy in the test env
+    assert.equal(res.datasetVersionId, 'dsv_10');
+  });
+});
