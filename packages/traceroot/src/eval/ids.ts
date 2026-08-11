@@ -52,9 +52,13 @@ export function stableDatasetId(key: string): string {
  *  Convergence needs case ids to be stable across runs, not random per construction: the
  *  same case authored in the same position — any process, TypeScript or Python — must get
  *  the SAME `tc_` id so the platform matches it on re-publish (upsert keys on id) instead of
- *  duplicating it, and so runs pair case-for-case. Position-based (not content-based) to stay
- *  trivially identical across languages. Must match the Python `stable_case_id`. */
-export function stableCaseId(datasetKey: string, index: number): string {
-  const digest = createHash('sha256').update(`${datasetKey}\x00${index}`, 'utf8').digest('hex');
+ *  duplicating it, and so runs pair case-for-case. CONTENT-based (the case's canonical input),
+ *  NOT positional: inserting/removing/reordering cases must not shift other cases' ids. `occurrence`
+ *  disambiguates duplicate inputs (0, 1, ...). `inputCanonical` is the canonical-JSON of the input,
+ *  so this stays byte-for-byte identical to the Python `stable_case_id`. */
+export function stableCaseId(datasetKey: string, inputCanonical: string, occurrence = 0): string {
+  const digest = createHash('sha256')
+    .update(`${datasetKey}\x00${inputCanonical}\x00${occurrence}`, 'utf8')
+    .digest('hex');
   return `tc_${digest.slice(0, 20)}`;
 }

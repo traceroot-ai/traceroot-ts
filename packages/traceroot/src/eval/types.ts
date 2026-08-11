@@ -152,7 +152,15 @@ function deepFreeze<T>(o: T, seen: WeakSet<object> = new WeakSet()): T {
 }
 
 export function contentRevision(cases: EvalCase[]): string {
-  const content = cases.map((c) => {
+  // Content-addressed and ORDER-INDEPENDENT: sort by id so re-authoring the same set of cases in a
+  // different order yields the SAME revision (with content-based ids, reordering is not a content
+  // change). Only a real content change advances the revision. Mirrors Python `_content_revision`.
+  const ordered = [...cases].sort((a, b) => {
+    const ai = a.id ?? '';
+    const bi = b.id ?? '';
+    return ai < bi ? -1 : ai > bi ? 1 : 0;
+  });
+  const content = ordered.map((c) => {
     const o: Record<string, unknown> = {};
     for (const k of CONTENT_FIELDS) o[k] = c[k] ?? null;
     return o;
@@ -208,10 +216,22 @@ export class Dataset {
       id?: string;
     } = {},
   ): EvalCase {
-    // Without an explicit id, the case gets a STABLE id from the dataset key + its insertion
-    // position, so re-authoring the same dataset converges (the platform matches by id)
-    // instead of forking new cases each run.
-    const cid = opts.id ?? stableCaseId(this.key, this.casesById.size);
+    // Without an explicit id, the case gets a STABLE id from the dataset key + its INPUT content
+    // (not its position), so re-authoring converges (the platform matches by id) and inserting/
+    // removing/reordering other cases does not shift this case's id. Duplicate inputs are
+    // disambiguated by occurrence (the first free slot), collision-free across removes.
+    let cid: string;
+    if (opts.id) {
+      cid = opts.id;
+    } else {
+      const canonical = canonicalJson(input);
+      let occurrence = 0;
+      cid = stableCaseId(this.key, canonical, occurrence);
+      while (this.casesById.has(cid)) {
+        occurrence += 1;
+        cid = stableCaseId(this.key, canonical, occurrence);
+      }
+    }
     if (this.casesById.has(cid)) throw new Error(`test case id already exists: ${cid}`);
     const c: EvalCase = {
       input,

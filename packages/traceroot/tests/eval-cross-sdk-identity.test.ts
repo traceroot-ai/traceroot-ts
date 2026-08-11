@@ -39,3 +39,54 @@ describe('cross-SDK scorer identity', () => {
     assert.equal(md.key, 'freshScorer'); // no explicit key -> the definition name (diverges by language)
   });
 });
+
+// --- Content-based case ids: byte-identical across Python/TypeScript ------------------------
+import { Dataset } from '../src/eval/types';
+
+const CASE_FIX = JSON.parse(
+  readFileSync(join(__dirname, 'fixtures', 'case_id_parity.json'), 'utf8'),
+) as { dataset_key: string; dataset_id: string; cases: { input: unknown; id: string }[] };
+
+describe('cross-SDK case-id identity', () => {
+  it('case ids match the cross-language fixture (byte-identical with Python)', () => {
+    const d = new Dataset(CASE_FIX.dataset_key);
+    assert.equal(d.datasetId, CASE_FIX.dataset_id);
+    for (const c of CASE_FIX.cases) {
+      const produced = d.add(c.input);
+      assert.equal(produced.id, c.id);
+    }
+  });
+
+  it('content-based: inserting a case does not shift other ids; reorder = same revision', () => {
+    const a = new Dataset('k');
+    a.add({ q: 'a' });
+    a.add({ q: 'b' });
+    const base = new Map(a.cases().map((c) => [(c.input as { q: string }).q, c.id]));
+
+    const b = new Dataset('k');
+    b.add({ q: 'z' }); // inserted before a and b
+    b.add({ q: 'a' });
+    b.add({ q: 'b' });
+    const after = new Map(b.cases().map((c) => [(c.input as { q: string }).q, c.id]));
+    assert.equal(after.get('a'), base.get('a')); // unchanged despite z inserted first
+    assert.equal(after.get('b'), base.get('b'));
+
+    const r1 = new Dataset('k');
+    r1.add(1);
+    r1.add(2);
+    const r2 = new Dataset('k');
+    r2.add(2);
+    r2.add(1);
+    assert.equal(r1.snapshot().revision, r2.snapshot().revision); // order-independent
+  });
+
+  it('duplicate inputs get distinct, collision-safe ids', () => {
+    const d = new Dataset('k');
+    const x0 = d.add({ q: 'x' });
+    const x1 = d.add({ q: 'x' });
+    assert.notEqual(x0.id, x1.id);
+    d.remove(x0.id);
+    const x2 = d.add({ q: 'x' });
+    assert.notEqual(x2.id, x1.id);
+  });
+});
