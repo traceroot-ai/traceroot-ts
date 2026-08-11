@@ -68,7 +68,6 @@ describe('emitted-metric ownership manifest at completion', () => {
       dataset: ds(),
       task: () => 'out',
       scorers: [grade, length],
-      mainScore: 'quality',
     });
     const complete = calls.find((c) => c.url.endsWith('/complete'))!.body;
     const by: Record<string, any> = {};

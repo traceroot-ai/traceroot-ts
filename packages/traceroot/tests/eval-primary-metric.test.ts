@@ -1,7 +1,7 @@
-// Phase 2 — primary-metric behavior (TS). Recording multiple metrics does not require a primary;
-// when none is selected the run completes with every score stored and no invented pass/fail. A
-// numeric metric with no declared threshold is scored but carries no fabricated pass/fail.
-// `primaryMetric` aliases `mainScore`.
+// Multi-metric recording + per-score honesty (TS). Recording multiple metrics needs no headline
+// metric: the run completes with every score stored, the case status is not_scored (no invented
+// pass/fail), and a numeric metric with no declared threshold is scored but carries no fabricated
+// per-score pass/fail.
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
@@ -34,8 +34,8 @@ function ds() {
 }
 const twoMetrics = (_ctx: ScorerContext) => ({ accuracy: 1.0, coverage: 0.5 });
 
-describe('primary metric is optional (TS)', () => {
-  it('multiple metrics without a primary completes and stores all', async () => {
+describe('multi-metric recording + per-score honesty (TS)', () => {
+  it('multiple metrics completes, stores all, and the case is not_scored', async () => {
     const run = await evaluate({
       name: 'r',
       dataset: ds(),
@@ -45,19 +45,7 @@ describe('primary metric is optional (TS)', () => {
     });
     const scores = Object.fromEntries(run.itemResults[0].scores.map((s) => [s.name, s.value]));
     assert.deepEqual(scores, { accuracy: 1.0, coverage: 0.5 });
-    assert.equal(caseStatus(run.itemResults[0], run.mainScore), 'not_scored'); // no invented verdict
-  });
-
-  it('primaryMetric aliases mainScore', async () => {
-    const run = await evaluate({
-      name: 'r',
-      dataset: ds(),
-      task: () => 'hi',
-      scorers: [twoMetrics],
-      primaryMetric: 'accuracy',
-      transport: new FakeTransport(),
-    });
-    assert.equal(run.mainScore.name, 'accuracy');
+    assert.equal(caseStatus(run.itemResults[0]), 'not_scored'); // no invented case-level verdict
   });
 
   it('numeric metric with no declared threshold is scored but has no fabricated pass/fail', async () => {

@@ -36,7 +36,6 @@ export interface EvalTransport {
   finishRun(
     run: RunHandle,
     status?: string | null,
-    mainScoreName?: string | null,
     emittedMetrics?: Record<string, string[]> | null,
   ): Promise<UploadState>;
   publishDataset(datasetName: string, itemCount: number): Promise<PublishResult>;
@@ -68,17 +67,14 @@ export class FakeTransport implements EvalTransport {
     this.calls.push(['record_scores', caseId]);
   }
   lastFinishStatus: string | null | undefined = undefined;
-  lastMainScoreName: string | null | undefined = undefined;
   lastEmittedMetrics: Record<string, string[]> | null | undefined = undefined;
   async finishRun(
     _run: RunHandle,
     status?: string | null,
-    mainScoreName?: string | null,
     emittedMetrics?: Record<string, string[]> | null,
   ): Promise<UploadState> {
     this.calls.push(['finish_run', status ?? null]);
     this.lastFinishStatus = status ?? null;
-    this.lastMainScoreName = mainScoreName ?? null;
     this.lastEmittedMetrics = emittedMetrics ?? null;
     return { status: 'uploaded', dashboardUrl: null };
   }

@@ -203,7 +203,9 @@ describe('Evaluation object', () => {
       scorers: [(c) => (c.output === c.expected ? 1 : 0)],
       transport: new FakeTransport(),
     }).run();
-    assert.equal(run.passed, 1);
+    // Case status carries no headline pass/fail: a scored, error-free case is not_scored.
+    assert.equal(run.caseCount, 1);
+    assert.equal(run.notScored, 1);
     assert.throws(
       () => new Evaluation({ name: 'r', dataset: ds, task: echo, scorers: [() => 1], retry: 3 }),
       /retry is not implemented/,

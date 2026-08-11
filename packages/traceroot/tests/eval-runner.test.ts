@@ -59,7 +59,9 @@ describe('runner', () => {
     assert.equal(types.filter((t) => t === 'case_completed').length, 2);
     const done = events.find((e) => e.type === 'evaluation_completed');
     assert.equal(done.status, 'completed');
-    assert.equal(done.counts.passed, 2);
+    // No headline pass/fail: both error-free cases are not_scored (per-metric verdicts ride scores).
+    assert.equal(done.counts.not_scored, 2);
+    assert.equal(done.counts.passed, 0);
     assert.ok(done.local_run_id.startsWith('run_'));
     assert.equal(types[types.length - 1], 'suite_completed');
   });

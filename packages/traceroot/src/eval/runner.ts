@@ -31,16 +31,13 @@ import { Dataset, EvalCase, Score } from './types';
 import {
   EvalItemResult,
   EvalRunResult,
-  MainScore,
   RunDatasetRef,
   UploadState,
   caseStatus,
   makeRunResult,
-  resolveMainScorePolicy,
 } from './results';
 import { CancelledError } from './engine';
 import { FakeTransport } from './transport';
-import { describeScorers } from './scorers';
 
 export const EVAL_API_VERSION = 1;
 export function capabilities(): Record<string, boolean> {
@@ -236,13 +233,10 @@ function scorerVersions(result: EvalRunResult): Record<string, string | null> {
   return versions;
 }
 
-function caseMetadata(
-  item: EvalItemResult,
-  mainScore: MainScore | null = null,
-): Record<string, unknown> {
+function caseMetadata(item: EvalItemResult): Record<string, unknown> {
   return {
     case_id: item.caseId,
-    status: caseStatus(item, mainScore),
+    status: caseStatus(item),
     scores: item.scores.map(scoreEvent),
     task_error: item.error,
     scorer_errors: scorerErrorEvents(item),
@@ -354,7 +348,7 @@ export function writeArtifacts(
     return JSON.stringify({
       schema_version: '1',
       case_id: item.caseId,
-      status: caseStatus(item, result.mainScore),
+      status: caseStatus(item),
       input,
       output,
       expected,
@@ -380,7 +374,6 @@ export function writeArtifacts(
     run_id: result.runId,
     created_at: o.createdAt ?? nowIso(),
     evaluation_name: result.name,
-    main_score_name: result.mainScoreName,
     status: o.status,
     candidate_version: o.candidateVersion,
     run_mode: o.runMode,
@@ -402,7 +395,7 @@ export function writeArtifacts(
     scores: Object.fromEntries(Object.entries(result.scoreSummary).map(([k, v]) => [k, { ...v }])),
     upload: { status: result.uploadState.status, dashboard_url: result.uploadState.dashboardUrl },
     artifact,
-    cases: result.itemResults.map((it) => caseMetadata(it, result.mainScore)),
+    cases: result.itemResults.map((it) => caseMetadata(it)),
   };
   atomicWrite(runPath, JSON.stringify(runDoc, null, 2));
   return artifact;
@@ -509,19 +502,11 @@ async function runOne(
     },
   });
 
-  // The scoring POLICY (threshold + direction) is known up front from the scorers, so live status
-  // uses the SAME MainScore the final result will -- no default-1.0 divergence. Only the late-bound
-  // single-metric NAME is unknown here, and it's name-agnostic for a single scorer, so they agree.
-  const [liveThreshold, liveDirection] = resolveMainScorePolicy(
-    describeScorers(evaluation.scorers),
-    evaluation.mainScore ?? null,
-  );
-  const liveMain = new MainScore(evaluation.mainScore ?? null, liveThreshold, liveDirection);
   const collected: EvalItemResult[] = [];
   const onCaseStart = (c: EvalCase): void => emitter.emit({ type: 'case_started', case_id: c.id });
   const onCaseComplete = (item: EvalItemResult): void => {
     collected.push(item);
-    emitter.emit({ type: 'case_completed', ...caseMetadata(item, liveMain) });
+    emitter.emit({ type: 'case_completed', ...caseMetadata(item) });
   };
 
   const overrides: Record<string, unknown> = {
