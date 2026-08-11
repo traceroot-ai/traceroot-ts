@@ -45,7 +45,12 @@ import { Dataset } from '../src/eval/types';
 
 const CASE_FIX = JSON.parse(
   readFileSync(join(__dirname, 'fixtures', 'case_id_parity.json'), 'utf8'),
-) as { dataset_key: string; dataset_id: string; cases: { input: unknown; id: string }[] };
+) as {
+  dataset_key: string;
+  dataset_id: string;
+  revision: string;
+  cases: { input: unknown; id: string }[];
+};
 
 describe('cross-SDK case-id identity', () => {
   it('case ids match the cross-language fixture (byte-identical with Python)', () => {
@@ -55,6 +60,8 @@ describe('cross-SDK case-id identity', () => {
       const produced = d.add(c.input);
       assert.equal(produced.id, c.id);
     }
+    // the local content revision is ALSO byte-identical across Python and TypeScript
+    assert.equal(d.snapshot().revision, CASE_FIX.revision);
   });
 
   it('content-based: inserting a case does not shift other ids; reorder = same revision', () => {

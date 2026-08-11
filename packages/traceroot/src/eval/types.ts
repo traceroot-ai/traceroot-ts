@@ -56,14 +56,16 @@ export interface ScorerContext {
 }
 
 // Content fields that define a snapshot's identity (archived + volatile excluded).
-const CONTENT_FIELDS: (keyof EvalCase)[] = [
-  'id',
-  'input',
-  'expected',
-  'metadata',
-  'sourceTraceId',
-  'sourceSpanId',
-  'scoreTargetSpanId',
+// [EvalCase field, wire/hash key]. The hash key is snake_case so the content revision is
+// byte-identical to Python's `_content_revision` (which hashes snake_case attribute names).
+const CONTENT_FIELDS: [keyof EvalCase, string][] = [
+  ['id', 'id'],
+  ['input', 'input'],
+  ['expected', 'expected'],
+  ['metadata', 'metadata'],
+  ['sourceTraceId', 'source_trace_id'],
+  ['sourceSpanId', 'source_span_id'],
+  ['scoreTargetSpanId', 'score_target_span_id'],
 ];
 
 /** Deterministic JSON with sorted keys — canonical form for content hashing. */
@@ -162,7 +164,7 @@ export function contentRevision(cases: EvalCase[]): string {
   });
   const content = ordered.map((c) => {
     const o: Record<string, unknown> = {};
-    for (const k of CONTENT_FIELDS) o[k] = c[k] ?? null;
+    for (const [field, key] of CONTENT_FIELDS) o[key] = c[field] ?? null;
     return o;
   });
   const hash = createHash('sha256').update(canonicalJson(content)).digest('hex').slice(0, 16);
