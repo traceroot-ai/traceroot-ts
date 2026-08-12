@@ -542,6 +542,26 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
       );
     }
   }
+  // A Score row's identity IS its emitted-metric name, and the platform keys that metric's
+  // direction/threshold on the name. Two scorers resolving to the same name make the policy
+  // ambiguous, so the platform drops the metric to non-directional. Catch the static case here,
+  // before a single case runs.
+  const seen = new Map<string, number>();
+  for (const s of scorers) {
+    const n = scorerName(s);
+    seen.set(n, (seen.get(n) ?? 0) + 1);
+  }
+  const duplicated = [...seen.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([n]) => n)
+    .sort();
+  if (duplicated.length > 0) {
+    const listed = duplicated.map((n) => `'${n}'`).join(', ');
+    throw new Error(
+      `two or more scorers report the same metric name (${listed}); metric names must be ` +
+        'unique within a run. Give each scorer a distinct name (or key).',
+    );
+  }
   if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
     // Guard NaN / fractional / non-finite too: runBounded would otherwise launch zero workers and
     // silently leave every case unprocessed.

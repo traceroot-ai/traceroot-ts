@@ -245,6 +245,29 @@ export interface PlatformTransportOptions {
   baseUrl?: string;
 }
 
+/** Warn once per metric name emitted by more than one scorer DEFINITION.
+ *
+ *  The engine already rejects two scorers resolving to the same name before the run. What survives
+ *  to here is the dynamic case: a metric-map scorer whose emitted names are only known once it has
+ *  run. The platform keys a metric's direction/threshold on the metric name, so a name owned by two
+ *  definitions has ambiguous policy and is compared non-directionally. Never throws — the run has
+ *  already succeeded and the platform degrades gracefully; failing the completion would be worse. */
+function warnOnMetricNameCollisions(contributors: Map<string, string[]>): void {
+  for (const metric of [...contributors.keys()].sort()) {
+    const owners = contributors.get(metric)!;
+    if (owners.length < 2) continue;
+    const listed = [...owners]
+      .sort()
+      .map((o) => `'${o}'`)
+      .join(', ');
+    console.warn(
+      `scorers ${listed} all emit the metric name '${metric}'; the platform keys a metric's ` +
+        `direction and threshold on its name, so '${metric}' will be compared ` +
+        'non-directionally. Give each scorer a distinct metric name (or key).',
+    );
+  }
+}
+
 /** Reports an evaluation run to the TraceRoot backend. One instance per run. */
 export class PlatformTransport implements EvalTransport {
   runId: string | null = null;
@@ -399,15 +422,21 @@ export class PlatformTransport implements EvalTransport {
    *  the definition's declared policy (a scorer's declaration governs whatever metric it emits).
    *  Rebuilt from the SAME refs registration sent, so completion merges by definition name. */
   private resolvedScorerManifest(emitted: Record<string, string[]>): Record<string, unknown>[] {
-    return this.scorerRefs().map((ref) => {
+    // metric name -> the definitions that contributed it, for the uniqueness check below.
+    const contributors = new Map<string, string[]>();
+    const manifest = this.scorerRefs().map((ref) => {
       const metrics = emitted[ref.name as string];
       if (!metrics || metrics.length === 0) return ref;
       const policy: Record<string, unknown> = {};
       for (const k of ['value_type', 'direction', 'threshold'] as const) {
         if (ref[k] != null) policy[k] = ref[k];
       }
+      for (const m of metrics)
+        contributors.set(m, [...(contributors.get(m) ?? []), String(ref.name)]);
       return { ...ref, emitted_metrics: metrics.map((name) => ({ name, ...policy })) };
     });
+    warnOnMetricNameCollisions(contributors);
+    return manifest;
   }
 
   async finishRun(
