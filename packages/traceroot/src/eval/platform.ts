@@ -452,7 +452,7 @@ export class PlatformTransport implements EvalTransport {
       else entry.string_value = clamp(String(s.value), STRING_VALUE_MAX);
       if (s.comment !== undefined && s.comment !== null)
         entry.explanation = clamp(s.comment, EXPLANATION_MAX);
-      const passed = this.scorePassed(s);
+      const passed = this.scorePassed(s, item.scores.length === 1);
       if (passed !== null) entry.passed = passed;
       payload.push(entry);
     }
@@ -477,13 +477,21 @@ export class PlatformTransport implements EvalTransport {
   }
 
   /** (threshold, direction) for ONE emitted metric, or null when it can't be resolved without
-   *  guessing. A single scorer's declared policy owns whatever metric it emits, even when the
-   *  function name differs from the emitted Score name (name-agnostic). With multiple scorers the
-   *  emitted name must match a declared scorer; an unmatched metric returns null so the platform is
-   *  told 'unknown', never a fabricated pass/fail. Resolves per emitted-metric name only. */
-  private scorePolicy(name: string | null): [number | null, string] | null {
+   *  guessing. A single scorer that emitted a SINGLE metric owns it even when the function name
+   *  differs from the emitted Score name (name-agnostic). The moment that scorer emits a metric
+   *  MAP, its one declared threshold cannot own every metric, so the emitted name must match the
+   *  declaration — otherwise a `{threshold: 0.9}` scorer would stamp `passed` on an unrelated
+   *  `latency_ms: 120`. With multiple scorers the same name-match rule applies. An unmatched
+   *  metric returns null so the platform is told 'unknown', never a fabricated pass/fail. */
+  private scorePolicy(
+    name: string | null,
+    singleEmission: boolean,
+  ): [number | null, string] | null {
     const specs = this.scorerSpecs ?? [];
-    const owner = specs.length === 1 ? specs[0] : (specs.find((s) => s.name === name) ?? null);
+    const owner =
+      specs.length === 1 && singleEmission
+        ? specs[0]
+        : (specs.find((s) => s.name === name) ?? null);
     if (!owner) return null;
     // RAW declared threshold (may be null): a numeric metric with no declared threshold is scored
     // but gets no fabricated pass/fail. Direction still defaults for a declared metric.
@@ -498,10 +506,13 @@ export class PlatformTransport implements EvalTransport {
    *  threshold+direction (the same policy that decides the case status, so a single scorer's main
    *  score and its per-score `passed` always agree). Categorical, a 'none'-direction metric, or a
    *  numeric metric whose policy can't be resolved have no pass/fail -> null (never guessed). */
-  private scorePassed(score: EvalItemResult['scores'][number]): boolean | null {
+  private scorePassed(
+    score: EvalItemResult['scores'][number],
+    singleEmission = true,
+  ): boolean | null {
     if (typeof score.value === 'boolean') return score.value;
     if (typeof score.value !== 'number') return null;
-    const policy = this.scorePolicy(score.name);
+    const policy = this.scorePolicy(score.name, singleEmission);
     if (policy === null) return null;
     const [threshold, direction] = policy;
     if (threshold === null || direction === 'none') return null; // no declared threshold -> no verdict
