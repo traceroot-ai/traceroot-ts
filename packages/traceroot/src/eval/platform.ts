@@ -10,14 +10,27 @@ import type { EvalTransport, RunHandle, PublishResult } from './transport';
 
 const UNVERSIONED_SCORER = 'unversioned';
 
+/** Every HTTP call is bounded so a hung backend can't hang the whole eval (parity with the
+ *  Python SDK's 30s urlopen timeout). Overridable per call for tests. */
+export const HTTP_TIMEOUT_MS = 30_000;
+
 // --- HTTP seam (fetch) -------------------------------------------------------
-async function httpGetJson(url: string, apiKey: string): Promise<any> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+/** `res.json()` throws on an empty body; the backend answers some POSTs with no content. */
+async function parseJson(res: Response): Promise<any> {
+  const raw = await res.text();
+  return raw ? JSON.parse(raw) : {};
+}
+
+async function httpGetJson(url: string, apiKey: string, timeoutMs = HTTP_TIMEOUT_MS): Promise<any> {
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     throw new Error(`GET ${url} -> HTTP ${res.status}: ${detail}`);
   }
-  return res.json();
+  return parseJson(res);
 }
 
 export async function httpJson(
@@ -25,17 +38,19 @@ export async function httpJson(
   url: string,
   apiKey: string,
   body?: unknown,
+  timeoutMs = HTTP_TIMEOUT_MS,
 ): Promise<any> {
   const res = await fetch(url, {
     method,
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     throw new Error(`${method} ${url} -> HTTP ${res.status}: ${detail}`);
   }
-  return res.json();
+  return parseJson(res);
 }
 
 /** Result-reporting fields are backend z.string(); a non-string is JSON-encoded. */
