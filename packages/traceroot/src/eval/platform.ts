@@ -14,6 +14,41 @@ const UNVERSIONED_SCORER = 'unversioned';
  *  Python SDK's 30s urlopen timeout). Overridable per call for tests. */
 export const HTTP_TIMEOUT_MS = 30_000;
 
+// --- Contract caps (frontend/packages/core/src/eval-contract.ts) -------------
+// The backend REJECTS an over-cap field, and a 400 on one result aborts the whole run. The
+// SDK clamps at this serialization boundary instead, with an explicit marker so a consumer
+// never mistakes a cap for real data. Keep these values (and the marker) identical to the
+// Python SDK's traceroot/eval/platform.py.
+export const TRUNCATION_SUFFIX = '...[truncated]';
+export const STRING_VALUE_MAX = 2_000;
+export const EXPLANATION_MAX = 5_000;
+export const SCORE_ERROR_MAX = 5_000;
+export const TASK_ERROR_MAX = 10_000;
+export const PAYLOAD_TEXT_MAX = 1_000_000;
+export const SCORER_SOURCE_MAX = 50_000;
+export const METADATA_MAX = 64_000;
+
+/** Bound one string field to `limit` characters, marking any truncation. The result is
+ *  exactly `limit` characters long when it had to be cut. */
+function clamp(text: string | null, limit: number): string | null {
+  if (text === null || text.length <= limit) return text;
+  return text.slice(0, limit - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+}
+
+/** Bound a free-form metadata object by its SERIALIZED size (the contract's rule). Over-cap
+ *  metadata collapses to an explicit truncation marker rather than 400ing. */
+function clampMetadata(value: unknown, limit: number): unknown {
+  if (value === null || value === undefined) return value;
+  let text: string;
+  try {
+    text = JSON.stringify(value) ?? '';
+  } catch {
+    return value;
+  }
+  if (text.length <= limit) return value;
+  return { truncated: true, preview: clamp(text, limit - 32) };
+}
+
 // --- HTTP seam (fetch) -------------------------------------------------------
 /** `res.json()` throws on an empty body; the backend answers some POSTs with no content. */
 async function parseJson(res: Response): Promise<any> {
@@ -269,6 +304,10 @@ export class PlatformTransport implements EvalTransport {
         ] as const) {
           if (spec[k] != null) ref[k] = spec[k];
         }
+        // Contract-capped fields on the definition: a long captured source or a fat metadata
+        // blob must not 400 the whole registration.
+        if (ref.source != null) ref.source = clamp(String(ref.source), SCORER_SOURCE_MAX);
+        if (ref.metadata != null) ref.metadata = clampMetadata(ref.metadata, METADATA_MAX);
         return ref;
       });
     }
@@ -315,11 +354,11 @@ export class PlatformTransport implements EvalTransport {
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/results`, {
       test_case_id: item.caseId,
       trace_id: item.traceId,
-      input: asText(item.input) ?? '',
-      expected_output: asText(item.expected),
-      candidate_output: asText(item.output),
+      input: clamp(asText(item.input), PAYLOAD_TEXT_MAX) ?? '',
+      expected_output: clamp(asText(item.expected), PAYLOAD_TEXT_MAX),
+      candidate_output: clamp(asText(item.output), PAYLOAD_TEXT_MAX),
       status,
-      task_error: item.error,
+      task_error: clamp(item.error, TASK_ERROR_MAX),
       duration_ms: durationMs(item.durationMs),
       scores: this.scoresPayload(item),
     });
@@ -410,8 +449,9 @@ export class PlatformTransport implements EvalTransport {
       };
       if (typeof s.value === 'boolean') entry.bool_value = s.value;
       else if (typeof s.value === 'number') entry.numeric_value = s.value;
-      else entry.string_value = String(s.value);
-      if (s.comment !== undefined && s.comment !== null) entry.explanation = s.comment;
+      else entry.string_value = clamp(String(s.value), STRING_VALUE_MAX);
+      if (s.comment !== undefined && s.comment !== null)
+        entry.explanation = clamp(s.comment, EXPLANATION_MAX);
       const passed = this.scorePassed(s);
       if (passed !== null) entry.passed = passed;
       payload.push(entry);
@@ -422,7 +462,7 @@ export class PlatformTransport implements EvalTransport {
       payload.push({
         scorer_name: name,
         scorer_version: this.declaredVersion(name),
-        error: msg,
+        error: clamp(msg, SCORE_ERROR_MAX),
       });
     }
     return payload;
