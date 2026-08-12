@@ -416,10 +416,24 @@ export class PlatformTransport implements EvalTransport {
       if (passed !== null) entry.passed = passed;
       payload.push(entry);
     }
+    // A failing scorer is a score with an error and no value. Use the scorer's DECLARED version
+    // (from the manifest) so an errored versioned scorer isn't misattributed to 'unversioned'.
     for (const [name, msg] of Object.entries(item.scorerErrors)) {
-      payload.push({ scorer_name: name, scorer_version: UNVERSIONED_SCORER, error: msg });
+      payload.push({
+        scorer_name: name,
+        scorer_version: this.declaredVersion(name),
+        error: msg,
+      });
     }
     return payload;
+  }
+
+  /** Declared manifest version for a scorer name, or the sentinel when none was declared. */
+  private declaredVersion(name: string): string {
+    for (const spec of this.scorerSpecs ?? []) {
+      if (spec.name === name) return spec.version || UNVERSIONED_SCORER;
+    }
+    return UNVERSIONED_SCORER;
   }
 
   /** (threshold, direction) for ONE emitted metric, or null when it can't be resolved without
