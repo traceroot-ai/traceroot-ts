@@ -568,16 +568,25 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     ) {
       const { apiKey } = TraceRoot.resolveCredentials();
       if (apiKey) {
-        const res = await new PlatformDatasetSync().pushDataset(
-          data.snapshot(),
-          data.baseVersionId,
-        );
-        if (res.status === 'uploaded' && res.datasetVersionId)
-          data.datasetVersionId = res.datasetVersionId;
+        // Route through push() rather than pushDataset() directly: push() also advances
+        // baseVersionId, the optimistic-concurrency base for the NEXT push. Assigning only
+        // datasetVersionId leaves the base null, so a later explicit push() sends
+        // base_version_id: null against a dataset that now has a version — a spurious 409.
+        await data.push(new PlatformDatasetSync());
       }
     }
     const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
     if (auto === null) {
+      // autoTransport returns null for two unrelated reasons; saying "no credentials" for both
+      // misdirects a user who HAS a key but passed inline cases or an unsynced dataset.
+      if (TraceRoot.resolveCredentials().apiKey) {
+        throw new Error(
+          'evaluate() reports to the TraceRoot platform, but this run has no synced dataset to ' +
+            'report against. Pass a Dataset that was pulled or pushed (pullDataset(...) / ' +
+            'Dataset.push(...)), or pass datasetId, or pass an explicit transport (e.g. new ' +
+            'FakeTransport() to run offline).',
+        );
+      }
       throw new Error(
         'evaluate() reports to the TraceRoot platform, but no credentials were found. Set ' +
           'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass an explicit ' +
