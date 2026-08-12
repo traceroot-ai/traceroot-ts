@@ -95,6 +95,10 @@ function itemFromJSON(d: Record<string, any>): EvalItemResult {
 export interface UploadState {
   status: 'uploaded';
   dashboardUrl: string | null;
+  /** Per-case result POSTs that failed and were dropped (reporting is best-effort, so the run
+   *  still completes). Counted so a run that reports "uploaded" with silently-missing results is
+   *  detectable instead of looking green. The engine always sets it. */
+  failedResultCount?: number;
 }
 
 /** Immutable description of the exact dataset version/content a run executed. */

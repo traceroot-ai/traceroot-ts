@@ -398,7 +398,11 @@ export function writeArtifacts(
     })),
     counts: counts(result),
     scores: Object.fromEntries(Object.entries(result.scoreSummary).map(([k, v]) => [k, { ...v }])),
-    upload: { status: result.uploadState.status, dashboard_url: result.uploadState.dashboardUrl },
+    upload: {
+      status: result.uploadState.status,
+      dashboard_url: result.uploadState.dashboardUrl,
+      failed_result_count: result.uploadState.failedResultCount ?? 0,
+    },
     artifact,
     cases: result.itemResults.map((it) => caseMetadata(it)),
   };

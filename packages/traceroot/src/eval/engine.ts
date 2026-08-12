@@ -291,6 +291,7 @@ async function runCase(
   onCaseStart?: (c: EvalCase) => void,
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void,
   emittedOwnership?: Map<string, Set<string>>,
+  droppedResults?: string[],
 ): Promise<EvalItemResult> {
   onCaseStart?.(evalCase);
   try {
@@ -455,8 +456,11 @@ async function runCase(
   try {
     await transport.recordItemResult(run, result);
     await transport.recordScores(run, result.caseId, result.scores);
-  } catch {
-    // reporting is best-effort; the computed result is still returned
+  } catch (err) {
+    // Reporting is best-effort; the computed result is still returned. But a dropped result must
+    // not be invisible — it is counted onto the run's upload state, so a run that completes
+    // "uploaded" with missing results can be told apart from a clean one.
+    droppedResults?.push(fmtError(err));
   }
   onCaseComplete?.(result, result.durationMs ?? 0);
   return result;
@@ -651,6 +655,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // definition name -> the metric names it emitted, accumulated across cases (union: a metric
   // emitted by only some cases still counts). Recorded during execution, sent at completion.
   const emittedOwnership = new Map<string, Set<string>>();
+  // Per-case result POSTs the transport dropped (best-effort reporting), surfaced on the upload
+  // state so a green run with silently-missing results is detectable.
+  const droppedResults: string[] = [];
   let bodyFailed = false;
   let bodyError: unknown;
   try {
@@ -674,6 +681,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         options.onCaseStart,
         onCaseComplete,
         emittedOwnership,
+        droppedResults,
       );
     });
     itemResults = raw.filter((r): r is EvalItemResult => r !== null);
@@ -700,7 +708,10 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     const emitted: Record<string, string[]> = {};
     for (const [def, metrics] of emittedOwnership) emitted[def] = [...metrics].sort();
     try {
-      uploadState = await active.finishRun(run, status, emitted);
+      uploadState = {
+        ...(await active.finishRun(run, status, emitted)),
+        failedResultCount: droppedResults.length,
+      };
     } catch (completionErr) {
       if (!bodyFailed) {
         // The run itself succeeded: one clear error naming the completion failure, with the
