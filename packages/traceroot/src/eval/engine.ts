@@ -25,7 +25,7 @@ import { EvalTransport, RunHandle } from './transport';
 import { PlatformTransport } from './platform';
 import { PlatformDatasetSync } from './dataset_sync';
 import { collectRunProvenance } from './provenance';
-import { declaredVersion, describeScorers } from './scorers';
+import { declaredVersion, describeScorers, scorerName } from './scorers';
 import { newRunId } from './ids';
 import { ConsoleProgress, printRunUrl, shouldShowProgress } from './progress';
 
@@ -354,7 +354,10 @@ async function runCase(
         };
         try {
           for (const scorer of scorers) {
-            const name = fnName(scorer, 'scorer');
+            // The DECLARED name (same resolver the manifest uses) — the emitted Score, the
+            // ownership key and the registered definition must agree or the platform drops the
+            // metric's policy.
+            const name = scorerName(scorer);
             // Record scorer->metric ownership AT THE POINT OF PRODUCTION (never inferred afterward
             // by matching names). Seed the definition now so a scorer that throws before emitting
             // still appears in the completion manifest with no metrics.
@@ -462,7 +465,7 @@ async function runRunScorers(
   if (!runScorers || runScorers.length === 0) return { runScores, runScorerErrors };
   const view: RunView = { name, itemResults, scoreSummary: summary };
   for (const rs of runScorers) {
-    const rname = fnName(rs, 'run_scorer');
+    const rname = scorerName(rs, 'run_scorer');
     try {
       const raw = await Promise.resolve(rs(view));
       runScores.push(...normalizeScoreLike(raw, rname));
@@ -496,7 +499,7 @@ function autoTransport(
   const { apiKey } = TraceRoot.resolveCredentials();
   if (!apiKey) return null;
   return new PlatformTransport(effectiveId, {
-    scorerNames: scorers.map((s) => fnName(s, 'scorer')),
+    scorerNames: scorers.map((s) => scorerName(s)),
     candidateVersion: candidateVersion ?? null,
     environment,
     datasetVersionId: versionId,
@@ -515,6 +518,16 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   if (!scorers || scorers.length === 0) throw new Error('evaluate() requires at least one scorer');
   for (const s of scorers) {
     if (typeof s !== 'function') throw new Error(`scorer ${String(s)} is not a function`);
+    // A TS scorer is called as scorer(ctx). A Python-style positional (input, output) signature
+    // would bind input=ScorerContext, output=undefined and score every case wrong with no error,
+    // so reject it here instead of at read time. A destructured ({input, output}) arrow declares
+    // one parameter and passes; two-or-more declared parameters cannot be the context form.
+    if (s.length >= 2) {
+      throw new Error(
+        `scorer ${scorerName(s)} takes a single ScorerContext — destructure it: ` +
+          '({ input, output, expected, metadata }) => ...',
+      );
+    }
   }
   if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
     // Guard NaN / fractional / non-finite too: runBounded would otherwise launch zero workers and

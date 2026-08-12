@@ -181,8 +181,23 @@ export function declaredVersion(fn: Scorer): string | null {
   return declared(fn, 'version') ?? null;
 }
 
-function fnName(fn: Scorer): string {
-  return fn.name && fn.name.length > 0 ? fn.name : 'scorer';
+/**
+ * The ONE place a scorer's reported name is resolved: declared name -> function name -> fallback.
+ * Every site that names a scorer (the emitted Score, the scorer->metric ownership map, the span,
+ * the registration/completion manifest) must route through this, or the platform sees a metric it
+ * cannot attribute to its definition. `''` counts as absent at every step: an arrow passed as a
+ * call argument has the built-in `fn.name === ''`, which would otherwise land in `key` (the
+ * identity field) and collapse distinct scorers onto one name.
+ */
+export function scorerName(fn: NamedCallable, fallback = 'scorer'): string {
+  return declared(fn as Scorer, 'name') || fnName(fn, fallback);
+}
+
+/** Any callable we name (a scorer, a run scorer). */
+type NamedCallable = { name?: string } & ((...args: never[]) => unknown);
+
+function fnName(fn: NamedCallable, fallback = 'scorer'): string {
+  return fn.name && fn.name.length > 0 ? fn.name : fallback;
 }
 
 /** The scorer's source verbatim (via `Function.prototype.toString`), or null for native fns. */
@@ -197,8 +212,8 @@ function captureSource(fn: Scorer): string | null {
  * Absent fields are null (shared) / omitted (type-specific), never fabricated.
  */
 export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDescriptor {
-  const name = declared(fn, 'name') ?? fnName(fn);
-  const key = declared(fn, 'key') ?? name; // stable semantic identity; defaults to the definition name
+  const name = scorerName(fn);
+  const key = declared(fn, 'key') || name; // stable semantic identity; defaults to the definition name
   const declaredOutput: OutputType | null = declared(fn, 'outputType') ?? null;
   // value type: declared > runtime hint > inferred from outputType. Inferring from outputType
   // (score -> numeric, classification -> categorical) keeps an llmJudge that only declares
@@ -263,7 +278,7 @@ export function describeScorers(
 ): ScorerDescriptor[] {
   // Key the hint lookup by the DECLARED name (what the rendered descriptor uses), not the raw
   // implementation function name — otherwise a scorer(fn, { name }) never receives its hint.
-  return scorers.map((s) => scorerMetadata(s, valueTypes[declared(s, 'name') ?? fnName(s)]));
+  return scorers.map((s) => scorerMetadata(s, valueTypes[scorerName(s)]));
 }
 
 // --- LLM-judge scorer ----------------------------------------------------------------
