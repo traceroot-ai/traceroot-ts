@@ -45,21 +45,32 @@ export type OnExisting = (info: ExistingDatasetInfo) => boolean | Promise<boolea
 /** Default double-check before adding a version to an EXISTING dataset. A dataset's identity is its
  *  name, so re-pushing the same name updates the SAME dataset with a NEW version — usually intended,
  *  but easy to do by accident with a reused name. On an interactive TTY we ask first (default `no`,
- *  so an accidental Enter never publishes); non-interactive contexts (CI, pipes) proceed silently,
- *  and `TRACEROOT_ASSUME_YES=1` skips the prompt everywhere. Mirrors Python `_confirm_new_version`. */
-async function confirmNewVersion(info: ExistingDatasetInfo): Promise<boolean> {
+ *  so neither an accidental Enter nor an EOF ever publishes); non-interactive contexts (CI, pipes)
+ *  proceed silently, and `TRACEROOT_ASSUME_YES=1` skips the prompt everywhere. Mirrors Python
+ *  `_confirm_new_version`. The streams are injectable so the prompt itself is testable. */
+export async function confirmNewVersion(
+  info: ExistingDatasetInfo,
+  input: NodeJS.ReadStream = process.stdin,
+  output: NodeJS.WritableStream = process.stdout,
+): Promise<boolean> {
   const yes = new Set(['1', 'true', 'yes']);
   if (yes.has((process.env.TRACEROOT_ASSUME_YES ?? '').trim().toLowerCase())) return true;
-  if (!process.stdin.isTTY) return true;
+  if (!input.isTTY) return true;
   const readline = await import('node:readline/promises');
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline.createInterface({ input, output });
   try {
     const name = info.name ?? '?';
     const ver = info.current_dataset_version_id ?? null;
-    const ans = await rl.question(
-      `Dataset '${name}' already exists (current version ${ver}). Publish a NEW version? [y/N] `,
-    );
-    return ['y', 'yes'].includes(ans.trim().toLowerCase());
+    // EOF (^D) or a stream that closes under us is NO answer at all, so it declines like a bare
+    // Enter — an unread prompt must never publish (parity with Python's EOFError branch).
+    const closed = new Promise<null>((resolve) => rl.once('close', () => resolve(null)));
+    const ans = await Promise.race([
+      rl.question(
+        `Dataset '${name}' already exists (current version ${ver}). Publish a NEW version? [y/N] `,
+      ),
+      closed,
+    ]);
+    return ans === null ? false : ['y', 'yes'].includes(ans.trim().toLowerCase());
   } finally {
     rl.close();
   }

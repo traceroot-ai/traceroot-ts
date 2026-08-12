@@ -98,6 +98,8 @@ describe('push seam', () => {
 
 // --- Existing-dataset confirmation on push (parity with test_dataset_sync.py) ---------------
 import { PlatformDatasetSync, DatasetPublishAborted } from '../src/eval';
+import { confirmNewVersion } from '../src/eval/dataset_sync';
+import { PassThrough } from 'node:stream';
 
 function mockPlatformSync(exists: boolean, publishedRev: string | null = 'rev_different') {
   const sync = Object.create(PlatformDatasetSync.prototype) as PlatformDatasetSync & {
@@ -173,5 +175,20 @@ describe('existing-dataset confirmation on push (TS)', () => {
     const sync = mockPlatformSync(true); // existing, but no onExisting -> default confirmer
     const res = await sync.pushDataset(snap(), null); // process.stdin.isTTY is falsy in the test env
     assert.equal(res.datasetVersionId, 'dsv_10');
+  });
+
+  it('default confirmer declines on EOF at the prompt', async () => {
+    // The prompt defaults to NO; EOF is no answer at all, so it must decline too. Answering
+    // "yes" to a question nobody read is exactly the accidental publish the prompt prevents.
+    delete process.env['TRACEROOT_ASSUME_YES'];
+    const input = new PassThrough();
+    (input as unknown as { isTTY: boolean }).isTTY = true;
+    input.end(); // EOF: no answer will ever arrive
+    const answered = confirmNewVersion(
+      { name: 'd', current_dataset_version_id: 'dsv_9' },
+      input as unknown as NodeJS.ReadStream,
+      new PassThrough(), // swallow the prompt instead of writing it to the test output
+    );
+    assert.equal(await answered, false);
   });
 });
