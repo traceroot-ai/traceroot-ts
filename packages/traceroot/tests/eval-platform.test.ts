@@ -174,6 +174,46 @@ describe('reporting (cloud-only)', () => {
     assert.equal('main_score_name' in done.body, false);
   });
 
+  it('a snapshot of a synced dataset reports exactly like the dataset', async () => {
+    // Parity with Python's _auto_transport: a DatasetSnapshot carrying baseVersionId is a synced
+    // dataset, so `evaluate(dataset.snapshot())` reports instead of failing "no synced dataset".
+    mockBackend({});
+    const ds = new Dataset('d');
+    ds.datasetId = 'ds_1';
+    ds.datasetVersionId = 'dsv_1';
+    ds.baseVersionId = 'dsv_1'; // pushed/pulled: the snapshot inherits the pinned version
+    ds.upsert({ input: 1, id: 'c0', expected: 1 });
+    const snap = ds.snapshot();
+
+    const result = await evaluate({ name: 'r', dataset: snap, task: echo, scorers: [exact] });
+
+    assert.equal(result.uploadState.status, 'uploaded');
+    assert.equal(result.runId, 'run_1');
+    const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
+    assert.equal(reg.body.dataset_version_id, 'dsv_1');
+    assert.equal(reg.body.dataset_id, 'ds_1'); // reported against the snapshot's dataset
+    assert.ok(calls.some((c) => c.url.endsWith('/complete')));
+    assert.equal(result.dataset.revision, snap.revision);
+    assert.equal(result.dataset.datasetVersionId, 'dsv_1');
+  });
+
+  it('a snapshot with no version id is unsynced -> no upload', async () => {
+    // Negative guard, also Python parity: a locally-authored dataset's snapshot carries no
+    // baseVersionId, so it stays unsynced (no auto-provision for a snapshot) and the run raises
+    // the "no synced dataset" cause rather than uploading.
+    mockBackend({});
+    const ds = new Dataset('local');
+    ds.add(1, { expected: 1 });
+    await assert.rejects(
+      () => evaluate({ name: 'r', dataset: ds.snapshot(), task: echo, scorers: [exact] }),
+      /synced dataset/,
+    );
+    assert.equal(
+      calls.some((c) => c.url.endsWith('/evaluation-runs') || c.url.endsWith('/versions')),
+      false,
+    );
+  });
+
   it('never sends a baseline_run_id (comparison is the backend’s job)', async () => {
     mockBackend({});
     const ds = new Dataset('d');

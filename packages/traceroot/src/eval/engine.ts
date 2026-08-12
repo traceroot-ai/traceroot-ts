@@ -10,7 +10,7 @@ import { startSpan, usingSpan, Span } from '../spans';
 import type { Tracer } from '@opentelemetry/api';
 import { context, ROOT_CONTEXT } from '@opentelemetry/api';
 import { evalTracer } from './tracer';
-import { Dataset, DeferredScore, EvalCase, Score, ScorerContext } from './types';
+import { Dataset, DatasetSnapshot, DeferredScore, EvalCase, Score, ScorerContext } from './types';
 import {
   EvalItemResult,
   EvalRunResult,
@@ -41,9 +41,9 @@ export type ScorerFn = (ctx: ScorerContext) => ScoreLike | Promise<ScoreLike>;
 
 export interface EvaluateOptions {
   name: string;
-  /** The dataset (or inline cases) to run. `data` is a back-compat alias of `dataset`. */
-  dataset?: Dataset | EvalCase[];
-  data?: Dataset | EvalCase[];
+  /** The dataset, an immutable snapshot of one, or inline cases. `data` aliases `dataset`. */
+  dataset?: Dataset | DatasetSnapshot | EvalCase[];
+  data?: Dataset | DatasetSnapshot | EvalCase[];
   task: TaskFn;
   scorers: ScorerFn[];
   candidateVersion?: string;
@@ -97,8 +97,21 @@ function attachCompletionFailure(bodyError: unknown, completionErr: unknown): vo
   }
 }
 
-function normalizeData(data: Dataset | EvalCase[]): EvalCase[] {
-  const raw = data instanceof Dataset ? [...data] : data;
+/** A DatasetSnapshot is a frozen plain object (no class), so it is recognized structurally —
+ *  Python gets the same discrimination from `isinstance(data, DatasetSnapshot)`. */
+function isDatasetSnapshot(data: unknown): data is DatasetSnapshot {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    !Array.isArray(data) &&
+    !(data instanceof Dataset) &&
+    Array.isArray((data as DatasetSnapshot).cases) &&
+    typeof (data as DatasetSnapshot).revision === 'string'
+  );
+}
+
+function normalizeData(data: Dataset | DatasetSnapshot | EvalCase[]): EvalCase[] {
+  const raw = data instanceof Dataset ? [...data] : isDatasetSnapshot(data) ? data.cases : data;
   return raw.map((c, i) => {
     if (typeof c !== 'object' || c === null || !('input' in c)) {
       throw new Error(`dataset item at index ${i} is missing required 'input'`);
@@ -467,7 +480,7 @@ async function runCase(
  * SDK cannot create server-side); the caller turns that into a clear error (cloud-only).
  */
 function autoTransport(
-  data: Dataset | EvalCase[],
+  data: Dataset | DatasetSnapshot | EvalCase[],
   datasetId: string | undefined,
   scorers: ScorerFn[],
   candidateVersion: string | undefined,
@@ -477,6 +490,12 @@ function autoTransport(
   let versionId: string | null = null;
   if (data instanceof Dataset) {
     versionId = data.datasetVersionId ?? null;
+    if (effectiveId === undefined && data.datasetId && versionId !== null)
+      effectiveId = data.datasetId;
+  } else if (isDatasetSnapshot(data)) {
+    // A snapshot taken from a synced dataset carries baseVersionId; treat it like a synced
+    // Dataset so `evaluate(dataset.snapshot())` reports instead of failing "no synced dataset".
+    versionId = data.baseVersionId;
     if (effectiveId === undefined && data.datasetId && versionId !== null)
       effectiveId = data.datasetId;
   }
@@ -544,9 +563,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   if (options.select) cases = cases.filter(options.select);
   if (cases.length === 0) throw new Error('evaluate() requires at least one case to run');
 
-  const datasetName = data instanceof Dataset ? data.name : INLINE_DATASET;
+  // A snapshot already IS the immutable description of what ran, so its own name/revision are
+  // reported verbatim rather than re-derived (Python: _to_snapshot returns `data` unchanged).
+  const snapshot = isDatasetSnapshot(data) ? data : null;
+  const datasetName = data instanceof Dataset ? data.name : (snapshot?.name ?? INLINE_DATASET);
   const snapshotRevision =
-    data instanceof Dataset ? data.snapshot().revision : `local-${cases.length}`;
+    data instanceof Dataset
+      ? data.snapshot().revision
+      : (snapshot?.revision ?? `local-${cases.length}`);
   // A run is not identified by which SDK produced it, so no SDK-language identity is reported.
   // But git/CI provenance (commit/branch/dirty, CI build) is NON-IDENTITY reproducibility
   // metadata — it rides the wire as free-form run metadata (user keys win on conflict), so the
@@ -617,8 +641,11 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   const identity: RunIdentity = {
     name,
     datasetName,
-    datasetId: options.datasetId ?? (data instanceof Dataset ? data.datasetId : 'ds_inline'),
-    datasetVersionId: data instanceof Dataset ? (data.datasetVersionId ?? null) : null,
+    datasetId:
+      options.datasetId ??
+      (data instanceof Dataset ? data.datasetId : (snapshot?.datasetId ?? 'ds_inline')),
+    datasetVersionId:
+      data instanceof Dataset ? (data.datasetVersionId ?? null) : (snapshot?.baseVersionId ?? null),
     candidateVersion: candidateVersion ?? null,
     environment,
     runId: active.runId ?? null,
