@@ -11,7 +11,7 @@ import {
   compareCodePoints,
   normalize,
 } from './canonical';
-import { newTestCaseId, stableCaseId, stableDatasetId } from './ids';
+import { stableCaseId, stableDatasetId } from './ids';
 
 /**
  * A runnable test case. Only `input` is required. `expected` is always optional and is
@@ -184,6 +184,19 @@ export class Dataset {
   }
 
   // --- authoring / mutation (network-free) ---
+  /** The stable content id for `input`: dataset key + canonical input + first free occurrence.
+   *  Shared by add() and upsert() so both converge on the same id. */
+  private contentId(input: unknown): string {
+    const canonical = canonicalJson(input);
+    let occurrence = 0;
+    let cid = stableCaseId(this.key, canonical, occurrence);
+    while (this.casesById.has(cid)) {
+      occurrence += 1;
+      cid = stableCaseId(this.key, canonical, occurrence);
+    }
+    return cid;
+  }
+
   add(
     input: unknown,
     opts: {
@@ -199,18 +212,7 @@ export class Dataset {
     // removing/reordering other cases does not shift this case's id. Duplicate inputs are
     // disambiguated by occurrence (the first free slot), collision-free across removes.
     validatePayload({ input, expected: opts.expected, metadata: opts.metadata });
-    let cid: string;
-    if (opts.id) {
-      cid = opts.id;
-    } else {
-      const canonical = canonicalJson(input);
-      let occurrence = 0;
-      cid = stableCaseId(this.key, canonical, occurrence);
-      while (this.casesById.has(cid)) {
-        occurrence += 1;
-        cid = stableCaseId(this.key, canonical, occurrence);
-      }
-    }
+    const cid = opts.id ? opts.id : this.contentId(input);
     if (this.casesById.has(cid)) throw new Error(`test case id already exists: ${cid}`);
     const c: EvalCase = {
       input,
@@ -224,10 +226,17 @@ export class Dataset {
     return c;
   }
 
-  /** Add or replace by id; anonymous cases get a stable ULID id. */
+  /**
+   * Add or replace by id.
+   *
+   * An anonymous case gets the SAME content-derived id add() would give it, not a fresh random
+   * one: a random id would fork the case into a new server case on every process, which is
+   * exactly what content-addressed ids exist to prevent.
+   */
   upsert(evalCase: EvalCase): EvalCase {
     validatePayload(evalCase);
-    const stored = evalCase.id == null ? { ...evalCase, id: newTestCaseId() } : evalCase;
+    const stored =
+      evalCase.id == null ? { ...evalCase, id: this.contentId(evalCase.input) } : evalCase;
     this.casesById.set(stored.id as string, stored);
     return stored;
   }
@@ -291,35 +300,45 @@ export class Dataset {
   toJSON(): {
     datasetId: string;
     name: string;
+    key: string;
     description: string | null;
     baseVersionId: string | null;
+    datasetVersionId: string | null;
     cases: EvalCase[];
   } {
     return {
       datasetId: this.datasetId,
       name: this.name,
+      // The key is what every case id is derived from, so it must survive save/load: without it
+      // a reloaded dataset falls back to `name` and every case added afterwards gets an id that
+      // no longer converges with locally authored ones.
+      key: this.key,
       description: this.description,
       baseVersionId: this.baseVersionId,
+      // fromJSON reads this back, so dropping it here loses the remote binding — and evaluate()'s
+      // auto-provision guard then re-pushes an already-synced dataset.
+      datasetVersionId: this.datasetVersionId ?? null,
       cases: [...this.casesById.values()], // incl. archived
     };
   }
 
   static fromJSON(d: {
     name: string;
+    key?: string | null;
     description?: string | null;
     datasetId?: string;
     baseVersionId?: string | null;
-    datasetVersionId?: string;
+    datasetVersionId?: string | null;
     cases?: EvalCase[];
   }): Dataset {
-    const ds = new Dataset(d.name, d.description ?? null);
+    const ds = new Dataset(d.name, d.description ?? null, { key: d.key ?? undefined });
     if (d.datasetId) ds.datasetId = d.datasetId;
     ds.baseVersionId = d.baseVersionId ?? null;
-    ds.datasetVersionId = d.datasetVersionId;
-    // Anonymous cases (no id) each get a generated id — otherwise every one keys on `undefined`
+    ds.datasetVersionId = d.datasetVersionId ?? undefined;
+    // Anonymous cases (no id) each get a content id — otherwise every one keys on `undefined`
     // and all but the last silently collapse. Mirrors upsert().
     for (const c of d.cases ?? []) {
-      const stored = c.id == null ? { ...c, id: newTestCaseId() } : c;
+      const stored = c.id == null ? { ...c, id: ds.contentId(c.input) } : c;
       ds.casesById.set(stored.id as string, stored);
     }
     return ds;
@@ -332,8 +351,10 @@ export class Dataset {
         type: 'dataset',
         datasetId: this.datasetId,
         name: this.name,
+        key: this.key,
         description: this.description,
         baseVersionId: this.baseVersionId,
+        datasetVersionId: this.datasetVersionId ?? null,
         schema: 1,
       };
       // Serialize through the canonical form (not raw JSON.stringify) so a Date/Map/Set survives
@@ -360,8 +381,10 @@ export class Dataset {
       return Dataset.fromJSON({
         datasetId: header.datasetId,
         name: header.name,
+        key: header.key,
         description: header.description,
         baseVersionId: header.baseVersionId,
+        datasetVersionId: header.datasetVersionId,
         cases: records.slice(1).map((r) => {
           const { type: _t, ...rest } = r;
           return rest as EvalCase;

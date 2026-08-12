@@ -4,6 +4,7 @@
 
 import { TraceRoot } from '../traceroot';
 import { Dataset } from './types';
+import { stableDatasetId } from './ids';
 import { caseStatus } from './results';
 import type { EvalItemResult, UploadState } from './results';
 import type { EvalTransport, RunHandle, PublishResult } from './transport';
@@ -105,11 +106,25 @@ export interface PullOptions {
   baseUrl?: string;
 }
 
+/**
+ * The dataset's authoring key, when it can be PROVEN from what the platform returned.
+ *
+ * The key is only ever hashed into the dataset id, never sent, so it is recoverable exactly when
+ * the display name still hashes to that id (the default `key === name` case). A dataset published
+ * under an explicit key, or renamed since, is not recoverable — and guessing would hand every
+ * subsequently added case a divergent id, so the caller falls back to the dataset id (unambiguous
+ * and stable) instead of a plausible lie.
+ */
+function recoveredKey(name: string, datasetId: string | undefined): string | undefined {
+  return datasetId && stableDatasetId(name) === datasetId ? name : undefined;
+}
+
 function datasetFromVersion(snapshot: any, name: string): Dataset {
   // Native JSON at the HTTP boundary: the backend already JSON-decodes input/expected
   // before returning them, so the SDK takes the values as-is (no re-decode).
-  const ds = new Dataset(name);
-  ds.datasetId = snapshot.dataset_id ?? undefined;
+  const datasetId = snapshot.dataset_id ?? undefined;
+  const ds = new Dataset(name, null, { key: recoveredKey(name, datasetId) ?? datasetId });
+  ds.datasetId = datasetId;
   ds.datasetVersionId = snapshot.dataset_version_id ?? undefined;
   for (const item of snapshot.items ?? []) {
     ds.upsert({
