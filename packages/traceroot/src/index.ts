@@ -50,6 +50,7 @@ export {
   reproduceRunSnippet,
   DatasetConflictError,
   DatasetPublishAborted,
+  EvalCompletionError,
   LocalDatasetSync,
   FakeDatasetSync,
   PlatformDatasetSync,

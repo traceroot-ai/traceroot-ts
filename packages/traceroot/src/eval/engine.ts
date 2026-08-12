@@ -21,7 +21,7 @@ import {
   makeRunResult,
   UploadState,
 } from './results';
-import { EvalTransport, RunHandle } from './transport';
+import { EvalCompletionError, EvalTransport, RunHandle } from './transport';
 import { PlatformTransport } from './platform';
 import { PlatformDatasetSync } from './dataset_sync';
 import { collectRunProvenance } from './provenance';
@@ -91,6 +91,15 @@ const ZERO_TRACE_ID = /^0+$/;
 
 function fmtError(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
+/** Attach a completion failure to the error the run ALREADY failed with, as secondary context.
+ *  The original error keeps propagating unchanged — a failed /complete must never be the error
+ *  the user reads first. */
+function attachCompletionFailure(bodyError: unknown, completionErr: unknown): void {
+  if (typeof bodyError === 'object' && bodyError !== null) {
+    (bodyError as { completionError?: unknown }).completionError = completionErr;
+  }
 }
 
 function normalizeData(data: Dataset | EvalCase[]): EvalCase[] {
@@ -635,12 +644,15 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   }
 
   let itemResults: EvalItemResult[] = [];
-  let uploadState: UploadState;
+  // Definitely assigned before any use: the finally below either assigns it or throws.
+  let uploadState!: UploadState;
   let cancelled = false;
   let summary: Record<string, ScoreSummary> = {};
   // definition name -> the metric names it emitted, accumulated across cases (union: a metric
   // emitted by only some cases still counts). Recorded during execution, sent at completion.
   const emittedOwnership = new Map<string, Set<string>>();
+  let bodyFailed = false;
+  let bodyError: unknown;
   try {
     const raw = await runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
@@ -672,15 +684,35 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     if (!cancelled) {
       summary = aggregateScores(itemResults);
     }
+  } catch (err) {
+    bodyFailed = true; // remembered, then re-thrown untouched
+    bodyError = err;
+    throw err;
   } finally {
     reporter?.finish();
     // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
     // A cancelled run closes 'incomplete', so a registered run is never left orphaned in 'running'.
-    // Runs AFTER all in-flight cases above have settled.
+    // Runs AFTER all in-flight cases above have settled. Completion is the LAST thing to run, so
+    // it must never become the story: if the run already failed, the original error keeps
+    // propagating and the completion failure rides along on it (it used to REPLACE the real
+    // cause — a /complete 400 buried the actual exception).
     const status = cancelled ? 'incomplete' : null;
     const emitted: Record<string, string[]> = {};
     for (const [def, metrics] of emittedOwnership) emitted[def] = [...metrics].sort();
-    uploadState = await active.finishRun(run, status, emitted);
+    try {
+      uploadState = await active.finishRun(run, status, emitted);
+    } catch (completionErr) {
+      if (!bodyFailed) {
+        // The run itself succeeded: one clear error naming the completion failure, with the
+        // transport error carried as data rather than chained into a cause chain.
+        throw new EvalCompletionError(
+          'the evaluation ran but the run could not be finalized on the platform: ' +
+            `${fmtError(completionErr)}. The run stays 'running' until a retry completes it.`,
+          completionErr,
+        );
+      }
+      attachCompletionFailure(bodyError, completionErr);
+    }
   }
   if (cancelled) {
     // Surface the run's real identity + upload so the caller's partial artifact stays associated

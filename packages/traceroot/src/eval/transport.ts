@@ -6,6 +6,25 @@
 import type { EvalCase, Score } from './types';
 import type { EvalItemResult, UploadState } from './results';
 
+/**
+ * The evaluation ran, but the run could not be finalized on the platform.
+ *
+ * Thrown ONLY when the run itself succeeded. A completion failure never replaces the error a run
+ * already failed with — that one propagates, carrying the completion failure on its
+ * `completionError` property — so the real cause is never buried under a 400 from /complete. The
+ * underlying transport error is held as data rather than as `cause`, so the user reads one error
+ * instead of a chain.
+ */
+export class EvalCompletionError extends Error {
+  constructor(
+    message: string,
+    readonly completionError: unknown,
+  ) {
+    super(message);
+    this.name = 'EvalCompletionError';
+  }
+}
+
 /** Opaque handle for one evaluation run, returned by createRun. */
 export interface RunHandle {
   name: string;
