@@ -7,6 +7,32 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 import type { Score } from './types';
 
+// --- Python-identical rendering for summary() --------------------------------
+/** Python `repr()` of a string: single quotes, switching to double quotes when the value
+ *  contains a single quote (and no double quote). */
+function pyRepr(s: string): string {
+  const body = s
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+  if (body.includes("'") && !body.includes('"')) return `"${body}"`;
+  return `'${body.replace(/'/g, "\\'")}'`;
+}
+
+/** Python's `f"{v:.4g}"` — 4 significant digits, trailing zeros stripped, two-digit signed
+ *  exponent outside the fixed range. */
+function formatG4(v: number): string {
+  if (!Number.isFinite(v)) return Number.isNaN(v) ? 'nan' : v > 0 ? 'inf' : '-inf';
+  const sci = v.toExponential(3); // e.g. "8.333e-1"
+  const exp = Number(sci.slice(sci.indexOf('e') + 1));
+  const strip = (t: string) => (t.includes('.') ? t.replace(/\.?0+$/, '') : t);
+  if (exp >= -4 && exp < 4) return strip(v.toFixed(Math.max(0, 3 - exp)));
+  const mantissa = strip(sci.slice(0, sci.indexOf('e')));
+  const sign = exp < 0 ? '-' : '+';
+  return `${mantissa}e${sign}${String(Math.abs(exp)).padStart(2, '0')}`;
+}
+
 /** The outcome of running one case: task output plus every scorer result. */
 export interface EvalItemResult {
   caseId: string;
@@ -371,14 +397,16 @@ export class EvalRunResult {
     return this;
   }
 
+  /** Byte-identical to Python's `EvalRunResult.__str__` — same field order, `repr`-quoted run
+   *  name, and `%.4g` means — so one harness can diff two SDKs' output verbatim. */
   summary(): string {
     const head =
-      `EvalRunResult(name=${this.name}, cases=${this.caseCount}, errored=${this.errored}, ` +
+      `EvalRunResult(name=${pyRepr(this.name)}, cases=${this.caseCount}, errored=${this.errored}, ` +
       `not_scored=${this.notScored}, ` +
       `task_errors=${this.taskErrorCount}, upload=${this.uploadState.status})`;
     const lines = [head];
     for (const [name, s] of Object.entries(this.scoreSummary)) {
-      const mean = s.mean === null ? 'n/a' : String(s.mean);
+      const mean = s.mean === null ? 'n/a' : formatG4(s.mean);
       lines.push(`  ${name}: mean=${mean} count=${s.count}`);
     }
     return lines.join('\n');

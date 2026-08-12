@@ -119,7 +119,8 @@ describe('counts block (Python parity)', () => {
   it('summary() head matches Python __str__', () => {
     assert.equal(
       run.summary().split('\n')[0],
-      'EvalRunResult(name=r, cases=3, errored=2, not_scored=1, task_errors=1, upload=uploaded)',
+      // Python repr-quotes the run name; the head is byte-identical, not merely shaped alike.
+      "EvalRunResult(name='r', cases=3, errored=2, not_scored=1, task_errors=1, upload=uploaded)",
     );
   });
 });
