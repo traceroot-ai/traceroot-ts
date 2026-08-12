@@ -203,7 +203,10 @@ export class PlatformTransport implements EvalTransport {
 
   // Per-case contribution keyed by test_case_id, so a retried case (or a repeated upload() with
   // the same transport) REPLACES its contribution instead of double-counting the completion totals.
-  private readonly contrib = new Map<string, { taskError: boolean; scorerErrors: number }>();
+  private readonly contrib = new Map<
+    string,
+    { taskError: boolean; scorerErrors: number; scored: boolean }
+  >();
 
   constructor(datasetId: string, opts: PlatformTransportOptions = {}) {
     const { apiKey, baseUrl } = TraceRoot.resolveCredentials(opts.apiKey, opts.baseUrl);
@@ -310,6 +313,9 @@ export class PlatformTransport implements EvalTransport {
     this.contrib.set(item.caseId, {
       taskError: item.error !== null,
       scorerErrors: Object.keys(item.scorerErrors).length,
+      // A case that produced at least one score (and no task error) counts toward scored_count;
+      // it is a COMPLETENESS count, not a pass/fail rollup (every score carries its own `passed`).
+      scored: item.error === null && item.scores.length > 0,
     });
   }
 
@@ -342,19 +348,21 @@ export class PlatformTransport implements EvalTransport {
   ): Promise<UploadState> {
     // Pure reporter: the engine passes the terminal status (e.g. 'incomplete' on cancellation).
     // Derive the completion aggregate from the per-case map, so counts always match the distinct
-    // cases actually persisted (no inflation from retries/replays). There is no headline pass/fail,
-    // so scored_count is 0 — per-metric verdicts live on each score's `passed`.
+    // cases actually persisted (no inflation from retries/replays). scored_count rides the same
+    // map: it reports how many cases produced a score, not how many "passed".
     let taskErrors = 0;
     let scorerErrors = 0;
+    let scored = 0;
     for (const c of this.contrib.values()) {
       if (c.taskError) taskErrors += 1;
       scorerErrors += c.scorerErrors;
+      if (c.scored) scored += 1;
     }
     const status =
       statusOverride ?? (taskErrors || scorerErrors ? 'completed_with_errors' : 'completed');
     const body: Record<string, unknown> = {
       status,
-      scored_count: 0,
+      scored_count: scored,
       task_error_count: taskErrors,
       scorer_error_count: scorerErrors,
     };

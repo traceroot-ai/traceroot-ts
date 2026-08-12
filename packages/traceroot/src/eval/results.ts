@@ -187,9 +187,6 @@ export class EvalRunResult {
   private byStatus(status: string): EvalItemResult[] {
     return this.itemResults.filter((it) => caseStatus(it) === status);
   }
-  failures(): EvalItemResult[] {
-    return this.byStatus('failed');
-  }
   errors(): EvalItemResult[] {
     return this.itemResults.filter(
       (it) => it.error !== null || Object.keys(it.scorerErrors).length > 0,
@@ -198,11 +195,10 @@ export class EvalRunResult {
   get caseCount(): number {
     return this.itemResults.length;
   }
-  get passed(): number {
-    return this.byStatus('passed').length;
-  }
-  get failed(): number {
-    return this.byStatus('failed').length;
+  // caseStatus is errored | not_scored — there is no case-level pass/fail to count, so these
+  // are the only two status tallies (Python results.py `errored`/`not_scored`).
+  get errored(): number {
+    return this.byStatus('errored').length;
   }
   get notScored(): number {
     return this.byStatus('not_scored').length;
@@ -212,9 +208,6 @@ export class EvalRunResult {
   }
   get scorerErrorCount(): number {
     return this.itemResults.reduce((n, it) => n + Object.keys(it.scorerErrors).length, 0);
-  }
-  get scoredCount(): number {
-    return this.passed + this.failed;
   }
 
   // --- serialization (Python-identical snake_case artifact) ---
@@ -235,9 +228,7 @@ export class EvalRunResult {
         : null,
       counts: {
         case_count: this.caseCount,
-        scored_count: this.scoredCount,
-        passed: this.passed,
-        failed: this.failed,
+        errored: this.errored,
         not_scored: this.notScored,
         task_errors: this.taskErrorCount,
         scorer_errors: this.scorerErrorCount,
@@ -354,7 +345,15 @@ export class EvalRunResult {
       if (!this.dataset)
         throw new Error('run.upload() needs a dataset ref or an explicit transport');
       active = new PlatformTransport(this.dataset.datasetId, {
-        scorerNames: Object.keys(this.scoreSummary),
+        // Include scorers that produced scores AND ones that errored on every case (absent
+        // from scoreSummary), so an all-failing scorer still appears in run registration.
+        scorerNames: [
+          ...new Set([
+            ...Object.keys(this.scoreSummary),
+            ...this.itemResults.flatMap((it) => it.scores.map((s) => s.name)),
+            ...this.itemResults.flatMap((it) => Object.keys(it.scorerErrors)),
+          ]),
+        ],
         candidateVersion: this.candidateVersion,
         datasetVersionId: this.dataset.datasetVersionId,
         clientRunId: this.localRunId,
@@ -374,8 +373,8 @@ export class EvalRunResult {
 
   summary(): string {
     const head =
-      `EvalRunResult(name=${this.name}, cases=${this.caseCount}, passed=${this.passed}, ` +
-      `failed=${this.failed}, not_scored=${this.notScored}, ` +
+      `EvalRunResult(name=${this.name}, cases=${this.caseCount}, errored=${this.errored}, ` +
+      `not_scored=${this.notScored}, ` +
       `task_errors=${this.taskErrorCount}, upload=${this.uploadState.status})`;
     const lines = [head];
     for (const [name, s] of Object.entries(this.scoreSummary)) {

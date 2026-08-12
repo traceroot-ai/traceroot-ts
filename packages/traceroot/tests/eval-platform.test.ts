@@ -3,7 +3,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Dataset, evaluate, pullDataset, pullDatasetVersion } from '../src/eval';
+import { Dataset, evaluate, makeRunResult, pullDataset, pullDatasetVersion } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 import { PlatformTransport } from '../src/eval/platform';
 
@@ -223,12 +223,34 @@ describe('reporting (cloud-only)', () => {
       ['not_scored', 'errored', 'errored'],
     );
     for (const b of results) assert.equal('main_score' in b, false);
-    // Completion counts: one task error, one scorer error, no headline scored_count.
+    // Completion counts: one task error, one scorer error. scored_count is a COMPLETENESS
+    // count (cases that produced a score with no task error), not a pass/fail rollup — only
+    // c0 qualifies. Python parity: test_platform.py::test_finish_run_sends_counts_and_no_main_score.
     const done = calls.find((c) => c.url.endsWith('/complete'))!.body;
     assert.equal(done.task_error_count, 1);
     assert.equal(done.scorer_error_count, 1);
-    assert.equal(done.scored_count, 0);
+    assert.equal(done.scored_count, 1);
     assert.equal('main_score' in done, false);
+  });
+
+  it('completion counts survive a replayed case (keyed by test_case_id)', async () => {
+    // scored_count rides the same per-case contribution map as the error totals, so a retried
+    // case (or a second upload() on the same transport) REPLACES its contribution.
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', { scorerNames: ['grade'] });
+    const run = await t.createRun('r', 'd', null);
+    const base = { caseId: 'c0', input: 'i', output: 'o', expected: 'e', traceId: 't' };
+    const scored = {
+      ...base,
+      scores: [{ name: 'quality', value: 1 }],
+      scorerErrors: {},
+      error: null,
+    };
+    await t.recordItemResult(run, scored);
+    await t.recordItemResult(run, scored); // replay
+    await t.finishRun(run, null);
+    const done = calls.find((c) => c.url.endsWith('/complete'))!.body;
+    assert.equal(done.scored_count, 1);
   });
 
   it('sends per-score passed for a single scorer, name-agnostically', async () => {
@@ -345,5 +367,39 @@ describe('run URL (run_url preferred, run_path fallback -> dashboardUrl)', () =>
     });
     assert.equal(run.uploadState.dashboardUrl, null);
     assert.equal(run.uploadState.status, 'uploaded');
+  });
+});
+
+describe('re-upload scorer registration', () => {
+  it('registers a scorer that errored on every case (absent from the score summary)', async () => {
+    // Python parity (results.py upload()): the transport built for a re-upload unions the score
+    // summary with every scorer NAME seen on the items — scores AND scorer errors. Registering
+    // only Object.keys(scoreSummary) silently drops an all-failing scorer from the run.
+    mockBackend({});
+    const run = makeRunResult(
+      'r',
+      [
+        {
+          caseId: 'c0',
+          input: 'i',
+          output: 'o',
+          expected: 'e',
+          scores: [{ name: 'acc', value: 1 }],
+          scorerErrors: { flaky: 'boom' },
+          error: null,
+          traceId: null,
+          durationMs: null,
+        },
+      ],
+      { status: 'uploaded', dashboardUrl: null },
+      {
+        localRunId: 'run_local_1',
+        dataset: { datasetId: 'ds_1', revision: 'rev_x', datasetVersionId: 'dsv_1', caseCount: 1 },
+      },
+    );
+    await run.upload();
+    const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
+    const names = (reg.body.scorers as Array<{ name: string }>).map((s) => s.name);
+    assert.deepEqual(names, ['acc', 'flaky']);
   });
 });

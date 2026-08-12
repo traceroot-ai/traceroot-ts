@@ -75,3 +75,51 @@ describe('EvalRunResult.toJSON', () => {
     JSON.stringify(json); // must not throw
   });
 });
+
+describe('counts block (Python parity)', () => {
+  // Python results.py to_dict()/__str__ is the reference: the SDK derives no case-level
+  // pass/fail, so the artifact must not carry a fabricated passed/failed verdict.
+  const items = [
+    item('ok', [{ name: 'acc', value: 1 }]),
+    item('taskerr', [], { error: 'boom' }),
+    item('scorererr', [], { scorerErrors: { grade: 'kaboom' } }),
+  ];
+  const run = makeRunResult('r', items, { status: 'uploaded', dashboardUrl: null });
+
+  it('exposes errored / notScored, not passed / failed / scoredCount', () => {
+    assert.equal(run.caseCount, 3);
+    assert.equal(run.errored, 2);
+    assert.equal(run.notScored, 1);
+    assert.equal(run.taskErrorCount, 1);
+    assert.equal(run.scorerErrorCount, 1);
+    // The pass/fail status API is gone — caseStatus can only return errored | not_scored,
+    // so these getters could only ever have reported a fabricated zero.
+    for (const dead of ['passed', 'failed', 'scoredCount', 'failures'])
+      assert.equal(dead in (run as unknown as Record<string, unknown>), false, dead);
+  });
+
+  it('saved artifact counts match Python key-for-key', () => {
+    const counts = (run.toJSON() as any).counts;
+    assert.deepEqual(Object.keys(counts), [
+      'case_count',
+      'errored',
+      'not_scored',
+      'task_errors',
+      'scorer_errors',
+    ]);
+    assert.deepEqual(counts, {
+      case_count: 3,
+      errored: 2,
+      not_scored: 1,
+      task_errors: 1,
+      scorer_errors: 1,
+    });
+  });
+
+  it('summary() head matches Python __str__', () => {
+    assert.equal(
+      run.summary().split('\n')[0],
+      'EvalRunResult(name=r, cases=3, errored=2, not_scored=1, task_errors=1, upload=uploaded)',
+    );
+  });
+});

@@ -247,16 +247,21 @@ function caseMetadata(item: EvalItemResult): Record<string, unknown> {
 
 function runStatus(result: EvalRunResult, cancelled: boolean): string {
   if (cancelled) return 'incomplete';
-  if (result.taskErrorCount || result.scorerErrorCount) return 'completed_with_errors';
+  // A failed whole-run scorer is a real quality error too, so surface it rather than reporting a
+  // clean "completed" that hides it from the caller and artifact consumers.
+  if (
+    result.taskErrorCount ||
+    result.scorerErrorCount ||
+    Object.keys(result.runScorerErrors).length > 0
+  )
+    return 'completed_with_errors';
   return 'completed';
 }
 
 function counts(result: EvalRunResult): Record<string, number> {
   return {
     cases: result.caseCount,
-    scored: result.scoredCount,
-    passed: result.passed,
-    failed: result.failed,
+    errored: result.errored,
     task_errors: result.taskErrorCount,
     scorer_errors: result.scorerErrorCount,
     not_scored: result.notScored,
