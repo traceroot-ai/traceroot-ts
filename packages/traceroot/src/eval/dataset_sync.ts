@@ -190,8 +190,14 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
     return httpJson(method, `${this.baseUrl}${path}`, this.apiKey, body);
   }
 
-  /** The remote dataset's metadata if it ALREADY exists with a published version, else null (a
-   *  fetch error is treated as "new" so the push itself surfaces any real problem). */
+  /**
+   * The remote dataset's metadata if it ALREADY exists with a published version, else null.
+   *
+   * ONLY a 404 means "no such dataset". Any other failure (401/403/5xx/timeout) says nothing
+   * about whether the dataset exists, and reading it as "new" would skip BOTH the idempotent
+   * no-op and the confirmation — publishing an unprompted version off a transient error. So
+   * everything but a 404 propagates.
+   */
   private async existingDataset(datasetId: string): Promise<ExistingDatasetInfo | null> {
     try {
       const meta = await this.request(
@@ -199,8 +205,10 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
         `/api/v1/public/datasets/${encodeURIComponent(datasetId)}`,
       );
       return meta?.current_dataset_version_id ? meta : null;
-    } catch {
-      return null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes(' HTTP 404:')) return null;
+      throw err;
     }
   }
 
@@ -219,6 +227,15 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
     }
   }
 
+  /** Upsert the dataset's un-versioned metadata (name/description). Not a version. */
+  private async upsertDataset(snapshot: DatasetSnapshot): Promise<void> {
+    await this.request('POST', '/api/v1/public/datasets', {
+      dataset_id: snapshot.datasetId,
+      name: snapshot.name,
+      description: snapshot.description,
+    });
+  }
+
   async pushDataset(
     snapshot: DatasetSnapshot,
     baseVersionId: string | null,
@@ -235,6 +252,11 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
         (await this.publishedRevision(snapshot.datasetId, currentVersion)) === snapshot.revision
       ) {
         // Identical content -> idempotent no-op; keep the current version, never prompt.
+        // `name`/`description` are dataset metadata, NOT part of the content revision, so an edit
+        // to either lands here with an unchanged revision. Returning without the upsert would make
+        // `ds.description = ...; await ds.push()` a silent no-op, so send the metadata first and
+        // only skip the VERSION.
+        await this.upsertDataset(snapshot);
         return {
           status: 'uploaded',
           datasetId: snapshot.datasetId,
@@ -243,15 +265,12 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
       }
       const confirm = opts?.onExisting ?? confirmNewVersion;
       if (!(await confirm(existing)))
+        // A declined publish leaves the remote entirely untouched — metadata included.
         throw new DatasetPublishAborted(
           `publish to existing dataset '${snapshot.name}' declined; no new version created.`,
         );
     }
-    await this.request('POST', '/api/v1/public/datasets', {
-      dataset_id: snapshot.datasetId,
-      name: snapshot.name,
-      description: snapshot.description,
-    });
+    await this.upsertDataset(snapshot);
     // Native JSON at the HTTP boundary: input/expected/metadata are sent as their real
     // values; the backend owns the single JSON-encode. The SDK does NOT pre-encode.
     //
