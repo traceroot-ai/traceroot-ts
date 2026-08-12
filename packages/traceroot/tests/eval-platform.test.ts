@@ -313,6 +313,33 @@ describe('reporting (cloud-only)', () => {
     assert.equal('passed' in byName.route, false);
     assert.equal('passed' in byName.mystery, false);
   });
+
+  it('lower_is_better is inclusive at the threshold', async () => {
+    // Both directions are INCLUSIVE at the threshold: `latency_ms <= 200` passes at exactly 200
+    // and fails at 200.1, mirroring higher_is_better's `1 >= 1` above. A budget stated as "at most
+    // 200ms" is met by a 200ms answer — an exclusive boundary would fail it. Parity with
+    // traceroot-py test_platform test_lower_is_better_threshold_is_inclusive.
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', {});
+    t.scorerSpecs = [{ name: 'latency_ms', threshold: 200, direction: 'lower_is_better' }];
+    const run = await t.createRun('r', 'd', null);
+    for (const value of [200, 200.1, 199.9]) {
+      await t.recordItemResult(run, {
+        caseId: `c-${value}`,
+        input: 'i',
+        output: 'o',
+        expected: 'e',
+        scores: [{ name: 'latency_ms', value }],
+        scorerErrors: {},
+        error: null,
+        traceId: 't',
+      });
+    }
+    const sent = calls
+      .filter((c) => c.url.endsWith('/results'))
+      .map((c) => (c.body.scores as Record<string, unknown>[])[0].passed);
+    assert.deepEqual(sent, [true, false, true]);
+  });
 });
 
 describe('run URL (run_url preferred, run_path fallback -> dashboardUrl)', () => {
