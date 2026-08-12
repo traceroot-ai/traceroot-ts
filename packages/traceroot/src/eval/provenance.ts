@@ -21,8 +21,13 @@ const CI_PROVIDERS: [string, string, string][] = [
   ['JENKINS_URL', 'jenkins', 'BUILD_NUMBER'],
 ];
 
-/** (repository, commit) using the same precedence as the client; prefers the value already
- *  resolved on the client so no extra git warning is emitted. */
+// Only EXACT OID lengths are commits (SHA-1 = 40, SHA-256 = 64). A shorter hex-looking
+// branch/tag (e.g. "deadbeef") must stay a ref, not be reported as a commit.
+const COMMIT_OID = /^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/;
+
+/** (repository, ref) using the same precedence as the client; prefers the value already
+ *  resolved on the client so no extra git warning is emitted. The ref may be a branch or tag,
+ *  not a commit SHA — see gitBlock. */
 function resolvedGit(env: NodeJS.ProcessEnv): [string | null, string | null] {
   const creds = TraceRoot as unknown as { gitRepo?: string; gitRef?: string };
   let repo = creds.gitRepo ?? null;
@@ -54,12 +59,15 @@ export function gitDirty(): boolean | null {
 }
 
 function gitBlock(env: NodeJS.ProcessEnv, detectDirty: boolean): Record<string, unknown> | null {
-  const [repo, commit] = resolvedGit(env);
+  const [repo, ref] = resolvedGit(env);
   const block: Record<string, unknown> = {};
   if (repo) block.repository = repo;
-  if (commit) {
-    block.ref = commit;
-    block.commit = commit;
+  if (ref) {
+    // git ref may be a branch/tag, not a commit SHA. Always expose it as `ref`, but only
+    // populate `commit` when it actually looks like an OID, so we never report a branch name
+    // as a commit (parity with traceroot-py provenance._git_block).
+    block.ref = ref;
+    if (COMMIT_OID.test(ref)) block.commit = ref;
   }
   if (detectDirty) {
     const dirty = gitDirty();
