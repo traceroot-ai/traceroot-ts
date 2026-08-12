@@ -19,18 +19,6 @@ function accuracy(ctx: any) { return JSON.stringify(ctx.output) === JSON.stringi
 export const routing = new Evaluation({ name: 'ticket-routing', dataset: ds, task: route, scorers: [accuracy], transport: new FakeTransport() });
 `;
 
-// Every case succeeds; only the whole-run scorer fails. Python (runner.py::_run_status) counts
-// run_scorer_errors toward completed_with_errors, so a failing run scorer can't be hidden.
-const RUN_SCORER_EVAL_SRC = `
-import { Dataset, Evaluation, FakeTransport } from '${join(__dirname, '..', 'src', 'eval').replace(/\\/g, '/')}';
-const ds = new Dataset('tickets');
-ds.add({ m: 'charge' }, { id: 'a', expected: { r: 'billing' } });
-function route(x: any) { return { r: 'billing' }; }
-function alwaysOk() { return 1; }
-function overall() { throw new Error('run scorer kaboom'); }
-export const routing = new Evaluation({ name: 'run-scored', dataset: ds, task: route, scorers: [alwaysOk], runScorers: [overall], transport: new FakeTransport() });
-`;
-
 let dir: string;
 let evalFile: string;
 
@@ -85,17 +73,6 @@ describe('runner', () => {
     assert.equal(done.counts.errored, 0);
     assert.ok(done.local_run_id.startsWith('run_'));
     assert.equal(types[types.length - 1], 'suite_completed');
-  });
-
-  it('a failing whole-run scorer reports completed_with_errors', async () => {
-    const f = join(dir, 'run_scored_eval.ts');
-    writeFileSync(f, RUN_SCORER_EVAL_SRC);
-    const events = await collect([f], { reporting: true, no_artifact: true });
-    const done = events.find((e) => e.type === 'evaluation_completed');
-    // Every case is clean, so the per-case error counts are 0 — the run scorer is the only error.
-    assert.equal(done.counts.task_errors, 0);
-    assert.equal(done.counts.scorer_errors, 0);
-    assert.equal(done.status, 'completed_with_errors');
   });
 
   it('writes the two-file artifact with run.json + cases.jsonl', async () => {

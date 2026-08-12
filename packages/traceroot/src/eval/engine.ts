@@ -15,9 +15,6 @@ import {
   EvalItemResult,
   EvalRunResult,
   RunDatasetRef,
-  RunView,
-  ScoreSummary,
-  aggregateScores,
   makeRunResult,
   UploadState,
 } from './results';
@@ -41,7 +38,6 @@ export type ScoreLike =
   | null
   | undefined;
 export type ScorerFn = (ctx: ScorerContext) => ScoreLike | Promise<ScoreLike>;
-export type RunScorerFn = (view: RunView) => ScoreLike | Promise<ScoreLike>;
 
 export interface EvaluateOptions {
   name: string;
@@ -50,7 +46,6 @@ export interface EvaluateOptions {
   data?: Dataset | EvalCase[];
   task: TaskFn;
   scorers: ScorerFn[];
-  runScorers?: RunScorerFn[];
   candidateVersion?: string;
   datasetId?: string;
   maxConcurrency?: number;
@@ -466,29 +461,6 @@ async function runCase(
   return result;
 }
 
-/** Whole-run scorers over the completed items. Errors are isolated per scorer. */
-async function runRunScorers(
-  runScorers: RunScorerFn[] | undefined,
-  name: string,
-  itemResults: EvalItemResult[],
-  summary: Record<string, ScoreSummary>,
-): Promise<{ runScores: Score[]; runScorerErrors: Record<string, string> }> {
-  const runScores: Score[] = [];
-  const runScorerErrors: Record<string, string> = {};
-  if (!runScorers || runScorers.length === 0) return { runScores, runScorerErrors };
-  const view: RunView = { name, itemResults, scoreSummary: summary };
-  for (const rs of runScorers) {
-    const rname = scorerName(rs, 'run_scorer');
-    try {
-      const raw = await Promise.resolve(rs(view));
-      runScores.push(...normalizeScoreLike(raw, rname));
-    } catch (err) {
-      runScorerErrors[rname] = fmtError(err);
-    }
-  }
-  return { runScores, runScorerErrors };
-}
-
 /**
  * Build the reporting transport from credentials + a synced dataset (pulled/pushed, or an
  * explicit datasetId). Returns null when it cannot (no credentials, or an unsynced dataset the
@@ -671,7 +643,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // Definitely assigned before any use: the finally below either assigns it or throws.
   let uploadState!: UploadState;
   let cancelled = false;
-  let summary: Record<string, ScoreSummary> = {};
   // definition name -> the metric names it emitted, accumulated across cases (union: a metric
   // emitted by only some cases still counts). Recorded during execution, sent at completion.
   const emittedOwnership = new Map<string, Set<string>>();
@@ -709,9 +680,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     // the flag above never flipped — re-check the signal after runBounded settles so an
     // in-flight-only cancellation still finalizes as incomplete and raises CancelledError.
     if (options.signal?.aborted) cancelled = true;
-    if (!cancelled) {
-      summary = aggregateScores(itemResults);
-    }
   } catch (err) {
     bodyFailed = true; // remembered, then re-thrown untouched
     bodyError = err;
@@ -755,13 +723,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     throw err;
   }
 
-  const { runScores, runScorerErrors } = await runRunScorers(
-    options.runScorers,
-    name,
-    itemResults,
-    summary,
-  );
-
   const datasetRef: RunDatasetRef = {
     datasetId: identity.datasetId,
     revision: snapshotRevision,
@@ -775,8 +736,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     candidateVersion: candidateVersion ?? null,
     dataset: datasetRef,
     metadata: runMetadata,
-    runScores,
-    runScorerErrors,
   });
 
   // When the bar was shown (interactive), surface the clickable run link if the backend

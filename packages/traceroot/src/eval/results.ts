@@ -116,13 +116,6 @@ export interface ScoreSummary {
   count: number;
 }
 
-/** The read-only view passed to a whole-run scorer. */
-export interface RunView {
-  name: string;
-  itemResults: EvalItemResult[];
-  scoreSummary: Record<string, ScoreSummary>;
-}
-
 /**
  * Derive the per-case status: 'errored' when the case had a task error OR any scorer error,
  * otherwise 'not_scored'. There is no headline pass/fail at the case level — the per-metric
@@ -175,8 +168,6 @@ export interface EvalRunResultInit {
   candidateVersion?: string | null;
   dataset?: RunDatasetRef | null;
   runId?: string | null;
-  runScores?: Score[];
-  runScorerErrors?: Record<string, string>;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -190,8 +181,6 @@ export class EvalRunResult {
   candidateVersion: string | null;
   dataset: RunDatasetRef | null;
   runId: string | null;
-  runScores: Score[];
-  runScorerErrors: Record<string, string>;
   metadata: Record<string, unknown> | null;
 
   constructor(init: EvalRunResultInit) {
@@ -203,8 +192,6 @@ export class EvalRunResult {
     this.candidateVersion = init.candidateVersion ?? null;
     this.dataset = init.dataset ?? null;
     this.runId = init.runId ?? null;
-    this.runScores = init.runScores ?? [];
-    this.runScorerErrors = init.runScorerErrors ?? {};
     this.metadata = init.metadata ?? null;
   }
 
@@ -267,8 +254,6 @@ export class EvalRunResult {
       score_summary: Object.fromEntries(
         Object.entries(this.scoreSummary).map(([k, v]) => [k, { ...v }]),
       ),
-      run_scores: this.runScores.map(scoreToJSON),
-      run_scorer_errors: this.runScorerErrors,
       // fromJSON() reads `upload`, so write it here too — otherwise a save/load round trip loses
       // the run's status and dashboard URL.
       upload: { status: this.uploadState.status, dashboard_url: this.uploadState.dashboardUrl },
@@ -303,8 +288,6 @@ export class EvalRunResult {
           }
         : null,
       runId: d.run_id ?? null,
-      runScores: (d.run_scores ?? []).map((s: any) => ({ ...s, version: s.version ?? null })),
-      runScorerErrors: d.run_scorer_errors ?? {},
       metadata: d.metadata ?? null,
     });
   }
@@ -423,8 +406,6 @@ export interface MakeRunResultOptions {
   dataset?: RunDatasetRef | null;
   localRunId?: string;
   metadata?: Record<string, unknown> | null;
-  runScores?: Score[];
-  runScorerErrors?: Record<string, string>;
 }
 
 /** Build an EvalRunResult (computes the score summary). */
