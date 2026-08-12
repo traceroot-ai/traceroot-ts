@@ -40,30 +40,11 @@ describe('cross-SDK scorer identity', () => {
   });
 });
 
-// --- Content-based case ids: byte-identical across Python/TypeScript ------------------------
+// Content-based case ids and the content revision are byte-identical across TypeScript/Python;
+// those vectors live with the canonicalizer that produces them, in eval-canonical.test.ts.
 import { Dataset } from '../src/eval/types';
 
-const CASE_FIX = JSON.parse(
-  readFileSync(join(__dirname, 'fixtures', 'case_id_parity.json'), 'utf8'),
-) as {
-  dataset_key: string;
-  dataset_id: string;
-  revision: string;
-  cases: { input: unknown; id: string }[];
-};
-
 describe('cross-SDK case-id identity', () => {
-  it('case ids match the cross-language fixture (byte-identical with Python)', () => {
-    const d = new Dataset(CASE_FIX.dataset_key);
-    assert.equal(d.datasetId, CASE_FIX.dataset_id);
-    for (const c of CASE_FIX.cases) {
-      const produced = d.add(c.input);
-      assert.equal(produced.id, c.id);
-    }
-    // the local content revision is ALSO byte-identical across Python and TypeScript
-    assert.equal(d.snapshot().revision, CASE_FIX.revision);
-  });
-
   it('content-based: inserting a case does not shift other ids; reorder = same revision', () => {
     const a = new Dataset('k');
     a.add({ q: 'a' });

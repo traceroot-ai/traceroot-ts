@@ -15,6 +15,7 @@
 // when explicitly declared — never fabricated.
 
 import type { ScorerContext, Score, DeferredScore } from './types';
+import { canonicalHash } from './canonical';
 import { observe } from '../observe';
 import { isProviderInstrumented } from '../instrumentation';
 import { TraceRoot } from '../traceroot';
@@ -378,30 +379,11 @@ function asJudgeText(value: unknown): string {
   }
 }
 
-/** Deterministic canonical JSON (recursively sorted object keys). */
-function canonicalize(v: unknown): string {
-  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
-  if (Array.isArray(v)) return '[' + v.map(canonicalize).join(',') + ']';
-  const keys = Object.keys(v as Record<string, unknown>).sort();
-  return (
-    '{' +
-    keys
-      .map((k) => JSON.stringify(k) + ':' + canonicalize((v as Record<string, unknown>)[k]))
-      .join(',') +
-    '}'
-  );
-}
-
-/** Deterministic revision of a judge's DECLARATIVE config (its versioned 'source'): canonical JSON
- *  -> a 64-bit FNV-1a hash, so the same config always hashes the same. */
+/** Deterministic revision of a judge's DECLARATIVE config (its versioned 'source'): the SHARED
+ *  canonical JSON (snake_case keys) -> sha256, byte-identical to Python's `_config_revision`. The
+ *  version must change only when the rubric changes, never when the authoring language changes. */
 function configRevision(config: Record<string, unknown>): string {
-  const canon = canonicalize(config);
-  let h = 0xcbf29ce484222325n;
-  for (let i = 0; i < canon.length; i++) {
-    h ^= BigInt(canon.charCodeAt(i));
-    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
-  }
-  return 'cfg_' + h.toString(16).padStart(16, '0');
+  return 'cfg_' + canonicalHash(config, 16);
 }
 
 function renderVars(messages: JudgeMessage[], variables: Record<string, string>): JudgeMessage[] {
@@ -456,13 +438,14 @@ export function llmJudge(opts: LlmJudgeOptions, builder?: JudgeBuilder): Scorer 
   // The declarative config IS the judge's versioned source: hash it deterministically. Explicit wins.
   const resolvedVersion =
     opts.version ??
+    // snake_case keys: the hashed payload is the SHARED cross-SDK shape, not this SDK's casing.
     configRevision({
       model: opts.model,
       messages,
-      outputType,
+      output_type: outputType,
       threshold: opts.threshold ?? null,
       direction: opts.direction ?? null,
-      valueType: opts.valueType ?? null,
+      value_type: opts.valueType ?? null,
       metadata: opts.metadata ?? null,
     });
   const call = (msgs: JudgeMessage[]) => (opts.complete ?? defaultComplete)(opts.model, msgs);

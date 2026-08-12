@@ -7,6 +7,7 @@
 // PlatformDatasetSync publishes to POST /api/v1/public/datasets + .../{id}/versions.
 
 import { TraceRoot } from '../traceroot';
+import { normalize } from './canonical';
 import { httpJson, pullDatasetVersion } from './platform';
 import type { DatasetSnapshot } from './types';
 
@@ -253,11 +254,21 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
     });
     // Native JSON at the HTTP boundary: input/expected/metadata are sent as their real
     // values; the backend owns the single JSON-encode. The SDK does NOT pre-encode.
+    //
+    // The value SENT is the SAME canonical form that was HASHED into the revision, so a pulled
+    // version re-hashes to the revision that published it. Sending a differently-shaped value
+    // (a Date here, an ISO string in storage; a Set here, `{}` in storage) would make
+    // publishedRevision() != snapshot.revision forever, so every push — including evaluate()'s
+    // auto-provision — would prompt and publish a no-change version, without bound.
     const changes: Record<string, unknown>[] = [];
     for (const c of snapshot.cases) {
-      const change: Record<string, unknown> = { op: 'upsert', test_case_id: c.id, input: c.input };
-      if (c.expected !== undefined && c.expected !== null) change.expected = c.expected;
-      if (c.metadata != null) change.metadata = c.metadata;
+      const change: Record<string, unknown> = {
+        op: 'upsert',
+        test_case_id: c.id,
+        input: normalize(c.input),
+      };
+      if (c.expected !== undefined && c.expected !== null) change.expected = normalize(c.expected);
+      if (c.metadata != null) change.metadata = normalize(c.metadata);
       if (c.sourceTraceId != null) change.source_trace_id = c.sourceTraceId;
       if (c.sourceSpanId != null) change.source_span_id = c.sourceSpanId;
       changes.push(change);

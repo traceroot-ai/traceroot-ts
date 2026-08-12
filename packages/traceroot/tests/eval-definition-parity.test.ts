@@ -1,6 +1,8 @@
 // Cross-language normalized-definition parity + source/config provenance (TypeScript side).
-// Equivalent Python and TypeScript definitions normalize to the SAME descriptor fields (identity +
-// policy); provenance and the config-hash version are language-specific. Mirrors the Python test.
+// Equivalent Python and TypeScript definitions normalize to the SAME descriptor fields — identity,
+// policy, AND the config-hash `version` (the fixture pins the exact `cfg_`, so a judge does not
+// look edited just because it was re-authored in the other language). Only provenance
+// (language/source) stays language-specific. Mirrors the Python test.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
