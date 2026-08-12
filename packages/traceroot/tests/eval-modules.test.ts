@@ -17,10 +17,19 @@ import {
   DeferredScore,
   evaluate,
 } from '../src/eval';
-import * as prov from '../src/eval/provenance';
 import type { ScorerContext } from '../src/eval';
 
 const echo = (x: unknown) => x;
+
+// Stub the git resolution for the whole file (parity with traceroot-py test_provenance, which
+// monkeypatches `_resolved_git`). Without this the provenance assertions read the MACHINE's `.git`,
+// so they only hold inside a checkout and fail in a `.git`-less container or an npm tarball. Set at
+// module scope, before any test body: this is the first source both the provenance helper and
+// TraceRoot.initialize() consult, so neither can fall through to the ambient repository.
+const STUB_OID = '0123456789abcdef0123456789abcdef01234567';
+process.env['TRACEROOT_GIT_REPO'] = 'owner/repo';
+process.env['TRACEROOT_GIT_REF'] = STUB_OID;
+const STUB_GIT = { repository: 'owner/repo', ref: STUB_OID, commit: STUB_OID };
 
 // ---------------------------------------------------------------------------
 describe('scorer metadata', () => {
@@ -135,29 +144,42 @@ describe('scorer metadata', () => {
 
 // ---------------------------------------------------------------------------
 describe('provenance (machine-independent)', () => {
+  // The env the SDK's git resolution reads; keeping the stub keys in it means `git` comes from
+  // STUB_GIT and never from whatever repository the tests happen to run inside.
+  const stubEnv = (extra: Record<string, string> = {}) =>
+    ({
+      TRACEROOT_GIT_REPO: 'owner/repo',
+      TRACEROOT_GIT_REF: STUB_OID,
+      ...extra,
+    }) as never;
+
   it('github ci + git block; user metadata wins', () => {
-    const orig = (prov as any)._resolvedGit;
-    // resolvedGit is private; drive via env + no git -> only ci block, plus user keys.
     const meta = collectRunProvenance(
       { model: 'sonnet', git: 'USER' },
-      { env: { GITHUB_ACTIONS: 'true', GITHUB_RUN_ID: '9' } as never, detectDirty: false },
+      { env: stubEnv({ GITHUB_ACTIONS: 'true', GITHUB_RUN_ID: '9' }), detectDirty: false },
     );
     assert.equal(meta!.model, 'sonnet');
     assert.equal(meta!.git, 'USER'); // user key wins over auto git
     assert.deepEqual(meta!.ci, { provider: 'github', build_id: '9' });
-    void orig;
   });
-  it('empty env contributes no CI provenance', () => {
-    // git context is still auto-detected from the checkout's .git, so the result isn't strictly
-    // null here; the invariant an empty env must satisfy is that it yields no `ci` block.
-    const meta = collectRunProvenance(undefined, { env: {} as never, detectDirty: false });
-    assert.ok(meta === null || !('ci' in meta), 'empty env must not produce a ci block');
+
+  it('a stubbed git context yields exactly the git block, and no CI block off CI', () => {
+    const meta = collectRunProvenance(undefined, { env: stubEnv(), detectDirty: false });
+    assert.deepEqual(meta, { git: STUB_GIT }); // ref is an OID -> also reported as commit
+  });
+
+  it('a branch ref is never reported as a commit', () => {
+    const meta = collectRunProvenance(undefined, {
+      env: stubEnv({ TRACEROOT_GIT_REF: 'main' }),
+      detectDirty: false,
+    });
+    assert.deepEqual(meta, { git: { repository: 'owner/repo', ref: 'main' } });
   });
 
   it('git provenance rides the run metadata on the wire (non-identity), never SDK identity', async () => {
     // Parity with traceroot-py test_provenance TestProvenanceReachesWire: git/CI reproducibility
-    // metadata reaches createRun as run metadata (auto-detected from the checkout's .git); user
-    // keys are kept and no SDK-language identity is sent.
+    // metadata reaches createRun as run metadata; user keys are kept and no SDK-language identity
+    // is sent. The git block is the module-scope stub, so this holds without a `.git` on disk.
     const fake = new FakeTransport();
     await evaluate({
       name: 'r',
@@ -169,7 +191,7 @@ describe('provenance (machine-independent)', () => {
     });
     const md = fake.lastRunMetadata!;
     assert.equal(md.team, 'eval');
-    assert.ok(md.git, 'git provenance rides the wire');
+    assert.deepEqual(md.git, STUB_GIT, 'git provenance rides the wire');
     assert.ok(!('sdk' in md) && !('language' in md), 'no SDK-language identity');
   });
 });
