@@ -435,13 +435,17 @@ export class EvalRunResult {
    *  rule the platform uses for per-score `passed`. Metrics with no declared policy get no
    *  pass-rate, only a count. Byte-identical to Python's `_pass_tally`. */
   private passTally(): [Record<string, number>, Record<string, number>] {
-    const policy: Record<string, ScorerSpec> = {};
-    for (const s of this.scorerSpecs ?? []) policy[s.name] = s;
+    const specs = this.scorerSpecs ?? [];
+    const byName: Record<string, ScorerSpec> = {};
+    for (const s of specs) byName[s.name] = s;
     const passed: Record<string, number> = {};
     const judged: Record<string, number> = {};
     for (const item of this.itemResults) {
+      const single = item.scores.length === 1;
       for (const score of item.scores) {
-        const verdict = scoreVerdict(score.value, policy[score.name]);
+        // Resolve the owner EXACTLY as PlatformTransport._score_policy does.
+        const owner = specs.length === 1 && single ? specs[0] : byName[score.name];
+        const verdict = scoreVerdict(score.value, owner);
         if (verdict === null) continue;
         judged[score.name] = (judged[score.name] ?? 0) + 1;
         if (verdict) passed[score.name] = (passed[score.name] ?? 0) + 1;
@@ -451,16 +455,18 @@ export class EvalRunResult {
   }
 }
 
-/** Whether one score passes — the same rule the platform applies. A bool value IS its verdict; a
- *  numeric value passes iff it clears the owning scorer's declared threshold in its declared
- *  direction. null (no verdict) when there is no declared policy or the value isn't numeric. */
-function scoreVerdict(value: unknown, spec: ScorerSpec | undefined): boolean | null {
+/** Whether one score passes, given its ALREADY-RESOLVED owning scorer spec. Parity with
+ *  PlatformTransport._score_passed: a bool value IS its verdict; a numeric value passes iff it
+ *  clears the owner's declared threshold in its declared direction (default higher_is_better). null
+ *  for a non-finite value, no owner, or an owner with no threshold / 'none' direction. */
+function scoreVerdict(value: unknown, owner: ScorerSpec | undefined): boolean | null {
   if (typeof value === 'boolean') return value;
-  if (typeof value !== 'number') return null;
-  if (!spec || spec.threshold == null || spec.direction == null || spec.direction === 'none') {
-    return null;
-  }
-  return spec.direction === 'lower_is_better' ? value <= spec.threshold : value >= spec.threshold;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (!owner) return null;
+  const threshold = owner.threshold;
+  const direction = owner.direction ?? 'higher_is_better';
+  if (threshold == null || direction === 'none') return null;
+  return direction === 'lower_is_better' ? value <= threshold : value >= threshold;
 }
 
 export interface MakeRunResultOptions {

@@ -220,6 +220,23 @@ describe('summary() shows per-metric pass-rate', () => {
     assert.ok(line.includes('count=2'));
   });
 
+  it('resolves pass-rate name-agnostically for a lone single-emission scorer', async () => {
+    // The scorer's declared name differs from the emitted score name; the lone scorer still owns
+    // its lone metric (same rule as PlatformTransport), so the pass-rate resolves.
+    const s = Scorer.code(
+      { key: 'x', valueType: 'numeric', direction: 'higher_is_better', threshold: 1.0 },
+      () => ({ name: 'differently_named', value: 1.0 }),
+    );
+    const d = new Dataset('agnostic');
+    d.add(1, { id: 'a', expected: 1 });
+    const run = await evaluate({ name: 'r', dataset: d, task: echo, scorers: [s], local: true });
+    const line = run
+      .summary()
+      .split('\n')
+      .find((l) => l.includes('mean='))!;
+    assert.ok(line.includes('pass=1/1'), line);
+  });
+
   it('omits pass= when no threshold is declared', async () => {
     const plain = (_ctx: ScorerContext) => 0.5; // no declared policy -> nothing to judge
     const d = new Dataset('nopolicy');
