@@ -2,7 +2,7 @@
 // traceroot-py/traceroot/eval/evaluation.py). A mutable, reusable definition (compose,
 // reuse in CI, select a subset); run() produces an immutable EvalRunResult.
 
-import { evaluateAsync, EvaluateOptions } from './engine';
+import { evaluateAsync, EvaluateOptions, LOCAL_AND_TRANSPORT } from './engine';
 import type { EvalRunResult } from './results';
 
 export interface EvaluationOptions extends Omit<EvaluateOptions, 'dataset' | 'data'> {
@@ -14,7 +14,8 @@ export interface EvaluationOptions extends Omit<EvaluateOptions, 'dataset' | 'da
 /**
  * A reusable, code-level evaluation definition. Evaluation is cloud-only: every run reports
  * to the platform, which needs credentials and a synced dataset; pass `transport` to supply an
- * explicit one. `retry` is rejected rather than silently ignored.
+ * explicit one, or `local: true` to run in full and report nowhere. `retry` is rejected rather
+ * than silently ignored.
  */
 export class Evaluation {
   private readonly opts: EvaluateOptions;
@@ -25,6 +26,9 @@ export class Evaluation {
   readonly select?: (c: import('./types').EvalCase) => boolean;
 
   constructor(options: EvaluationOptions) {
+    if (options.local === true && options.transport !== undefined) {
+      throw new Error(LOCAL_AND_TRANSPORT);
+    }
     if (options.retry !== undefined && options.retry !== null) {
       throw new Error(
         'retry is not implemented in V1 (its semantics are deliberately deferred). ' +

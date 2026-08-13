@@ -18,7 +18,7 @@ import {
   makeRunResult,
   UploadState,
 } from './results';
-import { EvalCompletionError, EvalTransport, RunHandle } from './transport';
+import { EvalCompletionError, EvalTransport, FakeTransport, RunHandle } from './transport';
 import { PlatformTransport } from './platform';
 import { PlatformDatasetSync } from './dataset_sync';
 import { collectRunProvenance } from './provenance';
@@ -57,6 +57,12 @@ export interface EvaluateOptions {
   /** Explicit transport wins over the default reporting transport. */
   transport?: EvalTransport;
   /**
+   * Run in full but report nowhere: the shortcut for `transport: new FakeTransport()`. No
+   * credentials, no dataset publish, no run record — a complete EvalRunResult still comes back.
+   * Mutually exclusive with `transport`.
+   */
+  local?: boolean;
+  /**
    * Live console progress bar. Undefined = auto (on for an interactive
    * terminal, off when piped/CI); true/false forces it.
    */
@@ -79,6 +85,13 @@ interface RunIdentity {
   runId: string | null;
   localRunId: string;
 }
+
+/**
+ * `local: true` already answers "where does this run report", so a sink alongside it is a
+ * contradiction rather than a precedence question — say so instead of silently picking one.
+ */
+export const LOCAL_AND_TRANSPORT =
+  "pass local: true OR transport, not both — local: true already means 'do not report'.";
 
 const INLINE_DATASET = '<inline>';
 const EVAL_ATTR_CONTRACT_VERSION = '1';
@@ -513,9 +526,11 @@ function autoTransport(
 /** Run an evaluation. Async-first; `evaluate` is an alias of `evaluateAsync`. */
 export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunResult> {
   const { name, task, scorers, maxConcurrency = 10, transport, candidateVersion } = options;
+  const local = options.local === true;
   const environment = options.environment ?? 'evaluation';
   const data = options.dataset ?? options.data;
 
+  if (local && transport !== undefined) throw new Error(LOCAL_AND_TRANSPORT);
   if (!name || name.trim().length === 0) throw new Error("evaluate() requires a non-empty 'name'");
   if (data === undefined) throw new Error("evaluate() requires 'dataset' (or the 'data' alias)");
   if (typeof task !== 'function') throw new Error("'task' must be a function");
@@ -578,10 +593,17 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // local artifact.
   const runMetadata = collectRunProvenance(options.metadata, { detectDirty: false });
 
-  // Cloud-only: an explicit transport wins; otherwise build a reporting transport from
-  // credentials + a synced dataset. Evaluation always reports -- there is no local run.
+  // Cloud-only by default: an explicit transport wins; otherwise build a reporting transport
+  // from credentials + a synced dataset.
   let active: EvalTransport;
-  if (transport !== undefined) {
+  if (local) {
+    // local: true IS transport: new FakeTransport(), spelled as intent rather than as a class the
+    // user has to import: the run executes in full and records itself in memory, but nothing
+    // leaves the process. Selected ahead of the auto path so it also short-circuits the
+    // auto-publish below — a local run needs no credentials and versions no dataset, even one
+    // that is already synced.
+    active = new FakeTransport();
+  } else if (transport !== undefined) {
     active = transport;
   } else {
     // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
@@ -616,14 +638,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         throw new Error(
           'evaluate() reports to the TraceRoot platform, but this run has no synced dataset to ' +
             'report against. Pass a Dataset that was pulled or pushed (pullDataset(...) / ' +
-            'Dataset.push(...)), or pass datasetId, or pass an explicit transport (e.g. new ' +
-            'FakeTransport() to run offline).',
+            'Dataset.push(...)), or pass datasetId, or pass local: true to run without ' +
+            'reporting.',
         );
       }
       throw new Error(
         'evaluate() reports to the TraceRoot platform, but no credentials were found. Set ' +
-          'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass an explicit ' +
-          'transport (e.g. new FakeTransport() to run offline).',
+          'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass local: true to ' +
+          'run without reporting.',
       );
     }
     // A reported run records every score with a per-metric `passed`; no overall run-level pass/fail
