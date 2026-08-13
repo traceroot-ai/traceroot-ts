@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   EXPLANATION_MAX,
   HTTP_TIMEOUT_MS,
+  METADATA_MAX,
   PAYLOAD_TEXT_MAX,
   PlatformTransport,
   SCORE_ERROR_MAX,
@@ -179,6 +180,23 @@ describe('contract-cap clamping', () => {
     const body = bodies('/results')[0];
     assert.equal(body.task_error, 'short');
     assert.equal(body.scores[0].explanation, 'fine');
+  });
+
+  it('run metadata is clamped on registration', async () => {
+    // Run metadata is free-form and user-supplied (a whole prompt, a config dump), and it is the
+    // ONE field that reaches the backend unclamped. Over the cap, REGISTRATION 400s and the run
+    // never starts — worse than any per-result rejection.
+    const t = transport();
+    await t.createRun('e', 'd', { prompt: 'm'.repeat(METADATA_MAX + 100) });
+    const meta = bodies('/evaluation-runs')[0].metadata;
+    assert.equal(meta.truncated, true);
+    assert.ok(JSON.stringify(meta).length <= METADATA_MAX);
+  });
+
+  it('under-cap run metadata passes through untouched', async () => {
+    const t = transport();
+    await t.createRun('e', 'd', { commit: 'abc123' });
+    assert.deepEqual(bodies('/evaluation-runs')[0].metadata, { commit: 'abc123' });
   });
 
   it('scorer source is clamped on registration', async () => {

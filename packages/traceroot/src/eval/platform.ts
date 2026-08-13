@@ -47,7 +47,18 @@ function clampMetadata(value: unknown, limit: number): unknown {
     return value;
   }
   if (text.length <= limit) return value;
-  return { truncated: true, preview: clamp(text, limit - 32) };
+  // The MARKER is what gets sent, so the marker — not the preview inside it — has to fit the cap.
+  // Re-encoding escapes every quote and backslash in the preview, which can push it back over the
+  // limit the truncation existed to respect; shrink until the encoded marker fits.
+  let preview = clamp(text, limit - 32)!;
+  let marker = { truncated: true, preview };
+  while (preview.length > TRUNCATION_SUFFIX.length) {
+    const overflow = JSON.stringify(marker).length - limit;
+    if (overflow <= 0) break;
+    preview = clamp(preview, Math.max(TRUNCATION_SUFFIX.length, preview.length - overflow))!;
+    marker = { truncated: true, preview };
+  }
+  return marker;
 }
 
 // --- HTTP seam (fetch) -------------------------------------------------------
@@ -452,9 +463,12 @@ export class PlatformTransport implements EvalTransport {
     if (this.datasetVersionId !== null) body.dataset_version_id = this.datasetVersionId;
     const effectiveClientRun = clientRunId ?? this.clientRunId;
     if (effectiveClientRun != null) body.client_run_id = effectiveClientRun;
-    // Free-form user metadata only; optional on the backend, so omit when empty to match
-    // its absent-or-null rules rather than sending an empty object.
-    if (metadata && Object.keys(metadata).length > 0) body.metadata = metadata;
+    // Free-form user metadata only; optional on the backend, so omit when empty to match its
+    // absent-or-null rules rather than sending an empty object. Clamped like every other capped
+    // field: metadata is whatever the caller put there (a whole prompt, a config dump), and over
+    // the cap the REGISTRATION 400s — the run then never starts at all.
+    if (metadata && Object.keys(metadata).length > 0)
+      body.metadata = clampMetadata(metadata, METADATA_MAX);
     const resp = await this.request('POST', '/api/v1/public/evaluation-runs', body);
     this.runId = resp.evaluation_run_id;
     // Optional, absent on older/self-hosted backends. Prefer the absolute run_url (resolved
