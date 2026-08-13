@@ -31,6 +31,16 @@ export const SCORER_FIXTURE = JSON.parse(
   readFileSync(join(FIXTURES, 'scorer_definition_parity.json'), 'utf8'),
 ) as Record<string, Record<string, unknown>>;
 
+export const DATASET_KEY_FIXTURE = JSON.parse(
+  readFileSync(join(FIXTURES, 'dataset_key_parity.json'), 'utf8'),
+) as {
+  dataset_key: string;
+  display_name: string;
+  dataset_id: string;
+  existing_case: { input: Record<string, unknown>; id: string };
+  added_case: { input: Record<string, unknown>; id: string };
+};
+
 /** Fixture encoding -> native JS value. Mirrors `decode` in tests/eval/parity_vectors.py. */
 export function decode(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(decode);

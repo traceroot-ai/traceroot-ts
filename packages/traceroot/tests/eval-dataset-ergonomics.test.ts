@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { Dataset, evaluate, pullDataset, PlatformDatasetSync } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 import { stableDatasetId } from '../src/eval/ids';
+import { DATASET_KEY_FIXTURE } from './parity_vectors';
 
 const realFetch = globalThis.fetch;
 const echo = (x: unknown) => x;
@@ -231,7 +232,12 @@ describe('dataset key survives', () => {
   });
 });
 
-function installPullBackend(name: string, datasetId: string, caseId: string): void {
+function installPullBackend(
+  name: string,
+  datasetId: string,
+  caseId: string,
+  meta: Record<string, unknown> = {},
+): void {
   process.env['TRACEROOT_API_KEY'] = 'tr-test';
   process.env['TRACEROOT_HOST_URL'] = 'https://h';
   process.env['TRACEROOT_ENABLED'] = 'false';
@@ -247,11 +253,88 @@ function installPullBackend(name: string, datasetId: string, caseId: string): vo
         { status: 200 },
       );
     }
-    return new Response(JSON.stringify({ name, current_dataset_version_id: 'dsv_1' }), {
+    return new Response(JSON.stringify({ name, current_dataset_version_id: 'dsv_1', ...meta }), {
       status: 200,
     });
   }) as any;
 }
+
+describe('dataset key on the wire', () => {
+  // The key is the dataset's identity, so it belongs on the wire: without it the platform can
+  // only guess (name-hash), and a UI rename or an explicit key leaves every later case divergent.
+  const fix = DATASET_KEY_FIXTURE;
+
+  function upserts(calls: Call[]) {
+    return calls.filter((c) => c.method === 'POST' && c.url.endsWith('/datasets'));
+  }
+
+  function newDatasetSync(): { sync: PlatformDatasetSync; calls: Call[] } {
+    const sync = makeSync();
+    const calls = stubTransport(sync, () => {
+      throw new Error('GET https://h/... -> HTTP 404: not found');
+    });
+    return { sync, calls };
+  }
+
+  it('push sends the key', async () => {
+    const { sync, calls } = newDatasetSync();
+    await sync.pushDataset(snapOf('billing'), null);
+    assert.equal(upserts(calls)[0]!.body.key, 'billing'); // default key === name
+  });
+
+  it('push sends an explicit key', async () => {
+    const d = new Dataset(fix.display_name, null, { key: fix.dataset_key });
+    d.add(fix.existing_case.input);
+    const { sync, calls } = newDatasetSync();
+    await sync.pushDataset(d.snapshot(), null);
+    const body = upserts(calls)[0]!.body;
+    assert.equal(body.key, fix.dataset_key);
+    assert.equal(body.name, fix.display_name); // the key is NOT the name
+  });
+
+  it('a metadata-only push sends the key too', async () => {
+    // The unchanged-revision short circuit sends the metadata upsert; it must carry the key as
+    // well, or the backfill never happens for an already-published dataset.
+    const d = new Dataset('Billing', null, { key: 'billing' });
+    d.add({ q: 'a' });
+    const sync = makeSync();
+    const calls = stubTransport(sync, () => ({
+      name: 'Billing',
+      current_dataset_version_id: 'dsv_9',
+    }));
+    (sync as unknown as { publishedRevision(): Promise<string> }).publishedRevision = async () =>
+      d.snapshot().revision;
+    await sync.pushDataset(d.snapshot(), null);
+    assert.equal(upserts(calls)[0]!.body.key, 'billing');
+  });
+
+  it('pull prefers the key echoed by the platform', async () => {
+    // The dataset response now CARRIES the key, so a renamed dataset is no longer a dead end: the
+    // echoed key is adopted verbatim and every case added afterwards converges with local
+    // authoring. The ids come from the shared fixture, so Python and TypeScript agree.
+    const local = new Dataset(fix.display_name, null, { key: fix.dataset_key });
+    const first = local.add(fix.existing_case.input);
+    assert.equal(local.datasetId, fix.dataset_id);
+    assert.equal(first.id, fix.existing_case.id);
+    installPullBackend(fix.display_name, fix.dataset_id, first.id!, { key: fix.dataset_key });
+
+    const pulled = await pullDataset(fix.dataset_id);
+    assert.equal(pulled.key, fix.dataset_key);
+    const added = pulled.add(fix.added_case.input);
+    assert.equal(added.id, fix.added_case.id);
+    assert.equal(added.id, local.add(fix.added_case.input).id);
+  });
+
+  it('pull falls back to the heuristic when the key is null', async () => {
+    // Datasets that predate the `key` contract (or were authored in the UI) echo `key: null`, so
+    // the name-hash recovery must stay in place for them.
+    const local = new Dataset('billing');
+    const first = local.add({ m: 'first' });
+    installPullBackend('billing', local.datasetId, first.id!, { key: null });
+
+    assert.equal((await pullDataset(local.datasetId)).key, 'billing');
+  });
+});
 
 describe('datasetVersionId survives save/load', () => {
   // fromJSON reads it and Python keeps it, so dropping it on the way out loses the remote binding

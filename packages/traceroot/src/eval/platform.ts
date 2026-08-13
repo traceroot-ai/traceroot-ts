@@ -109,21 +109,32 @@ export interface PullOptions {
 /**
  * The dataset's authoring key, when it can be PROVEN from what the platform returned.
  *
- * The key is only ever hashed into the dataset id, never sent, so it is recoverable exactly when
- * the display name still hashes to that id (the default `key === name` case). A dataset published
- * under an explicit key, or renamed since, is not recoverable — and guessing would hand every
- * subsequently added case a divergent id, so the caller falls back to the dataset id (unambiguous
- * and stable) instead of a plausible lie.
+ * Only used for datasets that predate the `key` contract (or were authored in the UI), whose
+ * responses carry no key: it is then recoverable exactly when the display name still hashes to
+ * the dataset id (the default `key === name` case). A dataset published under an explicit key, or
+ * renamed since, is not recoverable this way — and guessing would hand every subsequently added
+ * case a divergent id, so the caller falls back to the dataset id (unambiguous and stable)
+ * instead of a plausible lie.
  */
 function recoveredKey(name: string, datasetId: string | undefined): string | undefined {
   return datasetId && stableDatasetId(name) === datasetId ? name : undefined;
 }
 
-function datasetFromVersion(snapshot: any, name: string): Dataset {
+/**
+ * Build a local Dataset pinned to the exact version described by `snapshot`.
+ *
+ * `key` is the key the platform echoed for the dataset. It is the authoritative one — taken
+ * verbatim, never re-derived — so a case added to the pulled dataset gets the same id as one
+ * authored locally, even under a display name that is not the key. Only when the platform echoes
+ * no key does the name-hash heuristic run.
+ */
+function datasetFromVersion(snapshot: any, name: string, key?: string | null): Dataset {
   // Native JSON at the HTTP boundary: the backend already JSON-decodes input/expected
   // before returning them, so the SDK takes the values as-is (no re-decode).
   const datasetId = snapshot.dataset_id ?? undefined;
-  const ds = new Dataset(name, null, { key: recoveredKey(name, datasetId) ?? datasetId });
+  // `||`, not `??`: an empty key is no key, and Python resolves this same chain by truthiness.
+  const resolvedKey = key || snapshot.key || recoveredKey(name, datasetId) || datasetId;
+  const ds = new Dataset(name, null, { key: resolvedKey });
   ds.datasetId = datasetId;
   ds.datasetVersionId = snapshot.dataset_version_id ?? undefined;
   for (const item of snapshot.items ?? []) {
@@ -160,6 +171,9 @@ export async function pullDataset(datasetId: string, opts: PullOptions = {}): Pr
   return pullDatasetVersion(versionId, {
     datasetId,
     name: meta.name ?? datasetId,
+    // The dataset response echoes the authoring key (null for datasets that predate the contract
+    // or were authored in the UI); the version endpoint does not carry it.
+    key: meta.key ?? null,
     apiKey,
     baseUrl,
   });
@@ -168,6 +182,12 @@ export async function pullDataset(datasetId: string, opts: PullOptions = {}): Pr
 export interface PullVersionOptions {
   datasetId?: string;
   name?: string;
+  /**
+   * The dataset's authoring key as echoed by the platform (`pullDataset` passes it through); pass
+   * it when pulling a bare version id whose dataset key you already know, so cases added to the
+   * result get ids that converge with local authoring.
+   */
+  key?: string | null;
   apiKey?: string;
   baseUrl?: string;
 }
@@ -209,6 +229,7 @@ export async function pullDatasetVersion(
   const ds = datasetFromVersion(
     snapshot,
     opts.name ?? returnedDatasetId ?? opts.datasetId ?? versionId,
+    opts.key,
   );
   ds.datasetVersionId = ds.datasetVersionId ?? versionId;
   ds.datasetId = ds.datasetId ?? opts.datasetId ?? undefined;

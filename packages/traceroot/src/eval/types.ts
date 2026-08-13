@@ -155,6 +155,12 @@ export interface DatasetSnapshot {
   revision: string;
   cases: EvalCase[];
   baseVersionId: string | null;
+  /**
+   * The authoring key the datasetId was hashed from. Carried so a push can SEND it: the platform
+   * cannot derive it (a renamed or explicitly keyed dataset hashes from something the name no
+   * longer spells), and without it a later pull can only guess.
+   */
+  key?: string | null;
 }
 
 /**
@@ -293,6 +299,7 @@ export class Dataset {
       revision: contentRevision(active),
       cases: frozen,
       baseVersionId: this.baseVersionId,
+      key: this.key,
     });
   }
 
