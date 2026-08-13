@@ -4,7 +4,7 @@
 
 import { TraceRoot } from '../traceroot';
 import { contentRevision, Dataset } from './types';
-import { stableDatasetId } from './ids';
+import { newRunId, stableDatasetId } from './ids';
 import { caseStatus } from './results';
 import type { EvalItemResult, UploadState } from './results';
 import type { EvalTransport, RunHandle, PublishResult } from './transport';
@@ -526,8 +526,11 @@ export class PlatformTransport implements EvalTransport {
       scorers: this.scorerRefs(),
     };
     if (this.datasetVersionId !== null) body.dataset_version_id = this.datasetVersionId;
-    const effectiveClientRun = clientRunId ?? this.clientRunId;
-    if (effectiveClientRun != null) body.client_run_id = effectiveClientRun;
+    // Idempotency key: prefer the caller's, else our own, else a FRESH one — always sent, so a
+    // registration retry (after a lost response) can never create a SECOND run. evaluate()/upload()
+    // always supply a clientRunId; this covers a bare createRun().
+    const effectiveClientRun = clientRunId ?? this.clientRunId ?? newRunId();
+    body.client_run_id = effectiveClientRun;
     // Free-form user metadata only; optional on the backend, so omit when empty to match its
     // absent-or-null rules rather than sending an empty object. Clamped like every other capped
     // field: metadata is whatever the caller put there (a whole prompt, a config dump), and over

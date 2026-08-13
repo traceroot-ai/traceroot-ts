@@ -16,6 +16,7 @@ import type { RunHandle } from '../src/eval/transport';
 const RUN: RunHandle = { name: 'e', datasetName: 'd', metadata: null };
 const realFetch = globalThis.fetch;
 let calls: string[];
+let bodies: { url: string; body: any }[];
 
 /** Answer the first `failures` requests to EVERY endpoint with `status`, then succeed. */
 function mockFlakyBackend(opts: { failures?: number; status?: number } = {}) {
@@ -23,9 +24,11 @@ function mockFlakyBackend(opts: { failures?: number; status?: number } = {}) {
   const status = opts.status ?? 503;
   const remaining = new Map<string, number>();
   calls = [];
-  globalThis.fetch = (async (url: string) => {
+  bodies = [];
+  globalThis.fetch = (async (url: string, init?: any) => {
     const u = String(url);
     calls.push(u);
+    bodies.push({ url: u, body: init?.body ? JSON.parse(init.body) : undefined });
     const key = u.replace(/^.*\/api/, '/api');
     const left = remaining.get(key) ?? failures;
     if (left > 0) {
@@ -69,6 +72,20 @@ describe('transient failures are retried', () => {
     await t.createRun('e', 'd', null);
     assert.equal(t.runId, 'run_1');
     assert.equal(tries('/evaluation-runs'), 2);
+  });
+
+  it('a keyless createRun sends a stable idempotency key on every retry', async () => {
+    // No clientRunId supplied -> createRun must still send one (generated), and the SAME one on
+    // the retry, so a retry after a lost response can never register a second run.
+    mockFlakyBackend({ failures: 1 });
+    const t = transport();
+    await t.createRun('e', 'd', null);
+    const keys = bodies
+      .filter((b) => b.url.endsWith('/evaluation-runs'))
+      .map((b) => b.body?.client_run_id);
+    assert.equal(keys.length, 2); // attempted twice
+    assert.ok(keys.every((k) => k)); // present on both
+    assert.equal(new Set(keys).size, 1); // the SAME key -> idempotent
   });
 
   it('finishRun recovers', async () => {
