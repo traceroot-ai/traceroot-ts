@@ -102,3 +102,54 @@ describe('dropped per-case results are counted', () => {
     assert.equal(run.uploadState.failedResultCount, 0);
   });
 });
+
+describe('an unfinished run is not "completed"', () => {
+  // A run whose body did not get through its cases is `incomplete`, whatever stopped it. Left to
+  // derive its own status the transport reports `completed` — a green run on the platform for an
+  // evaluation that scored two cases out of five, disagreeing with the local artifact and with
+  // the Python SDK (where the same gap made a Ctrl-C report `completed`).
+  it('a cancelled run finishes incomplete', async () => {
+    const t = new FakeTransport();
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () =>
+        evaluate({
+          name: 'r',
+          dataset: ds(2),
+          task: echo,
+          scorers: [ok],
+          transport: t,
+          signal: controller.signal,
+        }),
+      /cancelled/,
+    );
+    assert.equal(t.lastFinishStatus, 'incomplete');
+  });
+
+  it('a run whose body throws finishes incomplete', async () => {
+    const t = new FakeTransport();
+    await assert.rejects(
+      () =>
+        evaluate({
+          name: 'r',
+          dataset: ds(2),
+          task: echo,
+          scorers: [ok],
+          transport: t,
+          onCaseComplete: () => {
+            throw new Error('hook exploded');
+          },
+        }),
+      /hook exploded/,
+    );
+    assert.equal(t.lastFinishStatus, 'incomplete');
+  });
+
+  it('a run that finished its cases still derives its own status', async () => {
+    const t = new FakeTransport();
+    await evaluate({ name: 'r', dataset: ds(2), task: echo, scorers: [ok], transport: t });
+    // null = "you work it out from the error counts". An errored CASE is not an unfinished RUN.
+    assert.equal(t.lastFinishStatus, null);
+  });
+});

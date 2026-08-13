@@ -773,7 +773,12 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     // it must never become the story: if the run already failed, the original error keeps
     // propagating and the completion failure rides along on it (it used to REPLACE the real
     // cause — a /complete 400 buried the actual exception).
-    const status = cancelled ? 'incomplete' : null;
+    // A run whose body did not get through its cases is INCOMPLETE, whatever stopped it — an
+    // abort, or anything that threw out of the case loop. Left to derive its own status the
+    // transport would report 'completed' for an evaluation that scored two cases out of five. An
+    // errored CASE is not an unfinished run: that path leaves the status null so the error counts
+    // decide.
+    const status = cancelled || bodyFailed ? 'incomplete' : null;
     const emitted: Record<string, string[]> = {};
     for (const [def, metrics] of emittedOwnership) emitted[def] = [...metrics].sort();
     try {
