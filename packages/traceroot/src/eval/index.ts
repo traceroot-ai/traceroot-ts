@@ -38,7 +38,16 @@ export {
   DIRECTIONS,
   REQUIRED_INPUTS,
 } from './scorers';
-export type { ScorerMeta, ScorerDescriptor, ValueType, Direction, RequiredInput } from './scorers';
+export type {
+  ScorerMeta,
+  ScorerDescriptor,
+  ValueType,
+  Direction,
+  RequiredInput,
+  JudgeMessage,
+  JudgeBuilder,
+  LlmJudgeOptions,
+} from './scorers';
 export { collectRunProvenance, gitDirty } from './provenance';
 export {
   datasetLatestSnippet,

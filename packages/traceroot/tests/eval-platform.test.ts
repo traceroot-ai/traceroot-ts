@@ -3,7 +3,15 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Dataset, evaluate, makeRunResult, pullDataset, pullDatasetVersion } from '../src/eval';
+import {
+  Dataset,
+  evaluate,
+  makeRunResult,
+  pullDataset,
+  pullDatasetVersion,
+  scorer,
+  EvalRunResult,
+} from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 import { PlatformTransport } from '../src/eval/platform';
 
@@ -115,12 +123,59 @@ describe('pull', () => {
     await assert.rejects(() => pullDatasetVersion('dsv_missing'), /not found/);
   });
 
+  it('pulling a dataset with no current version raises a clear error, not an obscure one', async () => {
+    // No `current` => current_dataset_version_id is absent; without the guard a null version id
+    // reaches pullDatasetVersion and fails obscurely instead of naming the real problem.
+    mockBackend({ versions: {} });
+    await assert.rejects(() => pullDataset('ds_1'), /no published version to pull/);
+  });
+
   it('mismatched dataset/version identity raises', async () => {
     mockBackend({ versions: { dsv_x: version('dsv_x', 'ds_OTHER') } });
     await assert.rejects(
       () => pullDatasetVersion('dsv_x', { datasetId: 'ds_1' }),
       /belongs to dataset/,
     );
+  });
+});
+
+describe('scorer policy is retained for re-upload (M3)', () => {
+  it('evaluate captures the declared scorer policy on the result', async () => {
+    const acc = scorer((_ctx: ScorerContext) => 1, {
+      name: 'acc',
+      valueType: 'numeric',
+      direction: 'higher_is_better',
+      threshold: 0.8,
+    });
+    const d = new Dataset('m3');
+    d.add(1, { id: 'c0', expected: 1 });
+    // Captured even for a local run (no transport) — the "run now, upload later" flow.
+    const run = await evaluate({ name: 'r', dataset: d, task: echo, scorers: [acc], local: true });
+    const spec = (run.scorerSpecs ?? []).find((s) => s.name === 'acc');
+    assert.equal(spec?.threshold, 0.8);
+    assert.equal(spec?.direction, 'higher_is_better');
+  });
+
+  it('scorerSpecs round-trips through toJSON/fromJSON', () => {
+    const specs = [
+      {
+        name: 'acc',
+        version: null,
+        value_type: 'numeric',
+        direction: 'higher_is_better',
+        threshold: 0.8,
+      },
+    ];
+    const run = makeRunResult(
+      'r',
+      [],
+      { status: 'uploaded', dashboardUrl: null },
+      {
+        scorerSpecs: specs,
+      },
+    );
+    const loaded = EvalRunResult.fromJSON(JSON.parse(JSON.stringify(run.toJSON())));
+    assert.deepEqual(loaded.scorerSpecs, specs);
   });
 });
 

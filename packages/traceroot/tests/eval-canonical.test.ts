@@ -140,6 +140,19 @@ describe('normalization rules', () => {
     }
   });
 
+  it('a lone surrogate is rejected, not silently hashed', () => {
+    // A lone UTF-16 surrogate can't encode to UTF-8: Python raises while hashing it and this SDK
+    // would silently hash the escaped form. Both must reject it as a CanonicalizationError.
+    for (const bad of ['\uD800', { k: 'lo\uDC00' }, { '\uD834': 'v' }]) {
+      assert.throws(() => canonicalJson(bad), /surrogate/);
+    }
+  });
+
+  it('a valid astral character still canonicalizes', () => {
+    // A real non-BMP character (a surrogate PAIR) is valid text, not a lone surrogate.
+    assert.equal(canonicalJson('\u{1F600}'), '"\u{1F600}"');
+  });
+
   it('Dataset.add/upsert reject a non-serializable payload, naming the field', () => {
     class Point {
       constructor(readonly x: number) {}

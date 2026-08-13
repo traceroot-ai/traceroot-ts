@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
 import type { Score } from './types';
+import type { ScorerSpec } from './platform';
 
 // --- Python-identical rendering for summary() --------------------------------
 /** Python `repr()` of a string: single quotes, switching to double quotes when the value
@@ -169,6 +170,7 @@ export interface EvalRunResultInit {
   dataset?: RunDatasetRef | null;
   runId?: string | null;
   metadata?: Record<string, unknown> | null;
+  scorerSpecs?: ScorerSpec[] | null;
 }
 
 /** The full, immutable result of an evaluation run. */
@@ -182,6 +184,11 @@ export class EvalRunResult {
   dataset: RunDatasetRef | null;
   runId: string | null;
   metadata: Record<string, unknown> | null;
+  // Declared scorer policy (name/version/value_type/direction/threshold) captured at run time.
+  // Retained so an explicit upload() re-declares each metric's threshold/direction to the platform
+  // instead of re-registering policy-less — otherwise a re-upload's per-score `passed` verdicts
+  // would silently disagree with the original run's.
+  scorerSpecs: ScorerSpec[] | null;
 
   constructor(init: EvalRunResultInit) {
     this.name = init.name;
@@ -193,6 +200,7 @@ export class EvalRunResult {
     this.dataset = init.dataset ?? null;
     this.runId = init.runId ?? null;
     this.metadata = init.metadata ?? null;
+    this.scorerSpecs = init.scorerSpecs ?? null;
   }
 
   // --- inspection ---
@@ -258,6 +266,7 @@ export class EvalRunResult {
       // the run's status and dashboard URL.
       upload: { status: this.uploadState.status, dashboard_url: this.uploadState.dashboardUrl },
       metadata: this.metadata,
+      scorer_specs: this.scorerSpecs,
     };
   }
 
@@ -289,6 +298,7 @@ export class EvalRunResult {
         : null,
       runId: d.run_id ?? null,
       metadata: d.metadata ?? null,
+      scorerSpecs: d.scorer_specs ?? null,
     });
   }
 
@@ -370,6 +380,10 @@ export class EvalRunResult {
         candidateVersion: this.candidateVersion,
         datasetVersionId: this.dataset.datasetVersionId,
         clientRunId: this.localRunId,
+        // Re-declare each metric's threshold/direction (captured at run time) so a re-upload's
+        // per-score `passed` matches the original run instead of registering policy-less. null (an
+        // older/loaded run without specs) falls back to names.
+        scorerSpecs: this.scorerSpecs ?? undefined,
       });
     }
     const datasetName = this.dataset ? this.dataset.datasetId : '<inline>';
@@ -406,6 +420,7 @@ export interface MakeRunResultOptions {
   dataset?: RunDatasetRef | null;
   localRunId?: string;
   metadata?: Record<string, unknown> | null;
+  scorerSpecs?: ScorerSpec[] | null;
 }
 
 /** Build an EvalRunResult (computes the score summary). */

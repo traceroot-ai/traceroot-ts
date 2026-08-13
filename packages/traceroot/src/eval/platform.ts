@@ -252,7 +252,16 @@ export async function pullDataset(datasetId: string, opts: PullOptions = {}): Pr
     `${baseUrl}/api/v1/public/datasets/${encodeURIComponent(datasetId)}`,
     apiKey,
   );
+  // A dataset with no published version yet has no current version to substitute; without this
+  // guard a null versionId reaches pullDatasetVersion and fails obscurely (a bad URL) instead of
+  // saying what is actually wrong.
   const versionId = opts.versionId ?? meta.current_dataset_version_id;
+  if (versionId == null) {
+    throw new Error(
+      `dataset '${datasetId}' has no published version to pull; publish one first ` +
+        `(evaluate() or Dataset.push()).`,
+    );
+  }
   return pullDatasetVersion(versionId, {
     datasetId,
     name: meta.name ?? datasetId,

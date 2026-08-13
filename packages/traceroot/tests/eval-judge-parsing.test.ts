@@ -6,6 +6,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { llmJudge } from '../src/eval';
+// The judge authoring types must be reachable from the package root so a consumer can annotate an
+// llmJudge config / builder — tsc fails this import if they are not exported (see eval/index.ts).
+import type { LlmJudgeOptions, JudgeBuilder, JudgeMessage } from '../src/eval';
+
+const _judgeTypesExported: [LlmJudgeOptions, JudgeBuilder, JudgeMessage] | null = null;
+void _judgeTypesExported;
 
 function judgeReturning(resp: string) {
   return llmJudge({

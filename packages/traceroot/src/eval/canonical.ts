@@ -47,6 +47,22 @@ export function compareCodePoints(a: string, b: string): number {
   return ca.length - cb.length;
 }
 
+// A lone UTF-16 surrogate: a high surrogate not followed by a low one, or a low one not preceded
+// by a high one. Such a string is not valid Unicode text.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+function rejectLoneSurrogate(s: string): void {
+  // Parity with Python `_reject_lone_surrogate`: a lone surrogate cannot be encoded as UTF-8, so
+  // Python would raise while hashing it and this SDK would silently hash the escaped form — the two
+  // must agree, so reject it explicitly in both.
+  if (LONE_SURROGATE.test(s)) {
+    throw new CanonicalizationError(
+      'string contains an unpaired UTF-16 surrogate and cannot be canonicalized; ' +
+        'it is not valid Unicode text',
+    );
+  }
+}
+
 function reject(value: unknown): never {
   const kind =
     typeof value === 'object' && value !== null
@@ -66,7 +82,10 @@ function isPlainObject(v: object): boolean {
 
 /** Stringify a mapping key the way a JavaScript object/Map key stringifies. */
 function normKey(k: unknown): string {
-  if (typeof k === 'string') return k;
+  if (typeof k === 'string') {
+    rejectLoneSurrogate(k);
+    return k;
+  }
   if (typeof k === 'boolean') return k ? 'true' : 'false';
   if (typeof k === 'number') return numberToken(k);
   if (k === null || k === undefined) return 'null';
@@ -86,7 +105,11 @@ function numberToken(n: number): string {
 function norm(value: unknown, path: object[]): unknown {
   if (value === null || value === undefined) return null;
   const t = typeof value;
-  if (t === 'string' || t === 'boolean') return value;
+  if (t === 'boolean') return value;
+  if (t === 'string') {
+    rejectLoneSurrogate(value as string);
+    return value;
+  }
   if (t === 'number') {
     const n = value as number;
     if (Number.isNaN(n)) return 'NaN';

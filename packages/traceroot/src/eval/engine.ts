@@ -837,6 +837,10 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     candidateVersion: candidateVersion ?? null,
     dataset: datasetRef,
     metadata: runMetadata,
+    // Retain the declared scorer policy so an explicit result.upload() can re-declare each metric's
+    // threshold/direction rather than re-register policy-less. Captured from the scorers directly
+    // (`specs` above), not the transport, so a local/Fake run — "run now, upload later" — keeps it.
+    scorerSpecs: specs,
   });
 
   // When the bar was shown (interactive), surface the clickable run link if the backend
