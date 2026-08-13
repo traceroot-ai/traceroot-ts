@@ -140,7 +140,7 @@ describe('pull', () => {
   });
 });
 
-describe('scorer policy is retained for re-upload (M3)', () => {
+describe('scorer policy is retained for re-upload', () => {
   it('evaluate captures the declared scorer policy on the result', async () => {
     const acc = scorer((_ctx: ScorerContext) => 1, {
       name: 'acc',
@@ -182,7 +182,7 @@ describe('scorer policy is retained for re-upload (M3)', () => {
 
 describe('non-finite scores do not poison the local aggregate', () => {
   it('a NaN score is excluded from the mean instead of folding into it', async () => {
-    // H1 errors a non-finite score on the wire; the local aggregate must agree, or run.json and
+    // A non-finite score is errored on the wire; the local aggregate must agree, or run.json and
     // .summary() disagree with the platform (and Python writes a bare NaN while TS writes null).
     const bad = scorer((_ctx: ScorerContext) => NaN, {
       name: 'm',
@@ -485,6 +485,30 @@ describe('reporting (cloud-only)', () => {
     assert.equal(byName.is_billing.passed, true);
     assert.equal('passed' in byName.route, false);
     assert.equal('passed' in byName.mystery, false);
+  });
+
+  it('a payload that JSON-serializes to undefined reports as null instead of aborting the case', async () => {
+    // JSON.stringify returns undefined (not a string) for a function, a symbol, or an object whose
+    // toJSON() returns undefined. Reading .length off that threw inside the payload build, so ONE
+    // odd task output aborted the whole case upload. The field must degrade to null/'' instead.
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', {});
+    const run = await t.createRun('r', 'd', null);
+    await t.recordItemResult(run, {
+      caseId: 'c1',
+      input: () => 1,
+      output: { toJSON: () => undefined },
+      expected: Symbol('e'),
+      scores: [{ name: 'acc', value: 1 }],
+      scorerErrors: {},
+      error: null,
+      traceId: 't',
+    });
+    const res = calls.find((c) => c.url.endsWith('/results'))!;
+    assert.equal(res.body.input, ''); // non-nullable on the wire
+    assert.equal(res.body.candidate_output, null);
+    assert.equal(res.body.expected_output, null);
+    assert.equal(res.body.status, 'not_scored');
   });
 
   it('lower_is_better is inclusive at the threshold', async () => {

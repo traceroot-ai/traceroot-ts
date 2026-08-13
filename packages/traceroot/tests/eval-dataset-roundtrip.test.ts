@@ -1,4 +1,4 @@
-// C4 — a published dataset re-hashes to the revision that published it.
+// A published dataset re-hashes to the revision that published it.
 //
 // `publishedRevision === snapshot.revision` is the single predicate the whole idempotent-push
 // design rests on, and both suites used to stub it out wholesale. Here NOTHING in the SDK is
@@ -108,7 +108,7 @@ describe('dataset push/pull round trip', () => {
   });
 
   it('a second push of unchanged content is a no-op and never prompts', async () => {
-    // The user-visible consequence of C4: a Date/Set/typed-array case used to publish a brand-new
+    // The user-visible consequence: a Date/Set/typed-array case used to publish a brand-new
     // version on every push, unprompted-and-unbounded, because the pull never matched.
     const sync = makeSync();
     const refuse = () => {

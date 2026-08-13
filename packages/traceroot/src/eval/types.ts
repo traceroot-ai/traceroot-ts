@@ -252,6 +252,10 @@ export class Dataset {
     const cur = this.casesById.get(id);
     if (!cur) throw new Error(`no such case: ${id}`);
     const updated = { ...cur, ...changes, id };
+    // Validate the MERGED case, like add()/upsert(): update() is an authoring door too, and an
+    // uncanonicalizable value stored here would only fail later at snapshot()/push, far from the
+    // line that introduced it and without naming the field.
+    validatePayload(updated);
     this.casesById.set(id, updated);
     return updated;
   }

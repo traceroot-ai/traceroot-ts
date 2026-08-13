@@ -2,7 +2,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { aggregateScores, makeRunResult } from '../src/eval';
+import { aggregateScores, makeRunResult, EvalRunResult } from '../src/eval';
 import type { EvalItemResult, Score } from '../src/eval';
 
 function item(caseId: string, scores: Score[], opts: Partial<EvalItemResult> = {}): EvalItemResult {
@@ -73,6 +73,41 @@ describe('EvalRunResult.toJSON', () => {
     assert.equal(json.score_summary.acc.mean, 0.5);
     assert.equal(json.item_results.length, 2);
     JSON.stringify(json); // must not throw
+  });
+
+  it('round-trips failedResultCount so a partial upload stays visible after reload', () => {
+    // A run that dropped result POSTs reports "uploaded"; the dropped count is the only signal
+    // that results are silently missing. Losing it on save/load makes a partial run look green.
+    // Python serializes it under the same `upload` object (UploadState.to_dict()).
+    const run = makeRunResult('routing-v2', [item('a', [{ name: 'acc', value: 1 }])], {
+      status: 'uploaded',
+      dashboardUrl: null,
+      failedResultCount: 3,
+    });
+    assert.equal((run.toJSON() as any).upload.failed_result_count, 3);
+    const reloaded = EvalRunResult.fromJSON(JSON.parse(JSON.stringify(run.toJSON())));
+    assert.equal(reloaded.uploadState.failedResultCount, 3);
+  });
+
+  it('a run with no dropped results reloads as zero, not undefined', () => {
+    const run = makeRunResult('r', [item('a', [{ name: 'acc', value: 1 }])], {
+      status: 'uploaded',
+      dashboardUrl: null,
+    });
+    assert.equal((run.toJSON() as any).upload.failed_result_count, 0);
+    const reloaded = EvalRunResult.fromJSON(JSON.parse(JSON.stringify(run.toJSON())));
+    assert.equal(reloaded.uploadState.failedResultCount, 0);
+  });
+
+  it('the runner artifact shape carries the dropped count too', () => {
+    // runner.ts writes `upload.failed_result_count` into run.json; fromRunnerArtifact must read it.
+    const reloaded = EvalRunResult.fromJSON({
+      kind: 'eval_run',
+      evaluation_name: 'r',
+      cases: [],
+      upload: { status: 'uploaded', dashboard_url: null, failed_result_count: 2 },
+    });
+    assert.equal(reloaded.uploadState.failedResultCount, 2);
   });
 });
 

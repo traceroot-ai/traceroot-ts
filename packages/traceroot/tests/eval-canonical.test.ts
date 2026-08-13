@@ -1,4 +1,4 @@
-// One canonical form, shared with Python (C2/C3/C4).
+// One canonical form, shared with Python.
 //
 // Every vector here is asserted against the SAME fixture bytes by
 // `traceroot-py/tests/eval/test_canonical.py`, so a divergence in either SDK fails a test in that
@@ -159,6 +159,23 @@ describe('normalization rules', () => {
     }
     assert.throws(() => new Dataset('d').add(1, { expected: new Point(1) }), /test case expected/);
     assert.throws(() => new Dataset('d').upsert({ input: () => 1, id: 'a' }), /test case input/);
+  });
+
+  it('Dataset.update rejects a non-serializable payload at the update call, naming the field', () => {
+    // update() is the third authoring door. Storing an uncanonicalizable value here would defer
+    // the failure to snapshot()/push, where it surfaces far from the line that caused it and
+    // without naming the field.
+    class Point {
+      constructor(readonly x: number) {}
+    }
+    const ds = new Dataset('d');
+    const id = ds.add(1, { expected: 2 }).id as string;
+    assert.throws(() => ds.update(id, { expected: new Point(1) }), /test case expected/);
+    assert.throws(() => ds.update(id, { input: () => 1 }), /test case input/);
+    assert.throws(() => ds.update(id, { metadata: { bad: 1n } as never }), /test case metadata/);
+    // The rejected update left the case untouched, so a later snapshot still succeeds.
+    assert.equal(ds.get(id)!.expected, 2);
+    ds.snapshot();
   });
 });
 

@@ -102,6 +102,16 @@ export interface UploadState {
   failedResultCount?: number;
 }
 
+/** Read an `upload` block back from either artifact shape (Python: `UploadState(**d["upload"])`).
+ *  Shared so both readers restore the dropped-result count, not just the status/URL. */
+function uploadStateFromJSON(d: Record<string, any> | undefined | null): UploadState {
+  return {
+    status: d?.status ?? 'uploaded',
+    dashboardUrl: d?.dashboard_url ?? null,
+    failedResultCount: d?.failed_result_count ?? 0,
+  };
+}
+
 /** Immutable description of the exact dataset version/content a run executed. */
 export interface RunDatasetRef {
   datasetId: string;
@@ -270,8 +280,14 @@ export class EvalRunResult {
         Object.entries(this.scoreSummary).map(([k, v]) => [k, { ...v }]),
       ),
       // fromJSON() reads `upload`, so write it here too — otherwise a save/load round trip loses
-      // the run's status and dashboard URL.
-      upload: { status: this.uploadState.status, dashboard_url: this.uploadState.dashboardUrl },
+      // the run's status and dashboard URL. `failed_result_count` rides along (Python's
+      // UploadState.to_dict() writes the same key): without it a reloaded run that silently
+      // dropped result POSTs reads as fully uploaded and the partial-upload warning disappears.
+      upload: {
+        status: this.uploadState.status,
+        dashboard_url: this.uploadState.dashboardUrl,
+        failed_result_count: this.uploadState.failedResultCount ?? 0,
+      },
       metadata: this.metadata,
       scorer_specs: this.scorerSpecs,
     };
@@ -289,10 +305,7 @@ export class EvalRunResult {
       scoreSummary: Object.fromEntries(
         Object.entries(d.score_summary ?? {}).map(([k, v]: [string, any]) => [k, { ...v }]),
       ),
-      uploadState: {
-        status: d.upload?.status ?? 'uploaded',
-        dashboardUrl: d.upload?.dashboard_url ?? null,
-      },
+      uploadState: uploadStateFromJSON(d.upload),
       localRunId: d.local_run_id ?? '',
       candidateVersion: d.candidate_version ?? null,
       dataset: ds
@@ -335,10 +348,7 @@ export class EvalRunResult {
       scoreSummary: Object.fromEntries(
         Object.entries(d.scores ?? {}).map(([k, v]: [string, any]) => [k, { ...v }]),
       ),
-      uploadState: {
-        status: d.upload?.status ?? 'uploaded',
-        dashboardUrl: d.upload?.dashboard_url ?? null,
-      },
+      uploadState: uploadStateFromJSON(d.upload),
       localRunId: d.local_run_id ?? '',
       candidateVersion: d.candidate_version ?? null,
       dataset: ds

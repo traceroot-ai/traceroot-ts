@@ -556,7 +556,7 @@ async function runOne(
   const createdAt = nowIso();
   const identity = datasetIdentity(evaluation.dataset as Dataset | EvalCase[]);
   // The declared policy of this evaluation's own scorers — used so the local artifact's per-score
-  // `passed` reflects each scorer's declared threshold/direction, not a hardcoded 1.0 (M1).
+  // `passed` reflects each scorer's declared threshold/direction, not a hardcoded 1.0.
   const policy = evaluationPolicy(evaluation);
 
   const [chosen, runMode, isFinalInitial] = subset(

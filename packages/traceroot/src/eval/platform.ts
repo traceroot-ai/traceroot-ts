@@ -127,10 +127,15 @@ function isRetryable(err: unknown): boolean {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Result-reporting fields are backend z.string(); a non-string is JSON-encoded. */
+/** Result-reporting fields are backend z.string(); a non-string is JSON-encoded.
+ *
+ *  JSON.stringify returns `undefined` — not a string — for a function, a symbol, or an object whose
+ *  toJSON() returns undefined. Coalesced to null here so the declared type holds: an unencodable
+ *  payload reports as "absent" instead of blowing up the caller (clamp() reading .length off it
+ *  aborted the whole case upload over one odd task output). */
 function asText(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  return typeof value === 'string' ? value : JSON.stringify(value);
+  return typeof value === 'string' ? value : (JSON.stringify(value) ?? null);
 }
 
 /** True for a NaN/Infinity score value (booleans and strings never are). */
