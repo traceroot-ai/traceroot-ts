@@ -312,6 +312,8 @@ export interface PlatformTransportOptions {
   datasetVersionId?: string | null;
   clientRunId?: string | null;
   passThreshold?: number | null;
+  /** Stable identity for the evaluation this run belongs to; defaults to the run's name. */
+  evaluationKey?: string | null;
   apiKey?: string;
   baseUrl?: string;
 }
@@ -352,6 +354,10 @@ export class PlatformTransport implements EvalTransport {
   /** Rich scorer descriptors (value_type/direction/threshold); the engine fills this when
    *  the caller leaves it undefined. Falls back to scorerNames when unset. */
   scorerSpecs?: ScorerSpec[];
+  /** Stable identity for the evaluation this run belongs to, separate from its display name (the
+   *  same split as a scorer's key). Defaults to the name at registration, so a caller who never
+   *  sets one is unaffected; set it to group runs across renames and across SDKs. */
+  evaluationKey: string | null;
   private readonly candidateVersion: string;
   private readonly environment: string;
   private readonly datasetVersionId: string | null;
@@ -379,6 +385,7 @@ export class PlatformTransport implements EvalTransport {
     this.datasetVersionId = opts.datasetVersionId ?? null;
     this.clientRunId = opts.clientRunId ?? null;
     this.passThreshold = opts.passThreshold ?? null;
+    this.evaluationKey = opts.evaluationKey ?? null;
     this.apiKey = apiKey;
     this.baseUrl = baseUrl;
   }
@@ -431,6 +438,12 @@ export class PlatformTransport implements EvalTransport {
   ): Promise<RunHandle> {
     const body: Record<string, unknown> = {
       evaluation_name: name,
+      // ALWAYS sent. The backend groups runs by evaluation_key and falls back to the name when it
+      // is absent — which quietly makes the display name the identity, so a rename forks the
+      // history and a TypeScript run only groups with a Python one when their names match
+      // character for character. Defaulting the key to the name reproduces today's grouping
+      // exactly while giving the caller something stable to pin.
+      evaluation_key: this.evaluationKey || name,
       dataset_id: this.datasetId,
       candidate_version: this.candidateVersion,
       environment: this.environment,

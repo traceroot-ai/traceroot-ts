@@ -48,6 +48,12 @@ export interface EvaluateOptions {
   scorers: ScorerFn[];
   candidateVersion?: string;
   datasetId?: string;
+  /**
+   * The stable identity runs are grouped by, separate from the display `name` (the same split as
+   * a scorer's `key`): set it to keep one history across a rename, or to group the TypeScript and
+   * Python runs of one evaluation. Defaults to `name`.
+   */
+  evaluationKey?: string;
   maxConcurrency?: number;
   /** Bounds each case (seconds); a timeout is an isolated per-case error. */
   timeout?: number;
@@ -685,6 +691,15 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   const specs = describeScorers(scorers);
   if ('scorerSpecs' in active && (active as PlatformTransport).scorerSpecs === undefined) {
     (active as PlatformTransport).scorerSpecs = specs;
+  }
+  // Same seam for the evaluation's stable identity: fill it only when the transport has the field
+  // and nothing has set it, so a transport constructed with an explicit key keeps it.
+  if (
+    options.evaluationKey !== undefined &&
+    'evaluationKey' in active &&
+    (active as PlatformTransport).evaluationKey == null
+  ) {
+    (active as PlatformTransport).evaluationKey = options.evaluationKey;
   }
 
   // Eval structural spans always export (cloud-only) and are linked to the reported results.
