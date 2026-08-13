@@ -285,6 +285,9 @@ export class CancelledError extends Error {
   localRunId?: string;
   runId?: string | null;
   uploadState?: UploadState;
+  /** Set only when finalizing the cancelled run ALSO failed — the cancellation stays the error,
+   *  the finalization failure rides along (the run may still be 'running' on the platform). */
+  completionError?: unknown;
 }
 
 /** Race `p` against the case's shared deadline. `deadline` is an absolute performance.now() ms
@@ -749,6 +752,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   const droppedResults: string[] = [];
   let bodyFailed = false;
   let bodyError: unknown;
+  // A finalization failure on a CANCELLED run: kept, not thrown, so the cancellation survives.
+  let cancelCompletionError: unknown;
   try {
     const raw = await runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
@@ -804,7 +809,15 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         failedResultCount: droppedResults.length,
       };
     } catch (completionErr) {
-      if (!bodyFailed) {
+      if (bodyFailed) {
+        attachCompletionFailure(bodyError, completionErr);
+      } else if (cancelled) {
+        // Cancellation is the caller's story (Ctrl-C is not a backend fault) and it is what this
+        // path documents raising. An EvalCompletionError thrown here would REPLACE that identity,
+        // leaving an aborted run indistinguishable from a broken backend — so remember the
+        // failure and let the CancelledError below carry it as secondary context.
+        cancelCompletionError = completionErr;
+      } else {
         // The run itself succeeded: one clear error naming the completion failure, with the
         // transport error carried as data rather than chained into a cause chain.
         throw new EvalCompletionError(
@@ -813,7 +826,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
           completionErr,
         );
       }
-      attachCompletionFailure(bodyError, completionErr);
     }
   }
   if (cancelled) {
@@ -823,6 +835,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     err.localRunId = localRunId;
     err.runId = active.runId ?? null;
     err.uploadState = uploadState;
+    // Undefined unless finalization ALSO failed (uploadState is then unset): the run may still be
+    // 'running' on the platform, and that is worth handing back with the cancellation.
+    if (cancelCompletionError !== undefined) err.completionError = cancelCompletionError;
     throw err;
   }
 

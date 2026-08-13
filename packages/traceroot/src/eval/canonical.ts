@@ -75,6 +75,23 @@ function reject(value: unknown): never {
   );
 }
 
+/** A symbol key cannot be canonicalized — and `Object.entries` would DROP it, so the field
+ *  would vanish from the hash and the wire alike while the author believes it was sent. There is
+ *  no Python counterpart to converge on either (a symbol is not a dict key), so reject it the
+ *  same way a symbol VALUE is rejected, instead of silently losing data. */
+function rejectSymbolKeys(v: object): void {
+  // Only ENUMERABLE own symbols: a non-enumerable symbol property is hidden metadata a library
+  // attached (JSON.stringify ignores those too), not a field anyone authored as payload.
+  for (const sym of Object.getOwnPropertySymbols(v)) {
+    if (Object.prototype.propertyIsEnumerable.call(v, sym)) {
+      throw new CanonicalizationError(
+        `object has a symbol key (${String(sym)}) which is not JSON-serializable; canonical ` +
+          `JSON has no symbol keys and the field would be silently dropped — use a string key`,
+      );
+    }
+  }
+}
+
 function isPlainObject(v: object): boolean {
   const proto = Object.getPrototypeOf(v);
   return proto === Object.prototype || proto === null;
@@ -157,6 +174,7 @@ function norm(value: unknown, path: object[]): unknown {
     }
     if (obj instanceof Map) return normEntries([...obj.entries()], path);
     if (isPlainObject(obj)) {
+      rejectSymbolKeys(obj);
       return normEntries(Object.entries(obj as Record<string, unknown>), path);
     }
     return reject(obj);

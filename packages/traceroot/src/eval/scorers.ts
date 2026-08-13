@@ -14,11 +14,20 @@
 // always wins. Direction is NEVER inferred from the scorer name. A version is only reported
 // when explicitly declared — never fabricated.
 
+import { trace } from '@opentelemetry/api';
+
 import type { ScorerContext, Score, DeferredScore } from './types';
 import { canonicalHash } from './canonical';
 import { observe } from '../observe';
 import { isProviderInstrumented } from '../instrumentation';
 import { TraceRoot } from '../traceroot';
+import {
+  OI_LLM_TOKEN_COUNT_CACHE_CREATION,
+  OI_LLM_TOKEN_COUNT_CACHE_READ,
+  OI_LLM_TOKEN_COUNT_COMPLETION,
+  OI_LLM_TOKEN_COUNT_PROMPT,
+  OI_LLM_TOKEN_COUNT_TOTAL,
+} from '../constants';
 
 /**
  * Whether an active provider integration already traces this model's calls, so the judge must
@@ -323,12 +332,97 @@ function parseJudgeOutput(text: string, outputType: OutputType): number | string
   );
 }
 
-async function defaultComplete(model: string, messages: JudgeMessage[]): Promise<string> {
+/** Token usage as the judge's own LLM span reports it. Undefined fields are simply not emitted —
+ *  a count is never invented, because the BACKEND prices whatever token attributes arrive. */
+interface JudgeUsage {
+  prompt?: number;
+  completion?: number;
+  total?: number;
+  cacheRead?: number;
+  cacheCreation?: number;
+}
+
+/** The default dispatch's result: the judge's answer plus the provider's usage when it reported
+ *  one. A user-supplied `complete` returns text only, so its usage is undefined. */
+interface JudgeCompletion {
+  text: string;
+  usage?: JudgeUsage;
+}
+
+function num(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+/** Anthropic usage -> the OpenInference counts. `input_tokens` EXCLUDES cached/created input, so
+ *  prompt sums the three — identical to the SDK's own claude-agent-sdk instrumentation (and to
+ *  traceroot-py), so the same judge call prices the same however it was traced. */
+function anthropicUsage(raw: unknown): JudgeUsage | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const u = raw as Record<string, unknown>;
+  const cacheRead = num(u.cache_read_input_tokens);
+  const cacheCreation = num(u.cache_creation_input_tokens);
+  const input = num(u.input_tokens);
+  const completion = num(u.output_tokens);
+  const prompt =
+    input === undefined && cacheRead === undefined && cacheCreation === undefined
+      ? undefined
+      : (input ?? 0) + (cacheRead ?? 0) + (cacheCreation ?? 0);
+  if (prompt === undefined && completion === undefined) return undefined;
+  // Anthropic reports no total of its own; both parts are known here (the guard above), so this
+  // is a sum of reported counts, not an estimate.
+  return { prompt, completion, total: (prompt ?? 0) + (completion ?? 0), cacheRead, cacheCreation };
+}
+
+/** OpenAI usage -> the OpenInference counts. `prompt_tokens` already includes cached input, and
+ *  the provider reports `total_tokens` itself, so nothing is recomputed. */
+function openaiUsage(raw: unknown): JudgeUsage | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const u = raw as Record<string, unknown>;
+  const prompt = num(u.prompt_tokens);
+  const completion = num(u.completion_tokens);
+  const total = num(u.total_tokens);
+  if (prompt === undefined && completion === undefined && total === undefined) return undefined;
+  const details = u.prompt_tokens_details;
+  const cacheRead =
+    typeof details === 'object' && details !== null
+      ? num((details as Record<string, unknown>).cached_tokens)
+      : undefined;
+  return { prompt, completion, total, cacheRead };
+}
+
+/**
+ * Emit the judge's token usage on the CURRENT span (the judge's own LLM span, opened by observe()
+ * just below). The SDK never computes a dollar cost — it emits the OpenInference token counts and
+ * the backend prices them on ingest, exactly as it does for an auto-instrumented LLM call.
+ */
+function setJudgeTokenCounts(usage: JudgeUsage): void {
+  const span = trace.getActiveSpan();
+  if (!span) return;
+  const set = (key: string, value: number | undefined) => {
+    if (value !== undefined) span.setAttribute(key, value);
+  };
+  set(OI_LLM_TOKEN_COUNT_PROMPT, usage.prompt);
+  set(OI_LLM_TOKEN_COUNT_COMPLETION, usage.completion);
+  set(OI_LLM_TOKEN_COUNT_TOTAL, usage.total);
+  set(OI_LLM_TOKEN_COUNT_CACHE_READ, usage.cacheRead);
+  set(OI_LLM_TOKEN_COUNT_CACHE_CREATION, usage.cacheCreation);
+}
+
+/** How the default dispatch loads a provider SDK. Overridable for tests (see
+ *  `_setJudgeProviderImport`) so the dispatch itself can be exercised without a network. */
+let providerImport: (pkg: string) => Promise<any> = (pkg) => import(pkg);
+
+/** @internal — test seam: swap the provider-SDK loader (pass null to restore the real import). */
+export function _setJudgeProviderImport(fn: ((pkg: string) => Promise<any>) | null): void {
+  providerImport = fn ?? ((pkg) => import(pkg));
+}
+
+async function defaultComplete(model: string, messages: JudgeMessage[]): Promise<JudgeCompletion> {
   const pkg =
     model.startsWith('claude') || model.startsWith('anthropic') ? '@anthropic-ai/sdk' : 'openai';
   let mod: any;
   try {
-    mod = await import(pkg);
+    mod = await providerImport(pkg);
   } catch {
     throw new Error(`llmJudge needs the '${pkg}' package to call this model, or pass complete=...`);
   }
@@ -341,11 +435,17 @@ async function defaultComplete(model: string, messages: JudgeMessage[]): Promise
     const turns = messages.filter((m) => m.role !== 'system');
     const client = new mod.default();
     const resp = await client.messages.create({ model, max_tokens: 512, system, messages: turns });
-    return (resp.content ?? []).map((b: any) => b.text ?? '').join('');
+    return {
+      text: (resp.content ?? []).map((b: any) => b.text ?? '').join(''),
+      usage: anthropicUsage(resp.usage),
+    };
   }
   const client = new mod.default();
   const resp = await client.chat.completions.create({ model, messages });
-  return resp.choices[0]?.message?.content ?? '';
+  return {
+    text: resp.choices[0]?.message?.content ?? '',
+    usage: openaiUsage(resp.usage),
+  };
 }
 
 /** A dynamic judge's builder: given the case, returns the judge's template variables (a `{{VAR}}`
@@ -463,7 +563,12 @@ export function llmJudge(opts: LlmJudgeOptions, builder?: JudgeBuilder): Scorer 
       value_type: opts.valueType ?? null,
       metadata: opts.metadata ?? null,
     });
-  const call = (msgs: JudgeMessage[]) => (opts.complete ?? defaultComplete)(opts.model, msgs);
+  // One channel for both dispatches: the default one also carries the provider's token usage,
+  // a user-supplied `complete` returns text only (nothing to report, nothing invented).
+  const call = async (msgs: JudgeMessage[]): Promise<JudgeCompletion> =>
+    opts.complete === undefined
+      ? defaultComplete(opts.model, msgs)
+      : { text: await opts.complete(opts.model, msgs) };
   const judge: Scorer = async (ctx: ScorerContext): Promise<Score> => {
     const rendered = builder
       ? renderBuilt(messages, await builder(ctx), ctx, opts.name)
@@ -478,11 +583,19 @@ export function llmJudge(opts: LlmJudgeOptions, builder?: JudgeBuilder): Scorer 
     if (opts.complete === undefined && !TraceRoot.isInitialized()) TraceRoot.initialize();
     const providerTraced = opts.complete === undefined && providerIntegrationTraces(opts.model);
     const text = providerTraced
-      ? await call(rendered)
+      ? (await call(rendered)).text
       : await observe(
           // rendered messages are the span input, the model's response the output, type = llm.
           { name: `llm_judge:${opts.name}`, type: 'llm', metadata: { model: opts.model } },
-          call,
+          async (msgs: JudgeMessage[]) => {
+            const completion = await call(msgs);
+            // Inside observe(), the active span IS the judge's own LLM span. Recording the
+            // provider's token counts there is what lets the backend price this call: on the
+            // integration-traced path above we add no span at all, so the integration's own
+            // token attributes remain the only ones (never two spans for one request).
+            if (completion.usage) setJudgeTokenCounts(completion.usage);
+            return completion.text;
+          },
           rendered,
         );
     return {

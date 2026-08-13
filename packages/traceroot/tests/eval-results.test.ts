@@ -151,6 +151,34 @@ describe('counts block (Python parity)', () => {
     });
   });
 
+  // Every vector is the literal output of Python's repr() for the same name: summary() is
+  // advertised as byte-identical across the SDKs, so escaping only \n\r\t made any other
+  // non-printable character (a control char pasted into a run name) diverge silently.
+  describe('summary() escapes non-printables exactly like Python repr()', () => {
+    const vectors: [string, string][] = [
+      ['bell\x07', "'bell\\x07'"],
+      ['vt\x0b', "'vt\\x0b'"], // repr uses \x0b, NOT \v
+      ['nul\x00', "'nul\\x00'"],
+      ['del\x7f', "'del\\x7f'"],
+      ['c1\x85', "'c1\\x85'"], // a C1 control is non-printable too
+      ['zwsp\u200b', "'zwsp\\u200b'"], // above 0xff, repr uses the \uNNNN form
+      ['tab\t', "'tab\\t'"], // the short forms stay short
+      ['nl\n', "'nl\\n'"],
+      ["q'uote", '"q\'uote"'], // quote selection is unchanged
+      ['astral\u{1d11e}', "'astral\u{1d11e}'"], // printable non-ASCII is NOT escaped
+    ];
+    for (const [name, expected] of vectors) {
+      it(`renders ${JSON.stringify(name)} as ${expected}`, () => {
+        const r = makeRunResult(name, [], { status: 'uploaded', dashboardUrl: null });
+        assert.equal(
+          r.summary().split('\n')[0],
+          `EvalRunResult(name=${expected}, cases=0, errored=0, not_scored=0, ` +
+            `task_errors=0, upload=uploaded)`,
+        );
+      });
+    }
+  });
+
   it('summary() head matches Python __str__', () => {
     assert.equal(
       run.summary().split('\n')[0],

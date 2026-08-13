@@ -203,6 +203,31 @@ describe('local and an explicit sink are mutually exclusive', () => {
     );
   });
 
+  // run(overrides) merges into the definition's options, so it can produce the very combination
+  // the constructor rejects. The guard has to run on the MERGED options too, or the contradiction
+  // reaches the engine from a definition that validated cleanly.
+  it('run() rejects a transport override on a local definition', () => {
+    const e = new Evaluation({
+      name: 'r',
+      dataset: makeDataset(),
+      task: echo,
+      scorers: [exact],
+      local: true,
+    });
+    assert.throws(() => e.run({ transport: new FakeTransport() }), MUTUALLY_EXCLUSIVE);
+  });
+
+  it('run() rejects a local override on a transport definition', () => {
+    const e = new Evaluation({
+      name: 'r',
+      dataset: makeDataset(),
+      task: echo,
+      scorers: [exact],
+      transport: new FakeTransport(),
+    });
+    assert.throws(() => e.run({ local: true }), MUTUALLY_EXCLUSIVE);
+  });
+
   it('an Evaluation definition with both throws at construction', () => {
     assert.throws(
       () =>

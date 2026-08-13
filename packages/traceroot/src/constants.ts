@@ -25,6 +25,10 @@ export const OI_LLM_TOKEN_COUNT_COMPLETION = 'llm.token_count.completion';
 export const OI_LLM_TOKEN_COUNT_TOTAL = 'llm.token_count.total';
 export const OI_LLM_TOKEN_COUNT_CACHE_READ = 'llm.token_count.prompt_details.cache_read';
 export const OI_LLM_TOKEN_COUNT_CACHE_WRITE = 'llm.token_count.prompt_details.cache_write';
+// Anthropic names the same idea `cache_creation`; the auto-instrumentation for the Claude Agent
+// SDK already emits this key (and Python emits the identical string), so anything reporting
+// anthropic usage must use it rather than the cache_write spelling above.
+export const OI_LLM_TOKEN_COUNT_CACHE_CREATION = 'llm.token_count.prompt_details.cache_creation';
 export const LLM_MODEL = 'traceroot.llm.model';
 export const LLM_MODEL_PARAMETERS = 'traceroot.llm.model_parameters';
 export const LLM_USAGE = 'traceroot.llm.usage';

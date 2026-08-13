@@ -9,16 +9,39 @@ import type { Score } from './types';
 import type { ScorerSpec } from './platform';
 
 // --- Python-identical rendering for summary() --------------------------------
+/** The characters Python's `repr()` escapes rather than prints: exactly `str.isprintable()`'s
+ *  "Other" and "Separator" categories, minus the ASCII space. Escaping only \n\r\t left every
+ *  other control character (0x00-0x1f, DEL, the C1 block, zero-width/bidi marks) rendering
+ *  literally, so summary() stopped being byte-identical to Python for such a name. */
+const PY_NONPRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
+
+/** The numeric escape CPython emits for a non-printable code point: `\xNN` below 0x100,
+ *  `\uNNNN` below 0x10000, `\UNNNNNNNN` above. */
+function pyEscapeCodePoint(cp: number): string {
+  if (cp < 0x100) return '\\x' + cp.toString(16).padStart(2, '0');
+  if (cp < 0x10000) return '\\u' + cp.toString(16).padStart(4, '0');
+  return '\\U' + cp.toString(16).padStart(8, '0');
+}
+
 /** Python `repr()` of a string: single quotes, switching to double quotes when the value
  *  contains a single quote (and no double quote). */
 function pyRepr(s: string): string {
-  const body = s
-    .replace(/\\/g, '\\\\')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t');
-  if (body.includes("'") && !body.includes('"')) return `"${body}"`;
-  return `'${body.replace(/'/g, "\\'")}'`;
+  // The quote is chosen from the RAW value, exactly as CPython does, before any escaping.
+  const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
+  let body = '';
+  for (const ch of s) {
+    if (ch === '\\') body += '\\\\';
+    else if (ch === quote) body += '\\' + ch;
+    // The three short forms repr keeps short; every other control char takes a numeric escape.
+    else if (ch === '\n') body += '\\n';
+    else if (ch === '\r') body += '\\r';
+    else if (ch === '\t') body += '\\t';
+    // The ASCII space is the one Separator Python calls printable; every other one is escaped.
+    else if (ch !== ' ' && PY_NONPRINTABLE.test(ch))
+      body += pyEscapeCodePoint(ch.codePointAt(0) as number);
+    else body += ch;
+  }
+  return quote + body + quote;
 }
 
 /** Python's `f"{v:.4g}"` — 4 significant digits, trailing zeros stripped, two-digit signed

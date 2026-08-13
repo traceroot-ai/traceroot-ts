@@ -140,6 +140,18 @@ describe('normalization rules', () => {
     }
   });
 
+  it('a symbol-keyed field is rejected, not silently dropped', () => {
+    // `Object.entries` skips symbol keys, so the field would vanish from BOTH the hash and the
+    // wire while the author believes it was sent. Python has no such key, so there is nothing to
+    // converge on: reject it like any other unsupported value.
+    const obj: Record<string, unknown> = { a: 1 };
+    obj[Symbol('secret') as unknown as string] = 'kept?';
+    assert.throws(() => canonicalJson(obj), CanonicalizationError);
+    assert.throws(() => canonicalJson({ nested: obj }), /symbol/i);
+    // A well-known symbol key is data loss too — the key is unrepresentable either way.
+    assert.throws(() => canonicalJson({ [Symbol.for('traceroot.x')]: 1 }), CanonicalizationError);
+  });
+
   it('a lone surrogate is rejected, not silently hashed', () => {
     // A lone UTF-16 surrogate can't encode to UTF-8: Python raises while hashing it and this SDK
     // would silently hash the escaped form. Both must reject it as a CanonicalizationError.

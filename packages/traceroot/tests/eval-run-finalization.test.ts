@@ -9,6 +9,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { Dataset, EvalCompletionError, FakeTransport, evaluate } from '../src/eval';
+import { CancelledError } from '../src/eval/engine';
 import type { EvalItemResult, RunHandle, UploadState } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 
@@ -75,6 +76,31 @@ describe('completion never masks the real error', () => {
     // The transport error is carried as data, not chained — one error, not a cause chain.
     assert.equal(err.cause, undefined);
     assert.ok(err.completionError instanceof Error);
+  });
+});
+
+describe('a cancelled run keeps its cancellation identity', () => {
+  it('cancel + a failing completion still raises CancelledError', async () => {
+    // Cancellation is the story the caller handles (Ctrl-C is not a bug); a /complete failure on
+    // the way out is secondary context. Reporting EvalCompletionError here would make an aborted
+    // run indistinguishable from a broken backend.
+    const controller = new AbortController();
+    controller.abort();
+    const err = await evaluate({
+      name: 'r',
+      data: ds(2),
+      task: echo,
+      scorers: [ok],
+      transport: new BrokenFinish(),
+      signal: controller.signal,
+    }).then(
+      () => null,
+      (e) => e,
+    );
+    assert.ok(err instanceof CancelledError, `expected CancelledError, got ${String(err)}`);
+    assert.ok(!(err instanceof EvalCompletionError));
+    // The completion failure is not lost — it rides along as secondary context.
+    assert.match(String((err as { completionError?: Error }).completionError?.message), /400/);
   });
 });
 

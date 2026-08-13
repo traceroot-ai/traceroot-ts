@@ -92,3 +92,30 @@ describe('Dataset toJSON', () => {
     assert.equal(json.cases[0].sourceSpanId, 's1');
   });
 });
+
+describe('the identity key is immutable', () => {
+  // Every case id and the datasetId are hashed from `key`. A key mutated after construction
+  // leaves both stale: the snapshot would advertise a `key` that no longer hashes to the
+  // datasetId it is sent with, and the platform would file the version under a different
+  // dataset than the ids belong to.
+  it('reassigning key after construction throws', () => {
+    const ds = new Dataset('billing');
+    assert.throws(() => {
+      (ds as { key: string }).key = 'renamed';
+    }, TypeError);
+    assert.equal(ds.key, 'billing');
+  });
+
+  it('the snapshot key still hashes to the datasetId', () => {
+    const ds = new Dataset('billing', null, { key: 'billing-v1' });
+    ds.add({ q: 1 });
+    try {
+      (ds as { key: string }).key = 'renamed';
+    } catch {
+      /* the point of the previous test; here we only care that identity held */
+    }
+    const snap = ds.snapshot();
+    assert.equal(snap.key, 'billing-v1');
+    assert.equal(snap.datasetId, new Dataset('x', null, { key: snap.key }).datasetId);
+  });
+});

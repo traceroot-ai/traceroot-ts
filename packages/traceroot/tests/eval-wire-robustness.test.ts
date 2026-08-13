@@ -4,6 +4,9 @@
 // byte-identical summary().
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   EXPLANATION_MAX,
@@ -82,6 +85,56 @@ describe('git provenance never reports a branch name as a commit', () => {
       detectDirty: false,
     });
     assert.deepEqual(meta!.git, { repository: 'owner/repo', ref: sha, commit: sha });
+  });
+
+  it('a branch whose NAME is 40 hex chars stays a ref', () => {
+    // `git checkout -b 0123...` is legal. The ref then matches the OID shape without ever having
+    // resolved to one, so shape alone cannot decide: an explicitly supplied ref is checked
+    // against the work tree's refs before it is reported as a commit.
+    const name = 'a'.repeat(40);
+    const dir = mkdtempSync(join(tmpdir(), 'tr-prov-'));
+    try {
+      mkdirSync(join(dir, '.git', 'refs', 'heads'), { recursive: true });
+      writeFileSync(join(dir, '.git', 'refs', 'heads', name), '0'.repeat(40) + '\n');
+      const meta = collectRunProvenance(undefined, {
+        env: { TRACEROOT_GIT_REPO: 'owner/repo', TRACEROOT_GIT_REF: name } as never,
+        detectDirty: false,
+        cwd: dir,
+      });
+      assert.deepEqual(meta!.git, { repository: 'owner/repo', ref: name });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a packed hex-named branch stays a ref too', () => {
+    const name = 'b'.repeat(40);
+    const dir = mkdtempSync(join(tmpdir(), 'tr-prov-'));
+    try {
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'packed-refs'),
+        `# pack-refs with: peeled fully-peeled sorted\n${'0'.repeat(40)} refs/heads/${name}\n`,
+      );
+      const meta = collectRunProvenance(undefined, {
+        env: { TRACEROOT_GIT_REPO: 'owner/repo', TRACEROOT_GIT_REF: name } as never,
+        detectDirty: false,
+        cwd: dir,
+      });
+      assert.deepEqual(meta!.git, { repository: 'owner/repo', ref: name });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a resolver-supplied OID is a commit without consulting the work tree', () => {
+    // GITHUB_SHA is an object id by definition — no ref of that name exists to check against.
+    const sha = 'c'.repeat(40);
+    const meta = collectRunProvenance(undefined, {
+      env: { GITHUB_REPOSITORY: 'owner/repo', GITHUB_SHA: sha } as never,
+      detectDirty: false,
+    });
+    assert.deepEqual((meta!.git as Record<string, unknown>).commit, sha);
   });
 
   it('a short hex-looking tag stays a ref', () => {

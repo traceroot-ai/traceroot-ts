@@ -176,7 +176,8 @@ export interface DatasetSnapshot {
 export class Dataset {
   name: string;
   description: string | null;
-  key: string;
+  /** The identity every case id and the datasetId are hashed from — fixed at construction. */
+  readonly key!: string;
   datasetId: string;
   datasetVersionId?: string;
   baseVersionId: string | null = null;
@@ -185,7 +186,26 @@ export class Dataset {
   constructor(name: string, description: string | null = null, opts: { key?: string } = {}) {
     this.name = name;
     this.description = description;
-    this.key = opts.key ?? name;
+    // Non-writable at RUNTIME, not just to the type checker: `datasetId` and every case id are
+    // already hashed from this value, so a later `ds.key = ...` would leave the snapshot
+    // advertising a key that no longer hashes to the datasetId it is sent with — the platform
+    // would file the version under a different dataset than the case ids belong to. Renaming is
+    // what `name` is for; a new identity is a new Dataset.
+    // A rejecting SETTER, not merely `writable: false`: a non-writable data property is silently
+    // ignored outside strict mode, which is exactly the silent divergence this prevents.
+    const key = opts.key ?? name;
+    Object.defineProperty(this, 'key', {
+      get: () => key,
+      set: () => {
+        throw new TypeError(
+          `Dataset.key is the dataset's identity (${JSON.stringify(key)}) and cannot be ` +
+            `reassigned: datasetId and every case id are already hashed from it. Rename via ` +
+            `\`name\`, or construct a new Dataset with the key you want.`,
+        );
+      },
+      enumerable: true,
+      configurable: false,
+    });
     this.datasetId = stableDatasetId(this.key);
   }
 
