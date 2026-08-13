@@ -6,7 +6,7 @@
 // run stuck in `running` on the platform forever. Those two get a small bounded retry — transient
 // failures only, since a 400 will never get better.
 // Parity with traceroot-py/tests/eval/test_lifecycle_retry.py.
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { PlatformTransport, retryDelayMs } from '../src/eval/platform';
