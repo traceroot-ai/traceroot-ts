@@ -845,6 +845,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     scorerSpecs: specs,
   });
 
+  // When the bar was shown (interactive), print the run's summary too — so calling evaluate() on a
+  // terminal SHOWS its result (metric means + counts) without the caller writing
+  // console.log(run.summary()). Gated on the reporter, so piped/CI/programmatic callers keep clean
+  // stdout and read result.summary() / result.uploadState themselves.
+  if (reporter) {
+    console.log(result.summary());
+  }
+
   // When the bar was shown (interactive), surface the clickable run link if the backend
   // returned one. Off-terminal callers read result.uploadState instead. (Candidate-vs-
   // baseline comparison is the backend's job, not the SDK's.)

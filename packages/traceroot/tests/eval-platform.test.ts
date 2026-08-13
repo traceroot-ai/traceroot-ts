@@ -200,6 +200,45 @@ describe('non-finite scores do not poison the local aggregate', () => {
   });
 });
 
+describe('summary() shows per-metric pass-rate', () => {
+  it('includes pass=k/n for a scorer with a declared threshold', async () => {
+    const hit = scorer((ctx: ScorerContext) => (ctx.output === ctx.expected ? 1 : 0), {
+      name: 'hit',
+      valueType: 'numeric',
+      direction: 'higher_is_better',
+      threshold: 1.0,
+    });
+    const d = new Dataset('passrate');
+    d.add(1, { id: 'a', expected: 1 }); // pass
+    d.add(0, { id: 'b', expected: 1 }); // fail
+    const run = await evaluate({ name: 'r', dataset: d, task: echo, scorers: [hit], local: true });
+    const line = run
+      .summary()
+      .split('\n')
+      .find((l) => l.trim().startsWith('hit'))!;
+    assert.ok(line.includes('pass=1/2'), line); // one of two cleared the threshold
+    assert.ok(line.includes('count=2'));
+  });
+
+  it('omits pass= when no threshold is declared', async () => {
+    const plain = (_ctx: ScorerContext) => 0.5; // no declared policy -> nothing to judge
+    const d = new Dataset('nopolicy');
+    d.add(1, { id: 'a', expected: 1 });
+    const run = await evaluate({
+      name: 'r',
+      dataset: d,
+      task: echo,
+      scorers: [plain],
+      local: true,
+    });
+    const line = run
+      .summary()
+      .split('\n')
+      .find((l) => l.includes('mean='))!;
+    assert.ok(!line.includes('pass='), line); // no fabricated verdict
+  });
+});
+
 describe('reporting (cloud-only)', () => {
   it('no credentials -> throws (nothing to report to)', async () => {
     // no api key set -> resolveCredentials empty -> no reporting transport -> cloud-only raise

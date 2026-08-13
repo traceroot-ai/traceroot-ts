@@ -420,12 +420,47 @@ export class EvalRunResult {
       `not_scored=${this.notScored}, ` +
       `task_errors=${this.taskErrorCount}, upload=${this.uploadState.status})`;
     const lines = [head];
+    const [passed, judged] = this.passTally();
     for (const [name, s] of Object.entries(this.scoreSummary)) {
       const mean = s.mean === null ? 'n/a' : formatG4(s.mean);
-      lines.push(`  ${name}: mean=${mean} count=${s.count}`);
+      const n = judged[name] ?? 0;
+      const passSeg = n ? ` pass=${passed[name] ?? 0}/${n}` : '';
+      lines.push(`  ${name}: mean=${mean}${passSeg} count=${s.count}`);
     }
     return lines.join('\n');
   }
+
+  /** (passed, judged) counts per metric for {@link summary}. A score is JUDGED when it has a bool
+   *  value, or a numeric value AND its owning scorer declared a threshold + direction — the SAME
+   *  rule the platform uses for per-score `passed`. Metrics with no declared policy get no
+   *  pass-rate, only a count. Byte-identical to Python's `_pass_tally`. */
+  private passTally(): [Record<string, number>, Record<string, number>] {
+    const policy: Record<string, ScorerSpec> = {};
+    for (const s of this.scorerSpecs ?? []) policy[s.name] = s;
+    const passed: Record<string, number> = {};
+    const judged: Record<string, number> = {};
+    for (const item of this.itemResults) {
+      for (const score of item.scores) {
+        const verdict = scoreVerdict(score.value, policy[score.name]);
+        if (verdict === null) continue;
+        judged[score.name] = (judged[score.name] ?? 0) + 1;
+        if (verdict) passed[score.name] = (passed[score.name] ?? 0) + 1;
+      }
+    }
+    return [passed, judged];
+  }
+}
+
+/** Whether one score passes — the same rule the platform applies. A bool value IS its verdict; a
+ *  numeric value passes iff it clears the owning scorer's declared threshold in its declared
+ *  direction. null (no verdict) when there is no declared policy or the value isn't numeric. */
+function scoreVerdict(value: unknown, spec: ScorerSpec | undefined): boolean | null {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'number') return null;
+  if (!spec || spec.threshold == null || spec.direction == null || spec.direction === 'none') {
+    return null;
+  }
+  return spec.direction === 'lower_is_better' ? value <= spec.threshold : value >= spec.threshold;
 }
 
 export interface MakeRunResultOptions {
