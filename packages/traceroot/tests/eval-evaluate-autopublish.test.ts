@@ -11,6 +11,7 @@ import { PassThrough } from 'node:stream';
 
 import { Dataset, evaluate, PlatformDatasetSync } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
+import { rememberPinnedContent } from '../src/eval/platform';
 
 const realFetch = globalThis.fetch;
 const realStdin = Object.getOwnPropertyDescriptor(process, 'stdin')!;
@@ -102,6 +103,108 @@ describe('evaluate() never prompts', () => {
     const result = await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] });
 
     assert.equal(counts.versions, 0, 'identical content must not add a version');
+    assert.equal(result.dataset.datasetVersionId, 'dsv_9');
+  });
+});
+
+describe('an auto-publish failure is actionable', () => {
+  // The auto-publish happens BEFORE the first case runs, so anything it throws aborts the whole
+  // evaluation. A raw conflict (or a timeout) reads as an SDK crash; it must read as the thing
+  // that actually happened, with the way out.
+  /** A backend where the dataset exists but publishing it fails with `status`. */
+  function installFailingPublish(status: number, detail: string): void {
+    process.env['TRACEROOT_API_KEY'] = 'tr-test';
+    process.env['TRACEROOT_HOST_URL'] = 'https://h';
+    process.env['TRACEROOT_ENABLED'] = 'false';
+    globalThis.fetch = (async (url: string, init?: any) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && /\/datasets\/[^/]+$/.test(u))
+        return new Response(JSON.stringify({ name: 'auto', current_dataset_version_id: 'dsv_9' }), {
+          status: 200,
+        });
+      if (method === 'GET' && u.includes('/dataset-versions/'))
+        return new Response('boom', { status: 500 }); // unfetchable -> treated as changed
+      if (u.endsWith('/versions')) return new Response(detail, { status });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as any;
+  }
+
+  it('reports a diverged remote instead of throwing the raw conflict', async () => {
+    installFailingPublish(409, JSON.stringify({ current_version_id: 'dsv_77' }));
+    await assert.rejects(
+      () => evaluate({ name: 'r', dataset: makeDataset(), task: echo, scorers: [exact] }),
+      (err: Error) => {
+        assert.equal(err.name, 'Error'); // not a bare DatasetConflictError
+        assert.match(err.message, /could not auto-publish dataset 'auto' before the run/);
+        assert.match(err.message, /dataset changed remotely/); // the real reason is kept
+        assert.match(err.message, /Pull the latest version/);
+        assert.match(err.message, /local: true/); // ...and a way to run anyway
+        return true;
+      },
+    );
+  });
+
+  it('reports a transport failure the same way', async () => {
+    installFailingPublish(503, 'upstream down');
+    await assert.rejects(
+      () => evaluate({ name: 'r', dataset: makeDataset(), task: echo, scorers: [exact] }),
+      /could not auto-publish dataset 'auto' before the run: .*HTTP 503/s,
+    );
+  });
+});
+
+describe('the run pins what it scored', () => {
+  // A Dataset is mutable and evaluate() is re-runnable, so the version a run pins has to be
+  // re-resolved every time. Pinning the version from a PREVIOUS run would attribute the new
+  // cases' scores to content that never contained them.
+  it('a second run after a mutation pins the new version', async () => {
+    const counts = installEvalBackend(false);
+    const ds = makeDataset();
+
+    const first = await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] });
+    assert.equal(first.dataset.datasetVersionId, 'dsv_10');
+
+    ds.add({ m: 2 }, { id: 'c1', expected: { m: 2 } }); // what the SECOND run actually scores
+    const second = await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] });
+
+    assert.equal(counts.versions, 2, 'the mutated content must be versioned again');
+    assert.equal(second.dataset.datasetVersionId, 'dsv_10');
+  });
+
+  it('an unmutated second run never re-versions', async () => {
+    const counts = installEvalBackend(false);
+    const ds = makeDataset();
+
+    await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] });
+    const second = await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] });
+
+    assert.equal(counts.versions, 1, 'unchanged content must not add a version');
+    assert.equal(second.dataset.datasetVersionId, 'dsv_10');
+  });
+
+  it('a pulled dataset mutated before its first run is republished', async () => {
+    const counts = installEvalBackend(false);
+    const ds = makeDataset();
+    ds.datasetVersionId = 'dsv_pulled';
+    rememberPinnedContent(ds); // exactly what pullDataset records
+    ds.add({ m: 3 }, { id: 'c3', expected: { m: 3 } });
+
+    const result = await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] });
+
+    assert.equal(counts.versions, 1);
+    assert.equal(result.dataset.datasetVersionId, 'dsv_10'); // the version with the new case
+  });
+
+  it('a dataset pinned by hand is left alone', async () => {
+    // No record of how it got its version -> no evidence of drift -> no surprise republish.
+    const counts = installEvalBackend(true);
+    const ds = makeDataset();
+    ds.datasetVersionId = 'dsv_9';
+
+    const result = await evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] });
+
+    assert.equal(counts.versions, 0);
     assert.equal(result.dataset.datasetVersionId, 'dsv_9');
   });
 });

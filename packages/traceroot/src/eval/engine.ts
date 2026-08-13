@@ -19,7 +19,7 @@ import {
   UploadState,
 } from './results';
 import { EvalCompletionError, EvalTransport, FakeTransport, RunHandle } from './transport';
-import { PlatformTransport } from './platform';
+import { PlatformTransport, pinnedContentChanged, rememberPinnedContent } from './platform';
 import { PlatformDatasetSync } from './dataset_sync';
 import { collectRunProvenance } from './provenance';
 import { declaredVersion, describeScorers, scorerName } from './scorers';
@@ -488,6 +488,42 @@ async function runCase(
 }
 
 /**
+ * Publish `data`'s current content as the version this run will pin.
+ *
+ * Runs BEFORE the first case, so anything it throws aborts the whole evaluation. A raw
+ * DatasetConflictError (or a socket timeout) surfaces there as an SDK crash with no hint of what
+ * to do, so the failure is restated as what actually happened plus the ways out.
+ */
+async function autoPublish(data: Dataset): Promise<void> {
+  try {
+    // Route through push() rather than pushDataset() directly: push() also advances
+    // baseVersionId, the optimistic-concurrency base for the NEXT push. Assigning only
+    // datasetVersionId leaves the base null, so a later explicit push() sends
+    // base_version_id: null against a dataset that now has a version — a spurious 409. The base
+    // is whatever version this dataset is standing on: its push base, or the version it was
+    // pulled at (a pull pins datasetVersionId only).
+    //
+    // Auto-approve the new version instead of falling through to the interactive confirmation: a
+    // versioning decision must never block a run waiting on [y/N]. The run's content is
+    // authoritative — publishing it is what lets the run pin exactly what it scored. The
+    // explicit, user-initiated Dataset.push() keeps the prompt; that is where deliberate version
+    // management lives.
+    await data.push(new PlatformDatasetSync(), data.baseVersionId ?? data.datasetVersionId, {
+      onExisting: () => true,
+    });
+    // What is now pinned is exactly what was published, so the NEXT run can tell a mutation from
+    // an untouched dataset without another round trip.
+    rememberPinnedContent(data);
+  } catch (err) {
+    throw new Error(
+      `could not auto-publish dataset '${data.name}' before the run: ${fmtError(err)}. ` +
+        'Pull the latest version and retry (pullDataset(...)), or pass a dataset that is ' +
+        'already synced, or pass transport / local: true to run without publishing.',
+    );
+  }
+}
+
+/**
  * Build the reporting transport from credentials + a synced dataset (pulled/pushed, or an
  * explicit datasetId). Returns null when it cannot (no credentials, or an unsynced dataset the
  * SDK cannot create server-side); the caller turns that into a clear error (cloud-only).
@@ -609,25 +645,17 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
     // server-side version to attach to -- the user never writes a manual "sync then run" step
     // (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses the
-    // current version. Only for a local Dataset with credentials; a pulled dataset, an explicit
-    // datasetId, or an explicit transport skip this.
-    if (
-      data instanceof Dataset &&
-      data.datasetVersionId === undefined &&
-      options.datasetId === undefined
-    ) {
+    // current version. Only for a local Dataset with credentials; an explicit datasetId or an
+    // explicit transport skip this.
+    //
+    // A dataset that IS pinned republishes only once it has drifted from the version it is pinned
+    // to. A Dataset is mutable and evaluate() is re-runnable, so pinning the version from a
+    // previous run (or from the pull) would attribute the cases this run actually scored to
+    // content that never contained them.
+    if (data instanceof Dataset && options.datasetId === undefined) {
       const { apiKey } = TraceRoot.resolveCredentials();
-      if (apiKey) {
-        // Route through push() rather than pushDataset() directly: push() also advances
-        // baseVersionId, the optimistic-concurrency base for the NEXT push. Assigning only
-        // datasetVersionId leaves the base null, so a later explicit push() sends
-        // base_version_id: null against a dataset that now has a version — a spurious 409.
-        // Auto-approve the new version instead of falling through to the interactive
-        // confirmation: a versioning decision must never block a run waiting on [y/N]. The run's
-        // content is authoritative — publishing it is what lets the run pin exactly what it
-        // scored. The explicit, user-initiated Dataset.push() keeps the prompt; that is where
-        // deliberate version management lives.
-        await data.push(new PlatformDatasetSync(), undefined, { onExisting: () => true });
+      if (apiKey && (data.datasetVersionId === undefined || pinnedContentChanged(data))) {
+        await autoPublish(data);
       }
     }
     const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);

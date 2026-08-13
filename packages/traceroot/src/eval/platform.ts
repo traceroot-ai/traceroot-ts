@@ -3,7 +3,7 @@
 // Python SDK, since the backend contract is shared.
 
 import { TraceRoot } from '../traceroot';
-import { Dataset } from './types';
+import { contentRevision, Dataset } from './types';
 import { stableDatasetId } from './ids';
 import { caseStatus } from './results';
 import type { EvalItemResult, UploadState } from './results';
@@ -119,6 +119,32 @@ function nonFiniteError(name: string, value: number): string {
 /** Per-case duration for the wire: a nonnegative INTEGER of ms, or null when unknown. */
 function durationMs(value: number | null): number | null {
   return value === null ? null : Math.max(0, Math.round(value));
+}
+
+// --- pinned-content bookkeeping ---------------------------------------------
+// The content revision each Dataset had at the moment it became pinned to a server version
+// (pulled, or published). A Dataset is mutable and evaluate() is re-runnable, so a run must not
+// pin a version that no longer describes what it scored; comparing the current revision to this
+// one detects that WITHOUT a round trip. A WeakMap so this bookkeeping never keeps a dataset
+// alive, and an unknown dataset simply has no opinion (see pinnedContentChanged).
+const PINNED_REVISION = new WeakMap<Dataset, string>();
+
+/** Record that `dataset`'s CURRENT content is exactly the version it is pinned to. */
+export function rememberPinnedContent(dataset: Dataset): void {
+  PINNED_REVISION.set(dataset, contentRevision(dataset.cases()));
+}
+
+/**
+ * True only when the dataset is KNOWN to have drifted from the version it is pinned to.
+ *
+ * An unremembered dataset (loaded from disk, or with an id assigned by hand) returns false: the
+ * SDK has no evidence either way and inventing a republish would surprise a caller whose dataset
+ * is fine. Everything it pinned itself — pullDataset, the engine's auto-publish — is remembered,
+ * which covers mutate-then-rerun and pull-then-mutate.
+ */
+export function pinnedContentChanged(dataset: Dataset): boolean {
+  const remembered = PINNED_REVISION.get(dataset);
+  return remembered !== undefined && remembered !== contentRevision(dataset.cases());
 }
 
 export interface PullOptions {
@@ -254,6 +280,9 @@ export async function pullDatasetVersion(
   );
   ds.datasetVersionId = ds.datasetVersionId ?? versionId;
   ds.datasetId = ds.datasetId ?? opts.datasetId ?? undefined;
+  // A freshly pulled dataset IS its pinned version; remember that, so a later mutation is
+  // detectable and evaluate() republishes instead of reporting the version it left behind.
+  rememberPinnedContent(ds);
   return ds;
 }
 
