@@ -37,6 +37,8 @@ import {
   makeRunResult,
 } from './results';
 import { CancelledError } from './engine';
+import { PlatformTransport, ScorerSpec } from './platform';
+import { describeScorers } from './scorers';
 import { FakeTransport } from './transport';
 
 export const EVAL_API_VERSION = 1;
@@ -59,9 +61,33 @@ type RunnerOptions = Record<string, any>;
 // --- event emitter (NDJSON) --------------------------------------------------
 export class Emitter {
   constructor(private readonly write: EventSink) {}
+  /** Best-effort: emitting is reporting, never control flow. The channel can die under us (the
+   *  harness went away -> EPIPE) and the sink is caller-supplied. Emitting happens inside per-case
+   *  hooks the engine calls UNGUARDED, so letting a write throw out of here would abort every
+   *  remaining case over a reporting failure. Report it on stderr and keep going. */
   emit(event: Record<string, unknown>): void {
-    this.write(JSON.stringify(event) + '\n');
+    try {
+      this.write(JSON.stringify(event) + '\n');
+    } catch (err) {
+      process.stderr.write(`traceroot-eval: dropped a ${event['type']} event: ${fmt(err)}\n`);
+    }
   }
+}
+
+/** Make a per-case hook non-fatal: the engine invokes these hooks unguarded, so a failure inside
+ *  one (a dead event channel, a payload that resists shaping) would abort every case still to run.
+ *  Report it on stderr and carry on. */
+function isolated<A extends unknown[]>(
+  name: string,
+  fn: (...args: A) => void,
+): (...args: A) => void {
+  return (...args: A) => {
+    try {
+      fn(...args);
+    } catch (err) {
+      process.stderr.write(`traceroot-eval: ${name} hook failed: ${fmt(err)}\n`);
+    }
+  };
 }
 
 function openChannel(): EventSink {
@@ -198,20 +224,54 @@ function datasetIdentity(data: Dataset | EvalCase[]): {
 }
 
 // --- event / artifact shaping ------------------------------------------------
-function scorePassed(value: unknown): boolean | null {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') return value >= 1.0;
-  return null;
+/** PlatformTransport's own verdict resolution, reached through the prototype: its two methods
+ *  read nothing but `scorerSpecs`, so rebinding them keeps ONE implementation instead of a
+ *  second, divergent one (a PlatformTransport cannot be constructed in a local run — it demands
+ *  credentials). */
+const platformPolicy = PlatformTransport.prototype as unknown as {
+  scorePolicy(name: string | null, singleEmission: boolean): [number | null, string] | null;
+  scorePassed(score: Score, singleEmission?: boolean): boolean | null;
+};
+
+/** Resolves a score's pass/fail from the owning scorer's DECLARED threshold + direction, so the
+ *  local artifact and the platform UI can never disagree about the same score. */
+export class ScorePolicy {
+  private readonly scorePolicy = platformPolicy.scorePolicy;
+  private readonly scorePassed = platformPolicy.scorePassed;
+  constructor(readonly scorerSpecs?: ScorerSpec[]) {}
+  passed(score: Score, singleEmission: boolean): boolean | null {
+    return this.scorePassed(score, singleEmission);
+  }
 }
 
-function scoreEvent(s: Score): Record<string, unknown> {
+/** The declared policy of the evaluation's own scorers — the SAME descriptors the engine hands
+ *  the transport at registration, so both sides resolve verdicts from identical input. */
+function evaluationPolicy(evaluation: Evaluation): ScorePolicy {
+  try {
+    return new ScorePolicy(describeScorers([...evaluation.scorers]) as ScorerSpec[]);
+  } catch {
+    // A scorer that resists introspection costs us verdicts, never the run.
+    return new ScorePolicy();
+  }
+}
+
+function scoreEvent(
+  s: Score,
+  policy: ScorePolicy,
+  singleEmission: boolean,
+): Record<string, unknown> {
   return {
     scorer_name: s.name,
     scorer_version: s.version ?? null,
     value: s.value,
-    passed: scorePassed(s.value),
+    passed: policy.passed(s, singleEmission),
     explanation: s.comment ?? null,
   };
+}
+
+function scoreEvents(item: EvalItemResult, policy: ScorePolicy): Record<string, unknown>[] {
+  const single = item.scores.length === 1;
+  return item.scores.map((s) => scoreEvent(s, policy, single));
 }
 
 function scorerErrorEvents(item: EvalItemResult): Record<string, unknown>[] {
@@ -233,11 +293,11 @@ function scorerVersions(result: EvalRunResult): Record<string, string | null> {
   return versions;
 }
 
-function caseMetadata(item: EvalItemResult): Record<string, unknown> {
+function caseMetadata(item: EvalItemResult, policy: ScorePolicy): Record<string, unknown> {
   return {
     case_id: item.caseId,
     status: caseStatus(item),
-    scores: item.scores.map(scoreEvent),
+    scores: scoreEvents(item, policy),
     task_error: item.error,
     scorer_errors: scorerErrorEvents(item),
     trace_id: item.traceId,
@@ -306,6 +366,23 @@ export interface WriteArtifactsOptions {
 }
 
 /**
+ * Reduce a case payload to something JSON can hold (parity with Python `_safe_payload`).
+ * Task output is arbitrary user data: a BigInt, a reference cycle, or anything else the
+ * serializer chokes on would otherwise throw while writing the artifact and take the WHOLE
+ * run down after every case had already succeeded. Degrade that one payload to an explicit
+ * marker instead — the case, its scores, and the rest of the run survive, and nobody mistakes
+ * the marker for real data.
+ */
+function safePayload(value: unknown): unknown {
+  try {
+    JSON.stringify(value);
+    return value;
+  } catch (exc) {
+    return { unserializable: true, reason: fmt(exc) };
+  }
+}
+
+/**
  * Bound one payload to `limit` bytes (parity with Python `_truncate`). Over-limit values
  * become an explicit `{ truncated, preview }` marker so a consumer never mistakes a cap
  * for real data. `null`/undefined limit = no truncation (current default).
@@ -336,12 +413,13 @@ export function writeArtifacts(
   runPath: string,
   casesPath: string,
   o: WriteArtifactsOptions,
+  policy: ScorePolicy = new ScorePolicy(),
 ): Record<string, unknown> {
   let truncatedAny = false;
   const caseLines: string[] = result.itemResults.map((item) => {
-    const [input, t1] = truncatePayload(item.input, o.maxPayloadBytes);
-    const [output, t2] = truncatePayload(item.output, o.maxPayloadBytes);
-    const [expected, t3] = truncatePayload(item.expected, o.maxPayloadBytes);
+    const [input, t1] = truncatePayload(safePayload(item.input), o.maxPayloadBytes);
+    const [output, t2] = truncatePayload(safePayload(item.output), o.maxPayloadBytes);
+    const [expected, t3] = truncatePayload(safePayload(item.expected), o.maxPayloadBytes);
     truncatedAny = truncatedAny || t1 || t2 || t3;
     return JSON.stringify({
       schema_version: '1',
@@ -350,7 +428,7 @@ export function writeArtifacts(
       input,
       output,
       expected,
-      scores: item.scores.map(scoreEvent),
+      scores: scoreEvents(item, policy),
       scorer_errors: scorerErrorEvents(item),
       task_error: item.error,
       trace_id: item.traceId,
@@ -397,7 +475,7 @@ export function writeArtifacts(
       failed_result_count: result.uploadState.failedResultCount ?? 0,
     },
     artifact,
-    cases: result.itemResults.map((it) => caseMetadata(it)),
+    cases: result.itemResults.map((it) => caseMetadata(it, policy)),
   };
   atomicWrite(runPath, JSON.stringify(runDoc, null, 2));
   return artifact;
@@ -473,6 +551,9 @@ async function runOne(
   const candidateVersion = options.candidate_version ?? evaluation.candidateVersion ?? null;
   const createdAt = nowIso();
   const identity = datasetIdentity(evaluation.dataset as Dataset | EvalCase[]);
+  // The declared policy of this evaluation's own scorers — used so the local artifact's per-score
+  // `passed` reflects each scorer's declared threshold/direction, not a hardcoded 1.0 (M1).
+  const policy = evaluationPolicy(evaluation);
 
   const [chosen, runMode, isFinalInitial] = subset(
     evaluation.dataset as Dataset | EvalCase[],
@@ -508,7 +589,7 @@ async function runOne(
   const onCaseStart = (c: EvalCase): void => emitter.emit({ type: 'case_started', case_id: c.id });
   const onCaseComplete = (item: EvalItemResult): void => {
     collected.push(item);
-    emitter.emit({ type: 'case_completed', ...caseMetadata(item) });
+    emitter.emit({ type: 'case_completed', ...caseMetadata(item, policy) });
   };
 
   const overrides: Record<string, unknown> = {
@@ -553,16 +634,23 @@ async function runOne(
   let artifact: Record<string, unknown> | null = null;
   if (!options.no_artifact) {
     const [runPath, casesPath] = artifactPaths(options, result.localRunId);
-    artifact = writeArtifacts(result, runPath, casesPath, {
-      status,
-      runMode,
-      isFinal,
-      sampleCount: chosen !== null ? chosen.size : null,
-      sampleSeed: chosen !== null ? seed : null,
-      candidateVersion,
-      createdAt,
-      maxPayloadBytes: options.max_payload_bytes != null ? Number(options.max_payload_bytes) : null,
-    });
+    artifact = writeArtifacts(
+      result,
+      runPath,
+      casesPath,
+      {
+        status,
+        runMode,
+        isFinal,
+        sampleCount: chosen !== null ? chosen.size : null,
+        sampleSeed: chosen !== null ? seed : null,
+        candidateVersion,
+        createdAt,
+        maxPayloadBytes:
+          options.max_payload_bytes != null ? Number(options.max_payload_bytes) : null,
+      },
+      policy,
+    );
   }
 
   emitter.emit({
@@ -632,6 +720,16 @@ function fmt(exc: unknown): string {
   return exc instanceof Error ? `${exc.name}: ${exc.message}` : String(exc);
 }
 
+/** Drain the span exporter before the process goes away. A no-op in local-only mode (export
+ *  disabled); best-effort otherwise — a flush that fails is a lost trace, not a failed run. */
+async function flushSpans(): Promise<void> {
+  try {
+    await TraceRoot.flush();
+  } catch (exc) {
+    process.stderr.write(`traceroot-eval: span flush failed: ${fmt(exc)}\n`);
+  }
+}
+
 export async function main(argv?: string[]): Promise<number> {
   const paths = argv ?? process.argv.slice(2);
   const emitter = new Emitter(openChannel());
@@ -653,6 +751,11 @@ export async function main(argv?: string[]): Promise<number> {
     if (cancelled || sigint) return 130;
   } catch (exc) {
     emitter.emit({ type: 'fatal', kind: 'harness_error', message: fmt(exc) });
+  } finally {
+    // Every return path flushes first: each result carries a trace_id, so a span left unbatched
+    // at hard exit (process.exit skips the beforeExit auto-flush) is a run whose trace drill-down
+    // is permanently empty.
+    await flushSpans();
   }
   return 0;
 }
