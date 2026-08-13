@@ -187,6 +187,25 @@ describe('runner: hook isolation', () => {
     assert.equal(types.filter((t) => t === 'case_completed').length, 2); // every case still ran
     assert.equal(types[types.length - 1], 'suite_completed');
   });
+
+  it('a scorer producing a non-serializable score value still completes the run', async () => {
+    // The runner's per-case hooks are isolated (parity with Python's @_isolated): shaping/emitting
+    // a case must never abort the run. A BigInt score cannot be JSON-serialized, so it exercises
+    // the reporting path's failure handling — every case must still finish.
+    const file = writeEval(
+      'bigint_score_eval.ts',
+      `import { Dataset, Evaluation, scorer, FakeTransport } from '${EVAL_IMPORT}';
+const weird = scorer((_ctx: any) => (1n as any), { name: 'weird', valueType: 'numeric', threshold: 0.5 });
+const ds = new Dataset('d');
+ds.add(1, { id: 'c0', expected: 1 });
+ds.add(2, { id: 'c1', expected: 2 });
+export const weirdEval = new Evaluation({ name: 'weird', dataset: ds, task: (x: any) => x, scorers: [weird], transport: new FakeTransport() });
+`,
+    );
+    const events = await collect([file], { no_artifact: true });
+    const types = events.map((e) => e.type);
+    assert.equal(types[types.length - 1], 'suite_completed'); // finished, not aborted
+  });
 });
 
 describe('runner: flush before exit', () => {

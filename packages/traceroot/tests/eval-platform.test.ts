@@ -179,6 +179,27 @@ describe('scorer policy is retained for re-upload (M3)', () => {
   });
 });
 
+describe('non-finite scores do not poison the local aggregate', () => {
+  it('a NaN score is excluded from the mean instead of folding into it', async () => {
+    // H1 errors a non-finite score on the wire; the local aggregate must agree, or run.json and
+    // .summary() disagree with the platform (and Python writes a bare NaN while TS writes null).
+    const bad = scorer((_ctx: ScorerContext) => NaN, {
+      name: 'm',
+      valueType: 'numeric',
+      threshold: 0.5,
+    });
+    const d = new Dataset('nan-agg');
+    d.add(1, { id: 'c0', expected: 1 });
+    const run = await evaluate({ name: 'r', dataset: d, task: echo, scorers: [bad], local: true });
+    const m = Object.values(run.scoreSummary)[0];
+    assert.equal(m.mean, null); // excluded from the mean, not NaN-folded
+    assert.ok(!Number.isNaN(m.mean)); // and specifically not a NaN mean
+    assert.equal(m.count, 1); // still counts as a produced score
+    // The serialized artifact is valid JSON that round-trips (JS stringify never emits a bare NaN).
+    assert.doesNotThrow(() => JSON.parse(JSON.stringify(run.toJSON())));
+  });
+});
+
 describe('reporting (cloud-only)', () => {
   it('no credentials -> throws (nothing to report to)', async () => {
     // no api key set -> resolveCredentials empty -> no reporting transport -> cloud-only raise

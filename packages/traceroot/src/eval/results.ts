@@ -145,7 +145,14 @@ export function aggregateScores(itemResults: EvalItemResult[]): Record<string, S
         totalCount[score.name] = 0;
       }
       totalCount[score.name] += 1;
-      if (typeof score.value === 'number' || typeof score.value === 'boolean') {
+      // A non-finite value (NaN/Infinity) must not fold into the mean: it would make the local
+      // aggregate disagree with the wire (where a non-finite score is errored) and .summary(), and
+      // it serializes to `null` here while Python writes a bare `NaN` — the same run then differs
+      // across surfaces. Exclude it from the numeric aggregate; it still counts as a produced score.
+      if (
+        (typeof score.value === 'number' || typeof score.value === 'boolean') &&
+        Number.isFinite(Number(score.value))
+      ) {
         numSum[score.name] = (numSum[score.name] ?? 0) + Number(score.value);
         numCount[score.name] = (numCount[score.name] ?? 0) + 1;
       }

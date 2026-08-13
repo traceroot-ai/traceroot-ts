@@ -601,8 +601,12 @@ async function runOne(
     select,
     // The runner speaks NDJSON on its own channel; never draw a progress bar.
     progress: false,
-    onCaseStart,
-    onCaseComplete,
+    // Isolate the hooks: the engine invokes them UNGUARDED, and `onCaseComplete` shapes the case
+    // (`caseMetadata`) before emitting — a throw there (e.g. a score value the policy can't compare)
+    // would otherwise reject the case promise and abort the whole run. Parity with Python's
+    // `@_isolated` hooks. (Emitter.emit already swallows its own write errors; this covers shaping.)
+    onCaseStart: isolated('onCaseStart', onCaseStart),
+    onCaseComplete: isolated('onCaseComplete', onCaseComplete),
     signal,
   };
   const reporting = Boolean(options.reporting);
