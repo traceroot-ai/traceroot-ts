@@ -406,16 +406,19 @@ export class Dataset {
    * create versions; this is the deliberate publish boundary. `transport` defaults to a
    * no-op LocalDatasetSync (local-only). `baseVersionId` (defaults to the pinned version)
    * drives optimistic concurrency; a stale base rejects with DatasetConflictError.
+   * `onExisting` overrides the double-check before adding a version to an already-existing
+   * dataset (default: the transport's own, an interactive prompt).
    */
   async push(
     transport?: import('./dataset_sync').DatasetSyncTransport,
     baseVersionId?: string | null,
+    opts?: { onExisting?: import('./dataset_sync').OnExisting },
   ): Promise<import('./dataset_sync').PushResult> {
     const { LocalDatasetSync } = await import('./dataset_sync');
     const sync = transport ?? new LocalDatasetSync();
     const snapshot = this.snapshot();
     const base = baseVersionId !== undefined ? baseVersionId : this.baseVersionId;
-    const result = await sync.pushDataset(snapshot, base);
+    const result = await sync.pushDataset(snapshot, base, opts);
     if (result.status === 'uploaded' && result.datasetVersionId != null) {
       this.datasetVersionId = result.datasetVersionId;
       this.baseVersionId = result.datasetVersionId;

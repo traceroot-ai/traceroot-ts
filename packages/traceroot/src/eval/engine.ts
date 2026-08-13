@@ -587,9 +587,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
     // server-side version to attach to -- the user never writes a manual "sync then run" step
     // (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses the
-    // current version; a changed dataset under an existing name prompts to confirm the new version
-    // (TTY) before publishing. Only for a local Dataset with credentials; a pulled dataset, an
-    // explicit datasetId, or an explicit transport skip this.
+    // current version. Only for a local Dataset with credentials; a pulled dataset, an explicit
+    // datasetId, or an explicit transport skip this.
     if (
       data instanceof Dataset &&
       data.datasetVersionId === undefined &&
@@ -601,7 +600,12 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         // baseVersionId, the optimistic-concurrency base for the NEXT push. Assigning only
         // datasetVersionId leaves the base null, so a later explicit push() sends
         // base_version_id: null against a dataset that now has a version — a spurious 409.
-        await data.push(new PlatformDatasetSync());
+        // Auto-approve the new version instead of falling through to the interactive
+        // confirmation: a versioning decision must never block a run waiting on [y/N]. The run's
+        // content is authoritative — publishing it is what lets the run pin exactly what it
+        // scored. The explicit, user-initiated Dataset.push() keeps the prompt; that is where
+        // deliberate version management lives.
+        await data.push(new PlatformDatasetSync(), undefined, { onExisting: () => true });
       }
     }
     const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
