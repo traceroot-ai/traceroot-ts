@@ -95,6 +95,27 @@ function asText(value: unknown): string | null {
   return typeof value === 'string' ? value : JSON.stringify(value);
 }
 
+/** True for a NaN/Infinity score value (booleans and strings never are). */
+function isNonFinite(value: unknown): value is number {
+  return typeof value === 'number' && !Number.isFinite(value);
+}
+
+/** ONE language-neutral spelling for a non-finite value. Python renders these `nan`/`inf` and
+ *  JavaScript `NaN`/`Infinity`; the wire uses the JSON-familiar spelling in both SDKs so the same
+ *  scorer bug reads identically whichever one produced it. */
+function nonFiniteToken(value: number): string {
+  if (Number.isNaN(value)) return 'NaN';
+  return value > 0 ? 'Infinity' : '-Infinity';
+}
+
+/** The scorer error a non-finite score is reported as. Byte-identical to the Python SDK. */
+function nonFiniteError(name: string, value: number): string {
+  return (
+    `ValueError: scorer '${name}' returned a non-finite score value ` +
+    `(${nonFiniteToken(value)}); a numeric score must be finite`
+  );
+}
+
 /** Per-case duration for the wire: a nonnegative INTEGER of ms, or null when unknown. */
 function durationMs(value: number | null): number | null {
   return value === null ? null : Math.max(0, Math.round(value));
@@ -409,7 +430,10 @@ export class PlatformTransport implements EvalTransport {
   async recordItemResult(_run: RunHandle, item: EvalItemResult): Promise<void> {
     // Per-case status is errored (task error OR scorer error) | not_scored — no headline pass/fail.
     // Per-metric verdicts ride each score's `passed` (see scoresPayload/scorePassed).
-    const status = caseStatus(item);
+    // A NaN/Infinity score is a scorer failure discovered at serialization time (see
+    // scoresPayload), so it errors the case exactly like a thrown scorer would.
+    const nonFinite = item.scores.filter((s) => isNonFinite(s.value)).length;
+    const status = nonFinite > 0 ? 'errored' : caseStatus(item);
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/results`, {
       test_case_id: item.caseId,
       trace_id: item.traceId,
@@ -425,10 +449,10 @@ export class PlatformTransport implements EvalTransport {
     // repeated upload replaces (not adds to) the completion aggregate.
     this.contrib.set(item.caseId, {
       taskError: item.error !== null,
-      scorerErrors: Object.keys(item.scorerErrors).length,
+      scorerErrors: Object.keys(item.scorerErrors).length + nonFinite,
       // A case that produced at least one score (and no task error) counts toward scored_count;
       // it is a COMPLETENESS count, not a pass/fail rollup (every score carries its own `passed`).
-      scored: item.error === null && item.scores.length > 0,
+      scored: item.error === null && item.scores.length > nonFinite,
     });
   }
 
@@ -512,6 +536,15 @@ export class PlatformTransport implements EvalTransport {
         scorer_name: s.name,
         scorer_version: s.version || UNVERSIONED_SCORER,
       };
+      if (isNonFinite(s.value)) {
+        // NaN/Infinity is not a JSON number. Emitted raw, JavaScript writes null (a silently
+        // fabricated empty score that poisons the aggregate mean) while Python writes a bare NaN
+        // token the backend's JSON.parse rejects (400ing the whole run). Both SDKs report it as
+        // what it is: the scorer failed to produce a value.
+        entry.error = clamp(nonFiniteError(s.name, s.value), SCORE_ERROR_MAX);
+        payload.push(entry);
+        continue;
+      }
       if (typeof s.value === 'boolean') entry.bool_value = s.value;
       else if (typeof s.value === 'number') entry.numeric_value = s.value;
       else entry.string_value = clamp(String(s.value), STRING_VALUE_MAX);
