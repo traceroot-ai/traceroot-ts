@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { Emitter, runSuite } from '../src/eval';
+import { Emitter, makeRunResult, runSuite, writeArtifacts } from '../src/eval';
 import { main } from '../src/eval/runner';
 import { TraceRoot } from '../src/traceroot';
 
@@ -226,5 +226,52 @@ describe('runner: flush before exit', () => {
     assert.equal(await main([file]), 0);
     const lines = readFileSync(eventFile, 'utf8').trim().split('\n');
     assert.ok(!lines.some((l) => JSON.parse(l).type === 'fatal'));
+  });
+});
+
+describe('runner: a payload whose serialization is not reproducible', () => {
+  // The safety probe and the real serialization must be the SAME serialization. Probing with one
+  // JSON.stringify and then writing the ORIGINAL value serializes it a second time — a payload
+  // whose toJSON is not deterministic passes the probe and then throws while the artifact is
+  // written, taking down a run whose cases had all already succeeded.
+  it('keeps the first clean serialization instead of aborting the write', () => {
+    let calls = 0;
+    const flaky = {
+      toJSON(): unknown {
+        calls += 1;
+        if (calls > 1) throw new Error('toJSON is not reproducible');
+        return { ok: true };
+      },
+    };
+    const result = makeRunResult(
+      'r',
+      [
+        {
+          caseId: 'c0',
+          input: 1,
+          output: flaky,
+          expected: null,
+          scores: [{ name: 'acc', value: 1, comment: null, metadata: null }],
+          scorerErrors: {},
+          error: null,
+          traceId: null,
+          durationMs: 1,
+        },
+      ],
+      { status: 'skipped', dashboardUrl: null },
+      { localRunId: 'lr_flaky' },
+    );
+    const casesPath = join(dir, 'lr_flaky.cases.jsonl');
+    writeArtifacts(result, join(dir, 'lr_flaky.json'), casesPath, {
+      status: 'completed',
+      runMode: 'module',
+      isFinal: true,
+      sampleCount: null,
+      sampleSeed: null,
+      candidateVersion: null,
+    });
+    const record = JSON.parse(readFileSync(casesPath, 'utf8').trim());
+    assert.deepEqual(record.output, { ok: true });
+    assert.equal(calls, 1, 'the payload must be serialized exactly once');
   });
 });

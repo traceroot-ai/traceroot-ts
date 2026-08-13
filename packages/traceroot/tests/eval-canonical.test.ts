@@ -161,3 +161,36 @@ describe('normalization rules', () => {
     assert.throws(() => new Dataset('d').upsert({ input: () => 1, id: 'a' }), /test case input/);
   });
 });
+
+describe('keys and holes that JavaScript quietly swallows', () => {
+  it('an own __proto__ key survives normalization instead of setting a prototype', () => {
+    // `out.__proto__ = v` on an ordinary object invokes the inherited setter and the key vanishes
+    // — the case id and the wire payload would both silently forget it, and Python (which has no
+    // such key) would hash a different value for the same input.
+    const value = { ['__proto__']: 1, a: 2 };
+    const normalized = normalize(value) as Record<string, unknown>;
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(normalized, '__proto__'),
+      '__proto__ must be an OWN key of the normalized value',
+    );
+    assert.equal(canonicalJson(value), '{"__proto__":1,"a":2}');
+    assert.equal(JSON.stringify(normalized), '{"__proto__":1,"a":2}'); // hash form == wire form
+  });
+
+  it('a case id reflects a __proto__ key in its input', () => {
+    const withKey = new Dataset('d').add({ ['__proto__']: 1, a: 2 });
+    const without = new Dataset('d').add({ a: 2 });
+    assert.notEqual(withKey.id, without.id);
+  });
+
+  it('a sparse array hole canonicalizes as null, exactly as the wire serializes it', () => {
+    const oneHole = new Array(1); // [ <1 empty item> ] — `.map` would skip it entirely
+    assert.equal(canonicalJson(oneHole), '[null]');
+    assert.equal(canonicalJson(oneHole), JSON.stringify(normalize(oneHole)));
+    const middleHole = new Array(3);
+    middleHole[0] = 1;
+    middleHole[2] = 3;
+    assert.equal(canonicalJson(middleHole), '[1,null,3]');
+    assert.equal(canonicalJson(middleHole), JSON.stringify(normalize(middleHole)));
+  });
+});

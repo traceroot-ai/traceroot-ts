@@ -95,6 +95,10 @@ function normKey(k: unknown): string {
   );
 }
 
+// The one string key that is an ACCESSOR on Object.prototype, so the one key a plain assignment
+// cannot write as an own property.
+const PROTO_KEY = '__proto__';
+
 function numberToken(n: number): string {
   if (Number.isNaN(n)) return 'NaN';
   if (n === Infinity) return 'Infinity';
@@ -143,7 +147,10 @@ function norm(value: unknown, path: object[]): unknown {
   }
   path.push(obj);
   try {
-    if (Array.isArray(obj)) return obj.map((v) => norm(v, path));
+    // `Array.from` VISITS holes (as undefined, which normalizes to null); `.map` skips them, which
+    // would emit `[]` for `[<1 empty item>]` while `JSON.stringify` of the same value emits
+    // `[null]` — the hash and the wire would disagree about one value.
+    if (Array.isArray(obj)) return Array.from(obj, (v) => norm(v, path));
     if (obj instanceof Set) {
       // Unordered: emit a deterministic array ordered by each item's canonical JSON.
       return [...obj].map((v) => norm(v, path)).sort((a, b) => compareCodePoints(dump(a), dump(b)));
@@ -168,7 +175,21 @@ function normEntries(entries: [unknown, unknown][], path: object[]): Record<stri
           `cannot represent both`,
       );
     }
-    out[ks] = norm(v, path);
+    const normed = norm(v, path);
+    if (ks === PROTO_KEY) {
+      // `out.__proto__ = v` invokes the accessor inherited from Object.prototype, so the key
+      // DISAPPEARS from both the hash and the wire — while Python (whose dicts have no such key)
+      // keeps it, forking the identity of the same input across the two SDKs. defineProperty
+      // writes it as an ordinary own data property, which every path below reads normally.
+      Object.defineProperty(out, ks, {
+        value: normed,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    } else {
+      out[ks] = normed;
+    }
   }
   return out;
 }

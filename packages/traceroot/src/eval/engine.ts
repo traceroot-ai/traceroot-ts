@@ -702,8 +702,10 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     (active as PlatformTransport).evaluationKey = options.evaluationKey;
   }
 
-  // Eval structural spans always export (cloud-only) and are linked to the reported results.
-  const evalSpanTracer = evalTracer();
+  // A reported run's structural spans export and are linked to its results. A local run gets a
+  // non-exporting tracer: the span tree carries the case input and the task output as span I/O, so
+  // exporting it would send off-process exactly the payloads `local: true` promises to keep in.
+  const evalSpanTracer = evalTracer(local);
   const localRunId = newRunId();
   const run = await active.createRun(name, datasetName, runMetadata ?? null, localRunId);
 

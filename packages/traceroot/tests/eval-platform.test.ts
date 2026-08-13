@@ -525,3 +525,65 @@ describe('re-upload scorer registration', () => {
     assert.deepEqual(names, ['acc', 'flaky']);
   });
 });
+
+describe('re-upload with an explicit transport', () => {
+  const specs = [
+    {
+      name: 'acc',
+      version: 'v1',
+      value_type: 'numeric',
+      direction: 'higher_is_better',
+      threshold: 0.8,
+    },
+  ];
+
+  function retainedRun(): EvalRunResult {
+    return makeRunResult(
+      'r',
+      [
+        {
+          caseId: 'c0',
+          input: 'i',
+          output: 'o',
+          expected: 'e',
+          scores: [{ name: 'acc', value: 0.9 }],
+          scorerErrors: {},
+          error: null,
+          traceId: null,
+          durationMs: null,
+        },
+      ],
+      { status: 'uploaded', dashboardUrl: null },
+      {
+        localRunId: 'run_local_specs',
+        dataset: { datasetId: 'ds_1', revision: 'rev_x', datasetVersionId: 'dsv_1', caseCount: 1 },
+        scorerSpecs: specs,
+      },
+    );
+  }
+
+  it('forwards the run’s retained scorer specs to a transport that has none', async () => {
+    // The retained thresholds are what give a replayed numeric score its `passed` verdict. They
+    // used to be attached only to the auto-built transport, so `run.upload(new PlatformTransport())`
+    // registered policy-less and the re-upload disagreed with the original run.
+    mockBackend({});
+    const explicit = new PlatformTransport('ds_1');
+    await retainedRun().upload(explicit);
+    assert.deepEqual(explicit.scorerSpecs, specs);
+    const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
+    assert.equal(reg.body.scorers[0].threshold, 0.8);
+    assert.equal(reg.body.scorers[0].direction, 'higher_is_better');
+  });
+
+  it('never overwrites specs the caller put on the transport', async () => {
+    mockBackend({});
+    const own = [{ name: 'acc', version: 'v2', value_type: 'numeric', threshold: 0.5 }];
+    const explicit = new PlatformTransport('ds_1', { scorerSpecs: own });
+    await retainedRun().upload(explicit);
+    assert.deepEqual(explicit.scorerSpecs, own);
+    assert.equal(
+      calls.find((c) => c.url.endsWith('/evaluation-runs'))!.body.scorers[0].threshold,
+      0.5,
+    );
+  });
+});

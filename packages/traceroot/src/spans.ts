@@ -106,7 +106,10 @@ export function startSpan(options: StartSpanOptions, tracerOverride?: Tracer): S
   const ctx = parentOtel ? trace.setSpan(context.active(), parentOtel) : context.active();
 
   const otel = tracer.startSpan(options.name, undefined, ctx);
-  if (!otel.isRecording() && !_hasWarnedUninit) {
+  // Only the DEFAULT tracer can be un-initialized by accident. A supplied tracer that does not
+  // record is a deliberate choice by its caller (the eval engine's non-exporting tracer for a
+  // local run), so telling that caller to call initialize() would be wrong advice.
+  if (!tracerOverride && !otel.isRecording() && !_hasWarnedUninit) {
     _hasWarnedUninit = true;
     console.warn(
       '[TraceRoot] startSpan() called but TraceRoot.initialize() was not called. Spans will not be recorded.',

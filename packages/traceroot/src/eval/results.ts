@@ -385,6 +385,13 @@ export class EvalRunResult {
         // older/loaded run without specs) falls back to names.
         scorerSpecs: this.scorerSpecs ?? undefined,
       });
+    } else if (this.scorerSpecs && 'scorerSpecs' in active) {
+      // An EXPLICIT transport gets the same retained policy the auto-built one above gets: without
+      // it a caller-supplied PlatformTransport registers policy-less and every replayed numeric
+      // score comes back without its `passed` verdict. Feature-detected rather than instanceof'd
+      // so no import of ./platform is needed, and specs the caller set themselves always win.
+      const withSpecs = active as { scorerSpecs?: ScorerSpec[] };
+      if (withSpecs.scorerSpecs === undefined) withSpecs.scorerSpecs = this.scorerSpecs;
     }
     const datasetName = this.dataset ? this.dataset.datasetId : '<inline>';
     // Preserve the run's metadata/provenance on re-upload instead of registering with null.

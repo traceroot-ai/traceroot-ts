@@ -375,8 +375,12 @@ export interface WriteArtifactsOptions {
  */
 function safePayload(value: unknown): unknown {
   try {
-    JSON.stringify(value);
-    return value;
+    // Return the value the probe actually serialized, not the original: a payload whose `toJSON`
+    // is non-deterministic (or mutates between calls) would otherwise pass here and then throw
+    // during the real write, aborting a run whose cases had all already succeeded. Serializing
+    // once and reusing that snapshot makes the probe and the artifact the same serialization.
+    const serialized = JSON.stringify(value);
+    return serialized === undefined ? value : JSON.parse(serialized);
   } catch (exc) {
     return { unserializable: true, reason: fmt(exc) };
   }
