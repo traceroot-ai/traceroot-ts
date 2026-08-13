@@ -100,6 +100,33 @@ export async function httpJson(
   return parseJson(res);
 }
 
+// --- bounded retry for the two lifecycle calls -------------------------------
+// Statuses that mean "try again", not "your request is wrong". Keep identical to the Python SDK's
+// _RETRYABLE_STATUS.
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const HTTP_STATUS_RE = /-> HTTP (\d{3}):/;
+export const RETRY_ATTEMPTS = 3;
+export const RETRY_BASE_DELAY_MS = 500;
+
+/** Exponential backoff for retry `attempt` (1-based). Identical in both SDKs. */
+export function retryDelayMs(attempt: number, baseMs: number): number {
+  return baseMs * 2 ** (attempt - 1);
+}
+
+/** Whether a failed request is worth repeating. A 4xx never is. */
+function isRetryable(err: unknown): boolean {
+  const match = HTTP_STATUS_RE.exec(err instanceof Error ? err.message : String(err));
+  if (match === null) {
+    // No HTTP status at all — a reset socket, a DNS hiccup, our own AbortSignal timeout. Exactly
+    // the blip a retry is for. (Python's equivalent gate is `isinstance(exc, OSError)`; here it is
+    // the two shapes fetch fails with, so a programming error still propagates.)
+    return err instanceof TypeError || err instanceof DOMException;
+  }
+  return RETRYABLE_STATUS.has(Number(match[1]));
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** Result-reporting fields are backend z.string(); a non-string is JSON-encoded. */
 function asText(value: unknown): string | null {
   if (value === null || value === undefined) return null;
@@ -369,6 +396,9 @@ export class PlatformTransport implements EvalTransport {
    *  same split as a scorer's key). Defaults to the name at registration, so a caller who never
    *  sets one is unaffected; set it to group runs across renames and across SDKs. */
   evaluationKey: string | null;
+  /** Bounded retry for run registration/completion only (see requestWithRetry). */
+  retryAttempts = RETRY_ATTEMPTS;
+  retryBaseDelayMs = RETRY_BASE_DELAY_MS;
   private readonly candidateVersion: string;
   private readonly environment: string;
   private readonly datasetVersionId: string | null;
@@ -403,6 +433,27 @@ export class PlatformTransport implements EvalTransport {
 
   private request(method: string, path: string, body?: unknown): Promise<any> {
     return httpJson(method, `${this.baseUrl}${path}`, this.apiKey, body);
+  }
+
+  /**
+   * One LIFECYCLE request, with a small bounded retry.
+   *
+   * Per-case result POSTs are deliberately not retried: they are isolated (a dropped one costs one
+   * case and is counted on the upload state), and repeating each of them would multiply the load
+   * on a struggling backend by the retry count. Registration and completion are the two calls with
+   * no such isolation — a blip on register aborts the evaluation before a single case runs, and
+   * one on complete leaves a finished run stuck in 'running' — so those two alone get another
+   * chance. Only transient failures; a rejected payload is re-thrown at once.
+   */
+  private async requestWithRetry(method: string, path: string, body?: unknown): Promise<any> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.request(method, path, body);
+      } catch (err) {
+        if (attempt >= this.retryAttempts || !isRetryable(err)) throw err;
+        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+      }
+    }
   }
 
   private scorerRefs(): Record<string, unknown>[] {
@@ -469,7 +520,7 @@ export class PlatformTransport implements EvalTransport {
     // the cap the REGISTRATION 400s — the run then never starts at all.
     if (metadata && Object.keys(metadata).length > 0)
       body.metadata = clampMetadata(metadata, METADATA_MAX);
-    const resp = await this.request('POST', '/api/v1/public/evaluation-runs', body);
+    const resp = await this.requestWithRetry('POST', '/api/v1/public/evaluation-runs', body);
     this.runId = resp.evaluation_run_id;
     // Optional, absent on older/self-hosted backends. Prefer the absolute run_url (resolved
     // against the UI origin) so the link is correct across split API/UI origins; keep
@@ -572,7 +623,11 @@ export class PlatformTransport implements EvalTransport {
       const manifest = this.resolvedScorerManifest(emittedMetrics);
       if (manifest.length > 0) body.scorers = manifest;
     }
-    await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/complete`, body);
+    await this.requestWithRetry(
+      'POST',
+      `/api/v1/public/evaluation-runs/${this.runId}/complete`,
+      body,
+    );
     // Join the backend's UI-relative run path with our host; null when absent.
     // Prefer the backend's absolute run_url; fall back to baseUrl + run_path for a control
     // plane that predates run_url (keeps the same-origin behavior).
