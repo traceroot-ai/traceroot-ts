@@ -10,6 +10,7 @@ import {
   pullDataset,
   pullDatasetVersion,
   scorer,
+  Scorer,
   EvalRunResult,
 } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
