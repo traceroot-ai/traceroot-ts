@@ -652,8 +652,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     active = transport;
   } else {
     // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
-    // server-side version to attach to -- the user never writes a manual "sync then run" step
-    // (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses the
+    // server-side version to attach to -- the user never writes a manual "sync then run" step.
+    // Idempotent: unchanged content reuses the
     // current version. Only for a local Dataset with credentials; an explicit datasetId or an
     // explicit transport skip this.
     //
@@ -858,6 +858,11 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     // threshold/direction rather than re-register policy-less. Captured from the scorers directly
     // (`specs` above), not the transport, so a local/Fake run — "run now, upload later" — keeps it.
     scorerSpecs: specs,
+    // Retain the scorer -> emitted-metric ownership so an explicit result.upload() re-declares it on
+    // finishRun (the same manifest this run sent). Built from the run's ownership map; {} when empty.
+    emittedMetrics: Object.fromEntries(
+      [...emittedOwnership].map(([def, metrics]) => [def, [...metrics].sort()]),
+    ),
   });
 
   // When the bar was shown (interactive), print the run's summary too — so calling evaluate() on a

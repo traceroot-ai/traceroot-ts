@@ -211,6 +211,7 @@ export interface EvalRunResultInit {
   runId?: string | null;
   metadata?: Record<string, unknown> | null;
   scorerSpecs?: ScorerSpec[] | null;
+  emittedMetrics?: Record<string, string[]> | null;
 }
 
 /** The full, immutable result of an evaluation run. */
@@ -229,6 +230,10 @@ export class EvalRunResult {
   // instead of re-registering policy-less — otherwise a re-upload's per-score `passed` verdicts
   // would silently disagree with the original run's.
   scorerSpecs: ScorerSpec[] | null;
+  // The scorer -> emitted-metric ownership map captured at run time. Retained so an explicit
+  // upload() re-declares it on finishRun (else a re-upload omits the manifest the platform keys
+  // each emitted metric's owner on).
+  emittedMetrics: Record<string, string[]> | null;
 
   constructor(init: EvalRunResultInit) {
     this.name = init.name;
@@ -241,6 +246,7 @@ export class EvalRunResult {
     this.runId = init.runId ?? null;
     this.metadata = init.metadata ?? null;
     this.scorerSpecs = init.scorerSpecs ?? null;
+    this.emittedMetrics = init.emittedMetrics ?? null;
   }
 
   // --- inspection ---
@@ -313,6 +319,7 @@ export class EvalRunResult {
       },
       metadata: this.metadata,
       scorer_specs: this.scorerSpecs,
+      emitted_metrics: this.emittedMetrics,
     };
   }
 
@@ -342,6 +349,7 @@ export class EvalRunResult {
       runId: d.run_id ?? null,
       metadata: d.metadata ?? null,
       scorerSpecs: d.scorer_specs ?? null,
+      emittedMetrics: d.emitted_metrics ?? null,
     });
   }
 
@@ -440,7 +448,9 @@ export class EvalRunResult {
       await active.recordItemResult(run, item);
       await active.recordScores(run, item.caseId, item.scores);
     }
-    this.uploadState = await active.finishRun(run, null);
+    // Re-declare the emitted-metric ownership captured at run time so a re-upload's finishRun
+    // carries the same manifest the original run did (undefined for a run without it).
+    this.uploadState = await active.finishRun(run, null, this.emittedMetrics ?? undefined);
     this.runId = active.runId ?? null;
     return this;
   }
@@ -509,6 +519,7 @@ export interface MakeRunResultOptions {
   localRunId?: string;
   metadata?: Record<string, unknown> | null;
   scorerSpecs?: ScorerSpec[] | null;
+  emittedMetrics?: Record<string, string[]> | null;
 }
 
 /** Build an EvalRunResult (computes the score summary). */

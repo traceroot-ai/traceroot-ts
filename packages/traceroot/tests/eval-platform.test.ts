@@ -178,6 +178,17 @@ describe('scorer policy is retained for re-upload', () => {
     const loaded = EvalRunResult.fromJSON(JSON.parse(JSON.stringify(run.toJSON())));
     assert.deepEqual(loaded.scorerSpecs, specs);
   });
+
+  it('emittedMetrics round-trips through toJSON/fromJSON', () => {
+    const run = makeRunResult(
+      'r',
+      [],
+      { status: 'uploaded', dashboardUrl: null },
+      { emittedMetrics: { acc: ['acc', 'acc_detail'] } },
+    );
+    const loaded = EvalRunResult.fromJSON(JSON.parse(JSON.stringify(run.toJSON())));
+    assert.deepEqual(loaded.emittedMetrics, { acc: ['acc', 'acc_detail'] });
+  });
 });
 
 describe('non-finite scores do not poison the local aggregate', () => {
