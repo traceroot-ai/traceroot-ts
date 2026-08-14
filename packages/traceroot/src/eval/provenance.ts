@@ -15,13 +15,10 @@ import { TraceRoot } from '../traceroot';
 import { autoDetectGitContext, gitContextFromFiles, harvestCiGitContext } from '../git_context';
 
 // (env flag that marks the provider, provider name, env var holding the build/run id)
-const CI_PROVIDERS: [string, string, string][] = [
-  ['GITHUB_ACTIONS', 'github', 'GITHUB_RUN_ID'],
-  ['GITLAB_CI', 'gitlab', 'CI_PIPELINE_ID'],
-  ['CIRCLECI', 'circleci', 'CIRCLE_BUILD_NUM'],
-  ['BUILDKITE', 'buildkite', 'BUILDKITE_BUILD_ID'],
-  ['JENKINS_URL', 'jenkins', 'BUILD_NUMBER'],
-];
+// GitHub Actions is the only provider we specifically recognize (it also feeds git context via
+// harvestCiGitContext). Every other CI still registers through the generic `CI` fallback in
+// ciBlock (provider: 'ci'); we don't claim per-vendor support we don't actually provide.
+const CI_PROVIDERS: [string, string, string][] = [['GITHUB_ACTIONS', 'github', 'GITHUB_RUN_ID']];
 
 // Only EXACT OID lengths are commits (SHA-1 = 40, SHA-256 = 64). A shorter hex-looking
 // branch/tag (e.g. "deadbeef") must stay a ref, not be reported as a commit.
