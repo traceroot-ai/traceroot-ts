@@ -1,4 +1,4 @@
-// Parity: scorers metadata, session, provenance, snippets, evaluation, deferred.
+// Parity: scorers metadata, session, provenance, evaluation, deferred.
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -9,9 +9,6 @@ import {
   scorerMetadata,
   FakeTransport,
   collectRunProvenance,
-  datasetLatestSnippet,
-  datasetVersionSnippet,
-  reproduceRunSnippet,
   Evaluation,
   Dataset,
   DeferredScore,
@@ -193,23 +190,6 @@ describe('provenance (machine-independent)', () => {
     assert.equal(md.team, 'eval');
     assert.deepEqual(md.git, STUB_GIT, 'git provenance rides the wire');
     assert.ok(!('sdk' in md) && !('language' in md), 'no SDK-language identity');
-  });
-});
-
-// ---------------------------------------------------------------------------
-describe('snippets', () => {
-  it('python + typescript emit current signatures; no pull_run', () => {
-    assert.match(datasetLatestSnippet('ds_1', 'python'), /pull_dataset\("ds_1"\)/);
-    assert.match(datasetVersionSnippet('dsv_9', 'python'), /pull_dataset_version\("dsv_9"\)/);
-    const repro = reproduceRunSnippet('dsv_9', 'python');
-    assert.match(repro, /pull_dataset_version\("dsv_9"\)/);
-    assert.ok(!repro.includes('pull_run'));
-    assert.match(datasetLatestSnippet('ds_1', 'typescript'), /pullDataset\("ds_1"\)/);
-    assert.match(reproduceRunSnippet('dsv_9', 'typescript'), /candidateVersion/);
-  });
-  it('placeholders + unknown lang throws', () => {
-    assert.match(datasetLatestSnippet(undefined, 'python'), /<dataset_id>/);
-    assert.throws(() => datasetLatestSnippet('x', 'ruby' as never));
   });
 });
 

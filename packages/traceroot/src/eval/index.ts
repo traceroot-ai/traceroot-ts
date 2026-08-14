@@ -50,13 +50,6 @@ export type {
 } from './scorers';
 export { collectRunProvenance, gitDirty } from './provenance';
 export {
-  datasetLatestSnippet,
-  datasetVersionSnippet,
-  reproduceRunSnippet,
-  LANGUAGES,
-} from './snippets';
-export type { SnippetLang } from './snippets';
-export {
   EVAL_API_VERSION,
   capabilities,
   discover,
