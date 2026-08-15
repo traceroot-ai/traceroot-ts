@@ -42,6 +42,7 @@ export {
   caseStatus,
   scorer,
   llmJudge,
+  Scorer,
   describeScorers,
   collectRunProvenance,
   datasetLatestSnippet,
@@ -72,7 +73,6 @@ export type {
   EvalTransport,
   PushResult,
   DatasetSyncTransport,
-  Scorer,
   ScorerDescriptor,
   DatasetSnapshot,
 } from './eval';

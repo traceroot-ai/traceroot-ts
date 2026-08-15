@@ -31,9 +31,10 @@ describe('scorer metadata', () => {
     assert.ok((md.source ?? '').length > 0); // source captured
     const { source: _s, language: _l, ...rest } = md;
     assert.deepEqual(
-      { ...rest, name: 'x' },
+      { ...rest, name: 'x', key: 'x' }, // key defaults to the definition name
       {
         name: 'x',
+        key: 'x',
         version: null,
         scorer_type: 'code',
         value_type: 'numeric',

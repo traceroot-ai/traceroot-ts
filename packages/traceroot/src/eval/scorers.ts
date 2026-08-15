@@ -94,6 +94,10 @@ export type ScoreLikeReturn =
 export type Scorer = (ctx: ScorerContext) => ScoreLikeReturn | Promise<ScoreLikeReturn>;
 
 export interface ScorerMeta {
+  /** Stable SEMANTIC identity, independent of function spelling/language. Set it identically in
+   *  Python and TypeScript to make the SAME logical scorer resolve across languages. Defaults to
+   *  the definition name; never derived from source (code/language/version are provenance). */
+  key?: string;
   name?: string;
   version?: string;
   valueType?: ValueType;
@@ -112,6 +116,7 @@ export interface ScorerMeta {
 const META = Symbol.for('traceroot.scorer.meta');
 
 export interface ScorerDescriptor {
+  key: string;
   name: string;
   version: string | null;
   scorer_type: ScorerType;
@@ -145,6 +150,7 @@ export function scorer(fn: Scorer, opts: ScorerMeta = {}): Scorer {
   const prev = (fn as any)[META] as ScorerMeta | undefined;
   const meta: ScorerMeta = { ...prev };
   for (const k of [
+    'key',
     'name',
     'version',
     'valueType',
@@ -191,6 +197,7 @@ function captureSource(fn: Scorer): string | null {
  */
 export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDescriptor {
   const name = declared(fn, 'name') ?? fnName(fn);
+  const key = declared(fn, 'key') ?? name; // stable semantic identity; defaults to the definition name
   const declaredOutput: OutputType | null = declared(fn, 'outputType') ?? null;
   // value type: declared > runtime hint > inferred from outputType. Inferring from outputType
   // (score -> numeric, classification -> categorical) keeps an llmJudge that only declares
@@ -216,6 +223,7 @@ export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDes
     requiredInputs = deriveRequiredInputs(declared(fn, 'messages'));
   }
   const desc: ScorerDescriptor = {
+    key,
     name,
     version: declaredVersion(fn),
     scorer_type: scorerType,
@@ -230,6 +238,13 @@ export function scorerMetadata(fn: Scorer, valueTypeHint?: ValueType): ScorerDes
   if (scorerType === 'llm_judge') {
     desc.model = declared(fn, 'model');
     desc.messages = declared(fn, 'messages');
+    // A DYNAMIC judge also carries its builder-callback provenance; a static judge has none (its
+    // declarative config IS its source, via the config-hash version).
+    const builderSource = (declared(fn, 'builderSource' as any) as string | undefined) ?? null;
+    if (builderSource !== null) {
+      desc.language = 'typescript';
+      desc.source = builderSource;
+    }
   } else {
     const src = captureSource(fn);
     if (src !== null) {
@@ -317,10 +332,21 @@ async function defaultComplete(model: string, messages: JudgeMessage[]): Promise
   return resp.choices[0]?.message?.content ?? '';
 }
 
+/** A dynamic judge's builder: given the case, returns the judge's template variables (a `{{VAR}}`
+ *  map) OR the messages to send. It supplies prompt inputs — never the final score. */
+export type JudgeBuilder = (
+  ctx: ScorerContext,
+) => Record<string, unknown> | JudgeMessage[] | Promise<Record<string, unknown> | JudgeMessage[]>;
+
 export interface LlmJudgeOptions {
   name: string;
+  /** Stable cross-language identity (defaults to `name`). */
+  key?: string;
   model: string;
-  messages: JudgeMessage[];
+  /** The full authored prompt template. Provide this OR `rubric`. */
+  messages?: JudgeMessage[];
+  /** Shorthand: a grading instruction; expands to a system message + `{{output}}` user message. */
+  rubric?: string;
   version?: string;
   outputType?: OutputType;
   threshold?: number;
@@ -339,16 +365,111 @@ export interface LlmJudgeOptions {
  * as the reported definition; calling it renders {{input}}/{{output}}/{{expected}} per case
  * and runs the model. Parity with Python `llm_judge`.
  */
-export function llmJudge(opts: LlmJudgeOptions): Scorer {
+/** A general {{VAR}} placeholder (any identifier), for rendering a dynamic judge's builder vars. */
+const ANY_PLACEHOLDER = /\{\{\s*(\w+)\s*\}\}/g;
+
+function asJudgeText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Deterministic canonical JSON (recursively sorted object keys). */
+function canonicalize(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return '[' + v.map(canonicalize).join(',') + ']';
+  const keys = Object.keys(v as Record<string, unknown>).sort();
+  return (
+    '{' +
+    keys
+      .map((k) => JSON.stringify(k) + ':' + canonicalize((v as Record<string, unknown>)[k]))
+      .join(',') +
+    '}'
+  );
+}
+
+/** Deterministic revision of a judge's DECLARATIVE config (its versioned 'source'): canonical JSON
+ *  -> a 64-bit FNV-1a hash, so the same config always hashes the same. */
+function configRevision(config: Record<string, unknown>): string {
+  const canon = canonicalize(config);
+  let h = 0xcbf29ce484222325n;
+  for (let i = 0; i < canon.length; i++) {
+    h ^= BigInt(canon.charCodeAt(i));
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return 'cfg_' + h.toString(16).padStart(16, '0');
+}
+
+function renderVars(messages: JudgeMessage[], variables: Record<string, string>): JudgeMessage[] {
+  return messages.map((m) => ({
+    role: m.role,
+    content: (m.content ?? '').replace(ANY_PLACEHOLDER, (whole, k: string) =>
+      Object.prototype.hasOwnProperty.call(variables, k) ? variables[k] : whole,
+    ),
+  }));
+}
+
+function renderBuilt(
+  messages: JudgeMessage[],
+  built: Record<string, unknown> | JudgeMessage[],
+  ctx: ScorerContext,
+  name: string,
+): JudgeMessage[] {
+  if (Array.isArray(built)) return renderMessages(built, ctx); // dynamic messages
+  if (built && typeof built === 'object') {
+    const base: Record<string, string> = {
+      input: asJudgeText(ctx.input),
+      output: asJudgeText(ctx.output),
+      expected: asJudgeText(ctx.expected),
+    };
+    for (const [k, v] of Object.entries(built)) base[k] = asJudgeText(v);
+    return renderVars(messages, base);
+  }
+  throw new Error(
+    `llmJudge ${JSON.stringify(name)}: a dynamic builder must return an object (template ` +
+      `variables) or an array (messages), got ${typeof built}.`,
+  );
+}
+
+export function llmJudge(opts: LlmJudgeOptions, builder?: JudgeBuilder): Scorer {
   const outputType: OutputType = opts.outputType ?? 'score';
   if (!OUTPUT_TYPES.includes(outputType)) {
     throw new Error(`outputType must be one of ${OUTPUT_TYPES.join(', ')}, got ${outputType}`);
   }
   const requiredInputs =
     opts.requiredInputs !== undefined ? validateRequiredInputs(opts.requiredInputs) : undefined;
+  // `rubric` is a shorthand for a grading system message; `messages` is the full template. One required.
+  const messages: JudgeMessage[] =
+    opts.messages ??
+    (opts.rubric !== undefined
+      ? [
+          { role: 'system', content: opts.rubric },
+          { role: 'user', content: '{{output}}' },
+        ]
+      : (() => {
+          throw new Error('llmJudge requires `messages` or `rubric`');
+        })());
+  // The declarative config IS the judge's versioned source: hash it deterministically. Explicit wins.
+  const resolvedVersion =
+    opts.version ??
+    configRevision({
+      model: opts.model,
+      messages,
+      outputType,
+      threshold: opts.threshold ?? null,
+      direction: opts.direction ?? null,
+      valueType: opts.valueType ?? null,
+      metadata: opts.metadata ?? null,
+    });
   const call = (msgs: JudgeMessage[]) => (opts.complete ?? defaultComplete)(opts.model, msgs);
   const judge: Scorer = async (ctx: ScorerContext): Promise<Score> => {
-    const rendered = renderMessages(opts.messages, ctx);
+    const rendered = builder
+      ? renderBuilt(messages, await builder(ctx), ctx, opts.name)
+      : renderMessages(messages, ctx);
     // If a provider integration already traces this model's calls, let IT own the LLM span
     // (richer: native semantics) instead of adding our own — otherwise we'd nest an LLM span
     // inside an LLM span. This only holds for the DEFAULT dispatch: a user-supplied `complete`
@@ -379,10 +500,14 @@ export function llmJudge(opts: LlmJudgeOptions): Scorer {
     name: opts.name,
     scorerType: 'llm_judge',
     model: opts.model,
-    messages: opts.messages,
+    messages,
     outputType,
+    version: resolvedVersion, // the declarative config hash (or an explicit version)
   };
-  if (opts.version !== undefined) meta.version = opts.version;
+  if (opts.key !== undefined) meta.key = opts.key;
+  // Dynamic judge: capture the builder-callback provenance (source string; honest fallback under
+  // minification). A static judge records none — its config-hash version is its source.
+  if (builder) (meta as unknown as Record<string, unknown>).builderSource = String(builder);
   if (opts.threshold !== undefined) meta.threshold = opts.threshold;
   if (opts.description !== undefined) meta.description = opts.description;
   if (opts.metadata !== undefined) meta.metadata = opts.metadata;
@@ -392,3 +517,22 @@ export function llmJudge(opts: LlmJudgeOptions): Scorer {
   (judge as any)[META] = meta;
   return judge;
 }
+
+/**
+ * Unified scorer-definition namespace with NAMED constructors (stronger types + autocomplete than one
+ * `Scorer(type=...)` constructor whose options mostly wouldn't apply):
+ *   - `Scorer.code(opts, fn)`       — a code scorer (an ordinary function also works with NO wrapper).
+ *   - `Scorer.llmJudge(opts)`       — a static LLM judge (declarative config only; no function).
+ *   - `Scorer.llmJudge(opts, fn)`   — a dynamic LLM judge (the builder returns the judge's template
+ *                                     variables or messages per case).
+ * `kind` (`code` | `llm_judge`) stays internal on the normalized definition. `Scorer` is the
+ * executable definition + policy + provenance; `Score` (separate) is one emitted result per case.
+ */
+export const Scorer = {
+  code(opts: ScorerMeta, fn: Scorer): Scorer {
+    return scorer(fn, opts);
+  },
+  llmJudge(opts: LlmJudgeOptions, builder?: JudgeBuilder): Scorer {
+    return llmJudge(opts, builder);
+  },
+};
