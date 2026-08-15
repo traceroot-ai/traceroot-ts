@@ -19,6 +19,7 @@ import { trace } from '@opentelemetry/api';
 import type { ScorerContext, Score, DeferredScore } from './types';
 import { canonicalHash } from './canonical';
 import { observe } from '../observe';
+import { _isGlobalAutoInitSuppressed } from '../spans';
 import { isProviderInstrumented } from '../instrumentation';
 import { TraceRoot } from '../traceroot';
 import {
@@ -580,7 +581,10 @@ export function llmJudge(opts: LlmJudgeOptions, builder?: JudgeBuilder): Scorer 
     // Mirror observe()'s lazy init BEFORE checking provider wiring: a provider integration only
     // registers on the first TraceRoot.initialize(), so checking earlier would run before wiring
     // and self-instrument a default-dispatch call the integration also traces (nested LLM spans).
-    if (opts.complete === undefined && !TraceRoot.isInitialized()) TraceRoot.initialize();
+    // ...unless a local run has suppressed global auto-init: initializing here would defeat
+    // local: true by bringing up the exporting provider for the judge's own model call.
+    if (opts.complete === undefined && !TraceRoot.isInitialized() && !_isGlobalAutoInitSuppressed())
+      TraceRoot.initialize();
     const providerTraced = opts.complete === undefined && providerIntegrationTraces(opts.model);
     const text = providerTraced
       ? (await call(rendered)).text

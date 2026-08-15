@@ -230,7 +230,9 @@ export class TraceRoot {
    *  guarantee a local run never uploads on ambient credentials. */
   static _clearCredentials(): void {
     _apiKey = undefined;
-    _baseUrl = DEFAULT_BASE_URL;
+    // undefined (not the hard default) so a later resolveCredentials() still honors the
+    // TRACEROOT_HOST_URL env fallback — matching the module-load invariant above.
+    _baseUrl = undefined;
     _isInitialized = false;
   }
 }
