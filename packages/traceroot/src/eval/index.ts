@@ -20,6 +20,7 @@ export type {
 } from './platform';
 export {
   DatasetConflictError,
+  DatasetPublishAborted,
   LocalDatasetSync,
   FakeDatasetSync,
   PlatformDatasetSync,

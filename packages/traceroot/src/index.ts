@@ -49,6 +49,7 @@ export {
   datasetVersionSnippet,
   reproduceRunSnippet,
   DatasetConflictError,
+  DatasetPublishAborted,
   LocalDatasetSync,
   FakeDatasetSync,
   PlatformDatasetSync,

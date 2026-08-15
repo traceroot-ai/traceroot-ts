@@ -7,7 +7,7 @@
 // PlatformDatasetSync publishes to POST /api/v1/public/datasets + .../{id}/versions.
 
 import { TraceRoot } from '../traceroot';
-import { httpJson } from './platform';
+import { httpJson, pullDatasetVersion } from './platform';
 import type { DatasetSnapshot } from './types';
 
 export class DatasetConflictError extends Error {
@@ -24,6 +24,46 @@ export class DatasetConflictError extends Error {
   }
 }
 
+/** Thrown when publishing a new version to an ALREADY-EXISTING dataset is declined at the
+ *  confirmation step (the push is a no-op: no version was created). */
+export class DatasetPublishAborted extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DatasetPublishAborted';
+  }
+}
+
+export interface ExistingDatasetInfo {
+  name?: string;
+  current_dataset_version_id?: string | null;
+}
+
+/** Called when a push targets an already-existing dataset; return false to abort. */
+export type OnExisting = (info: ExistingDatasetInfo) => boolean | Promise<boolean>;
+
+/** Default double-check before adding a version to an EXISTING dataset. A dataset's identity is its
+ *  name, so re-pushing the same name updates the SAME dataset with a NEW version — usually intended,
+ *  but easy to do by accident with a reused name. On an interactive TTY we ask first (default `no`,
+ *  so an accidental Enter never publishes); non-interactive contexts (CI, pipes) proceed silently,
+ *  and `TRACEROOT_ASSUME_YES=1` skips the prompt everywhere. Mirrors Python `_confirm_new_version`. */
+async function confirmNewVersion(info: ExistingDatasetInfo): Promise<boolean> {
+  const yes = new Set(['1', 'true', 'yes']);
+  if (yes.has((process.env.TRACEROOT_ASSUME_YES ?? '').trim().toLowerCase())) return true;
+  if (!process.stdin.isTTY) return true;
+  const readline = await import('node:readline/promises');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const name = info.name ?? '?';
+    const ver = info.current_dataset_version_id ?? null;
+    const ans = await rl.question(
+      `Dataset '${name}' already exists (current version ${ver}). Publish a NEW version? [y/N] `,
+    );
+    return ['y', 'yes'].includes(ans.trim().toLowerCase());
+  } finally {
+    rl.close();
+  }
+}
+
 /** Outcome of Dataset.push — explicit about local vs uploaded state. */
 export interface PushResult {
   status: 'local_only' | 'uploaded';
@@ -33,12 +73,20 @@ export interface PushResult {
 }
 
 export interface DatasetSyncTransport {
-  pushDataset(snapshot: DatasetSnapshot, baseVersionId: string | null): Promise<PushResult>;
+  pushDataset(
+    snapshot: DatasetSnapshot,
+    baseVersionId: string | null,
+    opts?: { onExisting?: OnExisting },
+  ): Promise<PushResult>;
 }
 
 /** Default no-op: the dataset stays local; nothing is published. */
 export class LocalDatasetSync implements DatasetSyncTransport {
-  async pushDataset(snapshot: DatasetSnapshot): Promise<PushResult> {
+  async pushDataset(
+    snapshot: DatasetSnapshot,
+    _baseVersionId?: string | null,
+    _opts?: { onExisting?: OnExisting },
+  ): Promise<PushResult> {
     return { status: 'local_only', datasetId: snapshot.datasetId };
   }
 }
@@ -82,8 +130,24 @@ export class FakeDatasetSync implements DatasetSyncTransport {
     this.stateFor(id).versionId = versionId;
   }
 
-  async pushDataset(snapshot: DatasetSnapshot, baseVersionId: string | null): Promise<PushResult> {
+  async pushDataset(
+    snapshot: DatasetSnapshot,
+    baseVersionId: string | null,
+    opts?: { onExisting?: OnExisting },
+  ): Promise<PushResult> {
     const s = this.stateFor(snapshot.datasetId);
+    // In-memory sync has no remote existence to double-check; onExisting is consulted only when a
+    // prior version already exists here (interface parity with PlatformDatasetSync).
+    if (s.versionId !== null && opts?.onExisting) {
+      const ok = await opts.onExisting({
+        name: snapshot.name,
+        current_dataset_version_id: s.versionId,
+      });
+      if (!ok)
+        throw new DatasetPublishAborted(
+          `publish to existing dataset '${snapshot.name}' declined; no new version created.`,
+        );
+    }
     this.lastDatasetId = snapshot.datasetId;
     if (s.versionId !== null && baseVersionId !== s.versionId) {
       throw new DatasetConflictError(baseVersionId, s.versionId);
@@ -125,7 +189,63 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
     return httpJson(method, `${this.baseUrl}${path}`, this.apiKey, body);
   }
 
-  async pushDataset(snapshot: DatasetSnapshot, baseVersionId: string | null): Promise<PushResult> {
+  /** The remote dataset's metadata if it ALREADY exists with a published version, else null (a
+   *  fetch error is treated as "new" so the push itself surfaces any real problem). */
+  private async existingDataset(datasetId: string): Promise<ExistingDatasetInfo | null> {
+    try {
+      const meta = await this.request(
+        'GET',
+        `/api/v1/public/datasets/${encodeURIComponent(datasetId)}`,
+      );
+      return meta?.current_dataset_version_id ? meta : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The content revision of the dataset's current published version, for change detection. Null
+   *  when it can't be fetched (then we fall through to confirm rather than assume unchanged). */
+  private async publishedRevision(datasetId: string, versionId: string): Promise<string | null> {
+    try {
+      const current = await pullDatasetVersion(versionId, {
+        datasetId,
+        apiKey: this.apiKey,
+        baseUrl: this.baseUrl,
+      });
+      return current.snapshot().revision;
+    } catch {
+      return null;
+    }
+  }
+
+  async pushDataset(
+    snapshot: DatasetSnapshot,
+    baseVersionId: string | null,
+    opts?: { onExisting?: OnExisting },
+  ): Promise<PushResult> {
+    // A dataset's identity is its name: re-pushing the same name updates the SAME dataset with a
+    // new version. If the content is UNCHANGED from the current version, this is a no-op (reuse it,
+    // no prompt). If it CHANGED, double-check before creating a new version (default: prompt on an
+    // interactive TTY, proceed otherwise) so a reused name never silently adds a version.
+    const existing = await this.existingDataset(snapshot.datasetId);
+    if (existing) {
+      const currentVersion = existing.current_dataset_version_id as string;
+      if (
+        (await this.publishedRevision(snapshot.datasetId, currentVersion)) === snapshot.revision
+      ) {
+        // Identical content -> idempotent no-op; keep the current version, never prompt.
+        return {
+          status: 'uploaded',
+          datasetId: snapshot.datasetId,
+          datasetVersionId: currentVersion,
+        };
+      }
+      const confirm = opts?.onExisting ?? confirmNewVersion;
+      if (!(await confirm(existing)))
+        throw new DatasetPublishAborted(
+          `publish to existing dataset '${snapshot.name}' declined; no new version created.`,
+        );
+    }
     await this.request('POST', '/api/v1/public/datasets', {
       dataset_id: snapshot.datasetId,
       name: snapshot.name,
