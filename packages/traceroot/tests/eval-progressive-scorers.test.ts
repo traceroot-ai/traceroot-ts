@@ -30,13 +30,12 @@ function ds() {
   d.upsert({ input: { q: 'hi' }, id: 'c0', expected: 'hi' });
   return d;
 }
-async function scoresOf(scorers: any[], mainScore?: string) {
+async function scoresOf(scorers: any[]) {
   const run = await evaluate({
     name: 'r',
     dataset: ds(),
     task: () => 'hi',
     scorers,
-    mainScore,
     transport: new FakeTransport(),
   });
   return Object.fromEntries(run.itemResults[0].scores.map((s) => [s.name, s.value]));
@@ -63,7 +62,7 @@ describe('progressive scorer API (TS)', () => {
       len_ok: String(output).length > 0,
       starts_h: String(output).startsWith('h'),
     });
-    assert.deepEqual(await scoresOf([multi], 'len_ok'), { len_ok: true, starts_h: true });
+    assert.deepEqual(await scoresOf([multi]), { len_ok: true, starts_h: true });
   });
 
   it('named object return stays a single Score', async () => {

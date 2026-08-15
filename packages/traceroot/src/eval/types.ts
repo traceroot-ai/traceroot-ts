@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 
-import { newDatasetId, newTestCaseId } from './ids';
+import { newTestCaseId, stableCaseId, stableDatasetId } from './ids';
 
 /**
  * A runnable test case. Only `input` is required. `expected` is always optional and is
@@ -173,22 +173,28 @@ export interface DatasetSnapshot {
 
 /**
  * A local, mutable, ordered collection of {@link EvalCase} keyed by stable id. Construction
- * and mutation perform no network I/O. A client-generated `datasetId` (ds_+ULID) is
- * assigned at creation; `datasetVersionId` is set only when this mirrors a pushed/pulled
- * remote version.
+ * and mutation perform no network I/O. Identity is the dataset's `key` (defaults to `name`),
+ * NOT which SDK or process created it: `datasetId` is a deterministic `ds_`+sha256 of the
+ * key, so re-constructing the same dataset — another process, TypeScript or Python — yields
+ * the SAME id and the platform converges their runs instead of forking a new dataset each
+ * run. Pass an explicit `key` to keep identity stable across a display-name rename.
+ * `datasetVersionId` is set only when this mirrors a pushed/pulled remote version; changed
+ * content under the same key becomes a new VERSION.
  */
 export class Dataset {
   name: string;
   description: string | null;
+  key: string;
   datasetId: string;
   datasetVersionId?: string;
   baseVersionId: string | null = null;
   private readonly casesById = new Map<string, EvalCase>();
 
-  constructor(name: string, description: string | null = null) {
+  constructor(name: string, description: string | null = null, opts: { key?: string } = {}) {
     this.name = name;
     this.description = description;
-    this.datasetId = newDatasetId();
+    this.key = opts.key ?? name;
+    this.datasetId = stableDatasetId(this.key);
   }
 
   // --- authoring / mutation (network-free) ---
@@ -202,7 +208,10 @@ export class Dataset {
       id?: string;
     } = {},
   ): EvalCase {
-    const cid = opts.id ?? newTestCaseId();
+    // Without an explicit id, the case gets a STABLE id from the dataset key + its insertion
+    // position, so re-authoring the same dataset converges (the platform matches by id)
+    // instead of forking new cases each run.
+    const cid = opts.id ?? stableCaseId(this.key, this.casesById.size);
     if (this.casesById.has(cid)) throw new Error(`test case id already exists: ${cid}`);
     const c: EvalCase = {
       input,

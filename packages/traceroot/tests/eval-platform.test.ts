@@ -164,12 +164,14 @@ describe('reporting (cloud-only)', () => {
     assert.ok(typeof sc.source === 'string' && sc.source.length > 0);
 
     const res = calls.find((c) => c.url.endsWith('/results'))!;
-    assert.equal(res.body.status, 'passed');
-    assert.equal(res.body.main_score, 1);
+    // No headline pass/fail: an error-free case reports not_scored, and no main_score rides the wire.
+    assert.equal(res.body.status, 'not_scored');
+    assert.equal('main_score' in res.body, false);
     assert.equal(typeof res.body.duration_ms, 'number');
 
     const done = calls.find((c) => c.url.endsWith('/complete'))!;
-    assert.equal(done.body.main_score, 1); // aggregate
+    assert.equal('main_score' in done.body, false);
+    assert.equal('main_score_name' in done.body, false);
   });
 
   it('never sends a baseline_run_id (comparison is the backend’s job)', async () => {
@@ -183,29 +185,50 @@ describe('reporting (cloud-only)', () => {
     assert.equal('baseline_run_id' in reg.body, false);
   });
 
-  it('explicit transport resolves a single scorer after specs are injected', async () => {
-    // A caller building PlatformTransport directly (no scorerNames) with scorerSpecs assigned
-    // AFTER construction — exactly what the engine does — must still resolve the single scorer's
-    // emitted metric name-agnostically. Freezing the flag from the empty constructor makes every
-    // case report not_scored / null main. A fn 'grade' emitting {name:'quality'} under
-    // lower_is_better must SCORE the case (0.3 > 0.2 -> failed, main 0.3).
+  it('case status is errored (task error) | errored (scorer error) | not_scored', async () => {
+    // Per-case status carries no headline pass/fail: it is errored when the case had a task error
+    // OR any scorer error, otherwise not_scored. main_score never rides the per-case wire.
     mockBackend({});
-    const t = new PlatformTransport('ds_1', {}); // no scorerNames
-    t.scorerSpecs = [{ name: 'grade', threshold: 0.2, direction: 'lower_is_better' }];
+    const t = new PlatformTransport('ds_1', { scorerNames: ['grade'] });
     const run = await t.createRun('r', 'd', null);
+    const base = { caseId: 'c', input: 'i', output: 'o', expected: 'e', traceId: 't' };
+    // scored, no error -> not_scored
     await t.recordItemResult(run, {
-      caseId: 'c1',
-      input: 'i',
-      output: 'o',
-      expected: 'e',
-      scores: [{ name: 'quality', value: 0.3 }], // emitted 'quality' != fn 'grade'
+      ...base,
+      caseId: 'c0',
+      scores: [{ name: 'quality', value: 0.3 }],
       scorerErrors: {},
       error: null,
-      traceId: 't',
     });
-    const res = calls.find((c) => c.url.endsWith('/results'))!;
-    assert.equal(res.body.status, 'failed');
-    assert.equal(res.body.main_score, 0.3);
+    // task error -> errored
+    await t.recordItemResult(run, {
+      ...base,
+      caseId: 'c1',
+      scores: [],
+      scorerErrors: {},
+      error: 'boom',
+    });
+    // scorer error (no task error) -> errored
+    await t.recordItemResult(run, {
+      ...base,
+      caseId: 'c2',
+      scores: [],
+      scorerErrors: { grade: 'kaboom' },
+      error: null,
+    });
+    await t.finishRun(run, null);
+    const results = calls.filter((c) => c.url.endsWith('/results')).map((c) => c.body);
+    assert.deepEqual(
+      results.map((b) => b.status),
+      ['not_scored', 'errored', 'errored'],
+    );
+    for (const b of results) assert.equal('main_score' in b, false);
+    // Completion counts: one task error, one scorer error, no headline scored_count.
+    const done = calls.find((c) => c.url.endsWith('/complete'))!.body;
+    assert.equal(done.task_error_count, 1);
+    assert.equal(done.scorer_error_count, 1);
+    assert.equal(done.scored_count, 0);
+    assert.equal('main_score' in done, false);
   });
 
   it('sends per-score passed for a single scorer, name-agnostically', async () => {

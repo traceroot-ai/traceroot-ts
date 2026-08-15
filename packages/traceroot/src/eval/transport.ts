@@ -29,7 +29,6 @@ export interface EvalTransport {
     datasetName: string,
     metadata: Record<string, unknown> | null,
     clientRunId?: string,
-    provenance?: Record<string, unknown> | null,
   ): Promise<RunHandle>;
   registerItem(run: RunHandle, evalCase: EvalCase): Promise<void>;
   recordItemResult(run: RunHandle, itemResult: EvalItemResult): Promise<void>;
@@ -37,7 +36,6 @@ export interface EvalTransport {
   finishRun(
     run: RunHandle,
     status?: string | null,
-    mainScoreName?: string | null,
     emittedMetrics?: Record<string, string[]> | null,
   ): Promise<UploadState>;
   publishDataset(datasetName: string, itemCount: number): Promise<PublishResult>;
@@ -48,18 +46,15 @@ export interface EvalTransport {
 export class FakeTransport implements EvalTransport {
   readonly calls: unknown[][] = [];
   lastRunMetadata: Record<string, unknown> | null = null;
-  lastRunProvenance: Record<string, unknown> | null = null;
 
   async createRun(
     name: string,
     datasetName: string,
     metadata: Record<string, unknown> | null,
     _clientRunId?: string,
-    provenance?: Record<string, unknown> | null,
   ): Promise<RunHandle> {
     this.calls.push(['create_run', name, datasetName]);
     this.lastRunMetadata = metadata;
-    this.lastRunProvenance = provenance ?? null;
     return { name, datasetName, metadata };
   }
   async registerItem(_run: RunHandle, evalCase: EvalCase): Promise<void> {
@@ -72,17 +67,14 @@ export class FakeTransport implements EvalTransport {
     this.calls.push(['record_scores', caseId]);
   }
   lastFinishStatus: string | null | undefined = undefined;
-  lastMainScoreName: string | null | undefined = undefined;
   lastEmittedMetrics: Record<string, string[]> | null | undefined = undefined;
   async finishRun(
     _run: RunHandle,
     status?: string | null,
-    mainScoreName?: string | null,
     emittedMetrics?: Record<string, string[]> | null,
   ): Promise<UploadState> {
     this.calls.push(['finish_run', status ?? null]);
     this.lastFinishStatus = status ?? null;
-    this.lastMainScoreName = mainScoreName ?? null;
     this.lastEmittedMetrics = emittedMetrics ?? null;
     return { status: 'uploaded', dashboardUrl: null };
   }

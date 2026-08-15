@@ -31,16 +31,13 @@ import { Dataset, EvalCase, Score } from './types';
 import {
   EvalItemResult,
   EvalRunResult,
-  MainScore,
   RunDatasetRef,
   UploadState,
   caseStatus,
   makeRunResult,
-  resolveMainScorePolicy,
 } from './results';
 import { CancelledError } from './engine';
 import { FakeTransport } from './transport';
-import { describeScorers } from './scorers';
 
 export const EVAL_API_VERSION = 1;
 export function capabilities(): Record<string, boolean> {
@@ -50,7 +47,6 @@ export function capabilities(): Record<string, boolean> {
     compare: true,
     dataset_push: true,
     sampling: true,
-    provenance: true,
     cancellation: true,
   };
 }
@@ -237,13 +233,10 @@ function scorerVersions(result: EvalRunResult): Record<string, string | null> {
   return versions;
 }
 
-function caseMetadata(
-  item: EvalItemResult,
-  mainScore: MainScore | null = null,
-): Record<string, unknown> {
+function caseMetadata(item: EvalItemResult): Record<string, unknown> {
   return {
     case_id: item.caseId,
-    status: caseStatus(item, mainScore),
+    status: caseStatus(item),
     scores: item.scores.map(scoreEvent),
     task_error: item.error,
     scorer_errors: scorerErrorEvents(item),
@@ -309,7 +302,6 @@ export interface WriteArtifactsOptions {
   sampleCount: number | null;
   sampleSeed: number | null;
   candidateVersion: string | null;
-  provenance: Record<string, unknown> | null;
   createdAt?: string;
   /** Opt-in per-payload byte cap (parity with Python `max_payload_bytes`). */
   maxPayloadBytes?: number | null;
@@ -356,7 +348,7 @@ export function writeArtifacts(
     return JSON.stringify({
       schema_version: '1',
       case_id: item.caseId,
-      status: caseStatus(item, result.mainScore),
+      status: caseStatus(item),
       input,
       output,
       expected,
@@ -382,13 +374,11 @@ export function writeArtifacts(
     run_id: result.runId,
     created_at: o.createdAt ?? nowIso(),
     evaluation_name: result.name,
-    main_score_name: result.mainScoreName,
     status: o.status,
     candidate_version: o.candidateVersion,
     run_mode: o.runMode,
     is_final: o.isFinal,
     sample: { count: o.sampleCount, seed: o.sampleSeed },
-    provenance: o.provenance,
     dataset: result.dataset
       ? {
           dataset_id: result.dataset.datasetId,
@@ -405,7 +395,7 @@ export function writeArtifacts(
     scores: Object.fromEntries(Object.entries(result.scoreSummary).map(([k, v]) => [k, { ...v }])),
     upload: { status: result.uploadState.status, dashboard_url: result.uploadState.dashboardUrl },
     artifact,
-    cases: result.itemResults.map((it) => caseMetadata(it, result.mainScore)),
+    cases: result.itemResults.map((it) => caseMetadata(it)),
   };
   atomicWrite(runPath, JSON.stringify(runDoc, null, 2));
   return artifact;
@@ -479,7 +469,6 @@ async function runOne(
   const sample = options.sample;
   const seed = Number(options.sample_seed ?? 0) || 0;
   const candidateVersion = options.candidate_version ?? evaluation.candidateVersion ?? null;
-  const provenance = options.provenance ?? null;
   const createdAt = nowIso();
   const identity = datasetIdentity(evaluation.dataset as Dataset | EvalCase[]);
 
@@ -513,19 +502,11 @@ async function runOne(
     },
   });
 
-  // The scoring POLICY (threshold + direction) is known up front from the scorers, so live status
-  // uses the SAME MainScore the final result will -- no default-1.0 divergence. Only the late-bound
-  // single-metric NAME is unknown here, and it's name-agnostic for a single scorer, so they agree.
-  const [liveThreshold, liveDirection] = resolveMainScorePolicy(
-    describeScorers(evaluation.scorers),
-    evaluation.mainScore ?? null,
-  );
-  const liveMain = new MainScore(evaluation.mainScore ?? null, liveThreshold, liveDirection);
   const collected: EvalItemResult[] = [];
   const onCaseStart = (c: EvalCase): void => emitter.emit({ type: 'case_started', case_id: c.id });
   const onCaseComplete = (item: EvalItemResult): void => {
     collected.push(item);
-    emitter.emit({ type: 'case_completed', ...caseMetadata(item, liveMain) });
+    emitter.emit({ type: 'case_completed', ...caseMetadata(item) });
   };
 
   const overrides: Record<string, unknown> = {
@@ -577,7 +558,6 @@ async function runOne(
       sampleCount: chosen !== null ? chosen.size : null,
       sampleSeed: chosen !== null ? seed : null,
       candidateVersion,
-      provenance,
       createdAt,
       maxPayloadBytes: options.max_payload_bytes != null ? Number(options.max_payload_bytes) : null,
     });

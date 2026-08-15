@@ -21,7 +21,6 @@ export class Evaluation {
   readonly name: string;
   readonly dataset: EvaluateOptions['dataset'];
   readonly candidateVersion?: string;
-  readonly mainScore?: string;
   readonly scorers: EvaluateOptions['scorers'];
   readonly select?: (c: import('./types').EvalCase) => boolean;
 
@@ -37,7 +36,6 @@ export class Evaluation {
     this.name = rest.name;
     this.dataset = rest.dataset;
     this.candidateVersion = rest.candidateVersion;
-    this.mainScore = rest.mainScore;
     this.scorers = rest.scorers;
     this.select = rest.select;
   }

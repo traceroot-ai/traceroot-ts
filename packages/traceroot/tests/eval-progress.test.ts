@@ -64,12 +64,13 @@ describe('ConsoleProgress', () => {
     const buf = new Buffer();
     const bar = new ConsoleProgress(3, 'demo', { stream: buf, width: 10, animate: true });
     bar.start();
-    bar.onCaseComplete(item('a', 1.0), 5); // passed
-    bar.onCaseComplete(item('b', 0.0), 5); // failed
+    bar.onCaseComplete(item('a', 1.0), 5); // not_scored (no headline pass/fail)
+    bar.onCaseComplete(item('b', 0.0), 5); // not_scored
     bar.onCaseComplete(item('c', 'error'), 5); // errored
     bar.finish();
 
-    assert.deepEqual([bar.passed, bar.failed, bar.errored, bar.done], [1, 1, 1, 3]);
+    // Only errored is tallied now; passed/failed are gone from the case status.
+    assert.deepEqual([bar.passed, bar.failed, bar.errored, bar.done], [0, 0, 1, 3]);
     const out = buf.text;
     assert.match(out, /demo/);
     assert.match(out, /3\/3/);
