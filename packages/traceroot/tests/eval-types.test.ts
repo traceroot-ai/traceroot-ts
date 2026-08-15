@@ -22,14 +22,17 @@ describe('Dataset upsert', () => {
     assert.equal(returned.input, 1);
   });
 
-  it('anonymous case gets a stable ULID id (parity with Python upsert)', () => {
+  it('anonymous case gets a stable content id (parity with Python upsert)', () => {
+    // Content-derived, not random: a ULID here would fork the same case into a new server case
+    // on every process, which is the one thing stable ids exist to prevent.
     const ds = new Dataset('d');
     const r0 = ds.upsert({ input: 'a' });
     const r1 = ds.upsert({ input: 'b' });
-    assert.match(r0.id as string, /^tc_[0-9A-Z]{26}$/);
-    assert.match(r1.id as string, /^tc_[0-9A-Z]{26}$/);
+    assert.match(r0.id as string, /^tc_[0-9a-f]{20}$/);
+    assert.match(r1.id as string, /^tc_[0-9a-f]{20}$/);
     assert.notEqual(r0.id, r1.id);
     assert.equal(ds.size, 2);
+    assert.equal(new Dataset('d').upsert({ input: 'a' }).id, r0.id);
   });
 
   it('re-upsert of returned case is idempotent', () => {
@@ -87,5 +90,32 @@ describe('Dataset toJSON', () => {
     assert.equal(json.cases[0].id, 'a');
     assert.equal(json.cases[0].sourceTraceId, 't1');
     assert.equal(json.cases[0].sourceSpanId, 's1');
+  });
+});
+
+describe('the identity key is immutable', () => {
+  // Every case id and the datasetId are hashed from `key`. A key mutated after construction
+  // leaves both stale: the snapshot would advertise a `key` that no longer hashes to the
+  // datasetId it is sent with, and the platform would file the version under a different
+  // dataset than the ids belong to.
+  it('reassigning key after construction throws', () => {
+    const ds = new Dataset('billing');
+    assert.throws(() => {
+      (ds as { key: string }).key = 'renamed';
+    }, TypeError);
+    assert.equal(ds.key, 'billing');
+  });
+
+  it('the snapshot key still hashes to the datasetId', () => {
+    const ds = new Dataset('billing', null, { key: 'billing-v1' });
+    ds.add({ q: 1 });
+    try {
+      (ds as { key: string }).key = 'renamed';
+    } catch {
+      /* the point of the previous test; here we only care that identity held */
+    }
+    const snap = ds.snapshot();
+    assert.equal(snap.key, 'billing-v1');
+    assert.equal(snap.datasetId, new Dataset('x', null, { key: snap.key }).datasetId);
   });
 });

@@ -98,6 +98,8 @@ describe('push seam', () => {
 
 // --- Existing-dataset confirmation on push (parity with test_dataset_sync.py) ---------------
 import { PlatformDatasetSync, DatasetPublishAborted } from '../src/eval';
+import { confirmNewVersion } from '../src/eval/dataset_sync';
+import { PassThrough } from 'node:stream';
 
 function mockPlatformSync(exists: boolean, publishedRev: string | null = 'rev_different') {
   const sync = Object.create(PlatformDatasetSync.prototype) as PlatformDatasetSync & {
@@ -173,5 +175,116 @@ describe('existing-dataset confirmation on push (TS)', () => {
     const sync = mockPlatformSync(true); // existing, but no onExisting -> default confirmer
     const res = await sync.pushDataset(snap(), null); // process.stdin.isTTY is falsy in the test env
     assert.equal(res.datasetVersionId, 'dsv_10');
+  });
+
+  it('default confirmer declines on EOF at the prompt', async () => {
+    // The prompt defaults to NO; EOF is no answer at all, so it must decline too. Answering
+    // "yes" to a question nobody read is exactly the accidental publish the prompt prevents.
+    delete process.env['TRACEROOT_ASSUME_YES'];
+    const { accepted } = await atThePrompt(null);
+    assert.equal(accepted, false);
+  });
+
+  // Drive confirmNewVersion through its ACTUAL readline path on a fake TTY (every other
+  // confirmation test injects onExisting and never exercises the prompt itself). `typed === null`
+  // is EOF (^D / a stream that closes unanswered). Returns whatever was written to the prompt
+  // stream so a test can assert the prompt was — or was not — shown.
+  async function atThePrompt(typed: string | null) {
+    const input = new PassThrough();
+    (input as unknown as { isTTY: boolean }).isTTY = true;
+    const output = new PassThrough();
+    let prompt = '';
+    output.on('data', (chunk) => {
+      prompt += String(chunk);
+    });
+    const answered = confirmNewVersion(
+      { name: 'd', current_dataset_version_id: 'dsv_9' },
+      input as unknown as NodeJS.ReadStream,
+      output,
+    );
+    input.end(typed === null ? undefined : `${typed}\n`);
+    return { accepted: await answered, prompt };
+  }
+
+  const ANSWERS: [string, boolean][] = [
+    ['', false], // a bare Enter is the [y/N] default: decline
+    ['n', false],
+    ['N', false],
+    ['no', false],
+    ['garbage', false], // anything that isn't yes is not a yes
+    ['y', true],
+    ['Y', true],
+    ['YES', true], // case-insensitive
+    ['  y  ', true], // surrounding whitespace is trimmed
+  ];
+  for (const [typed, accepted] of ANSWERS) {
+    it(`typed answer ${JSON.stringify(typed)} -> ${accepted ? 'publish' : 'decline'}`, async () => {
+      delete process.env['TRACEROOT_ASSUME_YES'];
+      const res = await atThePrompt(typed);
+      assert.equal(res.accepted, accepted);
+      assert.ok(res.prompt.includes('[y/N]')); // the prompt was actually shown
+    });
+  }
+
+  it('TRACEROOT_ASSUME_YES publishes without ever prompting', async () => {
+    // The documented escape hatch must SKIP the prompt entirely — not read stdin and override it —
+    // so it holds on an interactive terminal whose next keystroke would decline.
+    process.env['TRACEROOT_ASSUME_YES'] = '1';
+    try {
+      const res = await atThePrompt('n'); // a TTY that would say no
+      assert.equal(res.accepted, true);
+      assert.equal(res.prompt, ''); // stdin was never consulted
+    } finally {
+      delete process.env['TRACEROOT_ASSUME_YES'];
+    }
+  });
+
+  for (const value of ['1', 'true', 'YES', ' yes ']) {
+    it(`TRACEROOT_ASSUME_YES=${JSON.stringify(value)} arms the bypass`, async () => {
+      process.env['TRACEROOT_ASSUME_YES'] = value;
+      try {
+        assert.equal((await atThePrompt('n')).accepted, true);
+      } finally {
+        delete process.env['TRACEROOT_ASSUME_YES'];
+      }
+    });
+  }
+
+  for (const value of ['0', 'false', 'no', '']) {
+    it(`TRACEROOT_ASSUME_YES=${JSON.stringify(value)} still honours the prompt`, async () => {
+      // An unset-like value must not silently arm the bypass: the TTY's "n" still decides.
+      process.env['TRACEROOT_ASSUME_YES'] = value;
+      try {
+        assert.equal((await atThePrompt('n')).accepted, false);
+      } finally {
+        delete process.env['TRACEROOT_ASSUME_YES'];
+      }
+    });
+  }
+
+  it('TRACEROOT_ASSUME_YES publishes a new version end to end', async () => {
+    // The bypass must reach the real push: an existing dataset with changed content publishes,
+    // through the DEFAULT confirmer, against a TTY that would have declined.
+    process.env['TRACEROOT_ASSUME_YES'] = '1';
+    try {
+      const input = new PassThrough();
+      (input as unknown as { isTTY: boolean }).isTTY = true;
+      input.end('n\n');
+      const output = new PassThrough();
+      let prompt = '';
+      output.on('data', (chunk) => {
+        prompt += String(chunk);
+      });
+      const sync = mockPlatformSync(true) as PlatformDatasetSync & { calls: string[] };
+      const res = await sync.pushDataset(snap(), null, {
+        onExisting: (info) =>
+          confirmNewVersion(info, input as unknown as NodeJS.ReadStream, output),
+      });
+      assert.equal(res.datasetVersionId, 'dsv_10');
+      assert.ok(sync.calls.some((c) => c.endsWith('/versions')));
+      assert.equal(prompt, ''); // never asked
+    } finally {
+      delete process.env['TRACEROOT_ASSUME_YES'];
+    }
   });
 });

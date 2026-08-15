@@ -2,10 +2,16 @@
 // Parity with traceroot-py/traceroot/eval/types.py. Local-first: construction, mutation,
 // snapshotting, and serialization perform NO network I/O.
 
-import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 
-import { newTestCaseId, stableCaseId, stableDatasetId } from './ids';
+import {
+  CanonicalizationError,
+  canonicalHash,
+  canonicalJson,
+  compareCodePoints,
+  normalize,
+} from './canonical';
+import { stableCaseId, stableDatasetId } from './ids';
 
 /**
  * A runnable test case. Only `input` is required. `expected` is always optional and is
@@ -58,6 +64,11 @@ export interface ScorerContext {
 // Content fields that define a snapshot's identity (archived + volatile excluded).
 // [EvalCase field, wire/hash key]. The hash key is snake_case so the content revision is
 // byte-identical to Python's `_content_revision` (which hashes snake_case attribute names).
+//
+// Every field here MUST also travel on the wire and come back on a pull — a field that is hashed
+// but not stored makes the published revision permanently unequal to the local one, so every push
+// publishes a no-change version. `scoreTargetSpanId` is a reserved hook that the platform does not
+// persist yet, so it is deliberately NOT part of the identity.
 const CONTENT_FIELDS: [keyof EvalCase, string][] = [
   ['id', 'id'],
   ['input', 'input'],
@@ -65,57 +76,7 @@ const CONTENT_FIELDS: [keyof EvalCase, string][] = [
   ['metadata', 'metadata'],
   ['sourceTraceId', 'source_trace_id'],
   ['sourceSpanId', 'source_span_id'],
-  ['scoreTargetSpanId', 'score_target_span_id'],
 ];
-
-/** Deterministic JSON with sorted keys — canonical form for content hashing. */
-function canonicalJson(value: unknown): string {
-  const seen = new WeakSet();
-  const byJson = (a: unknown, b: unknown): number => {
-    const ja = JSON.stringify(a);
-    const jb = JSON.stringify(b);
-    return ja < jb ? -1 : ja > jb ? 1 : 0;
-  };
-  const norm = (v: unknown): unknown => {
-    if (v === null || typeof v !== 'object') return v;
-    // Cycle detection tracks only the ACTIVE recursion path: a true cycle (an ancestor) collapses
-    // to null, but a merely repeated/aliased reference must still hash as its full content (so an
-    // aliased object and an equivalent clone produce the same revision). We therefore delete `v`
-    // from `seen` when its branch ends (below), rather than leaving it marked forever.
-    if (seen.has(v as object)) return null;
-    // Non-plain objects have no own enumerable keys, so the generic record path would collapse them
-    // to `{}` and make distinct values hash identically. Canonicalize the supported built-ins by a
-    // content-bearing form; Date is a leaf (no recursion).
-    if (v instanceof Date) {
-      return `@date:${Number.isNaN(v.getTime()) ? 'invalid' : v.toISOString()}`;
-    }
-    seen.add(v as object);
-    try {
-      if (typeof (v as { toJSON?: unknown }).toJSON === 'function') {
-        return norm((v as { toJSON: () => unknown }).toJSON());
-      }
-      if (v instanceof Map) {
-        // Unordered: sort normalized entries so different contents differ and order doesn't.
-        return { '@map': [...v.entries()].map(([k, val]) => [norm(k), norm(val)]).sort(byJson) };
-      }
-      if (v instanceof Set) {
-        return { '@set': [...v].map(norm).sort(byJson) };
-      }
-      if (ArrayBuffer.isView(v)) {
-        return { '@bytes': Array.from(v as unknown as ArrayLike<number>) };
-      }
-      if (Array.isArray(v)) return v.map(norm);
-      const out: Record<string, unknown> = {};
-      for (const k of Object.keys(v as Record<string, unknown>).sort()) {
-        out[k] = norm((v as Record<string, unknown>)[k]);
-      }
-      return out;
-    } finally {
-      seen.delete(v as object);
-    }
-  };
-  return JSON.stringify(norm(value));
-}
 
 /** Clone a case for a snapshot. `structuredClone` is a LOSSLESS deep copy for every value a
  *  dataset case should hold (primitives, plain objects/arrays, Date, Map/Set, typed arrays, nested
@@ -157,18 +118,33 @@ export function contentRevision(cases: EvalCase[]): string {
   // Content-addressed and ORDER-INDEPENDENT: sort by id so re-authoring the same set of cases in a
   // different order yields the SAME revision (with content-based ids, reordering is not a content
   // change). Only a real content change advances the revision. Mirrors Python `_content_revision`.
-  const ordered = [...cases].sort((a, b) => {
-    const ai = a.id ?? '';
-    const bi = b.id ?? '';
-    return ai < bi ? -1 : ai > bi ? 1 : 0;
-  });
+  const ordered = [...cases].sort((a, b) => compareCodePoints(a.id ?? '', b.id ?? ''));
   const content = ordered.map((c) => {
     const o: Record<string, unknown> = {};
     for (const [field, key] of CONTENT_FIELDS) o[key] = c[field] ?? null;
     return o;
   });
-  const hash = createHash('sha256').update(canonicalJson(content)).digest('hex').slice(0, 16);
-  return `rev_${hash}`;
+  return `rev_${canonicalHash(content, 16)}`;
+}
+
+/** Reject a case payload the canonicalizer cannot represent, AT AUTHORING TIME.
+ *
+ *  Identity (case id + dataset revision) and the wire form are both the canonical form, so a value
+ *  with no canonical form has no stable identity. Failing here names the offending field instead of
+ *  surfacing as a mystery hash difference between the two SDKs later. */
+function validatePayload(c: Pick<EvalCase, 'input' | 'expected' | 'metadata'>): void {
+  for (const field of ['input', 'expected', 'metadata'] as const) {
+    const value = c[field];
+    if (value === undefined || value === null) continue;
+    try {
+      normalize(value);
+    } catch (err) {
+      if (err instanceof CanonicalizationError) {
+        throw new CanonicalizationError(`test case ${field}: ${err.message}`);
+      }
+      throw err;
+    }
+  }
 }
 
 /** An immutable, content-addressed snapshot of a dataset's active cases. */
@@ -179,6 +155,12 @@ export interface DatasetSnapshot {
   revision: string;
   cases: EvalCase[];
   baseVersionId: string | null;
+  /**
+   * The authoring key the datasetId was hashed from. Carried so a push can SEND it: the platform
+   * cannot derive it (a renamed or explicitly keyed dataset hashes from something the name no
+   * longer spells), and without it a later pull can only guess.
+   */
+  key?: string | null;
 }
 
 /**
@@ -194,7 +176,8 @@ export interface DatasetSnapshot {
 export class Dataset {
   name: string;
   description: string | null;
-  key: string;
+  /** The identity every case id and the datasetId are hashed from — fixed at construction. */
+  readonly key!: string;
   datasetId: string;
   datasetVersionId?: string;
   baseVersionId: string | null = null;
@@ -203,11 +186,43 @@ export class Dataset {
   constructor(name: string, description: string | null = null, opts: { key?: string } = {}) {
     this.name = name;
     this.description = description;
-    this.key = opts.key ?? name;
+    // Non-writable at RUNTIME, not just to the type checker: `datasetId` and every case id are
+    // already hashed from this value, so a later `ds.key = ...` would leave the snapshot
+    // advertising a key that no longer hashes to the datasetId it is sent with — the platform
+    // would file the version under a different dataset than the case ids belong to. Renaming is
+    // what `name` is for; a new identity is a new Dataset.
+    // A rejecting SETTER, not merely `writable: false`: a non-writable data property is silently
+    // ignored outside strict mode, which is exactly the silent divergence this prevents.
+    const key = opts.key ?? name;
+    Object.defineProperty(this, 'key', {
+      get: () => key,
+      set: () => {
+        throw new TypeError(
+          `Dataset.key is the dataset's identity (${JSON.stringify(key)}) and cannot be ` +
+            `reassigned: datasetId and every case id are already hashed from it. Rename via ` +
+            `\`name\`, or construct a new Dataset with the key you want.`,
+        );
+      },
+      enumerable: true,
+      configurable: false,
+    });
     this.datasetId = stableDatasetId(this.key);
   }
 
   // --- authoring / mutation (network-free) ---
+  /** The stable content id for `input`: dataset key + canonical input + first free occurrence.
+   *  Shared by add() and upsert() so both converge on the same id. */
+  private contentId(input: unknown): string {
+    const canonical = canonicalJson(input);
+    let occurrence = 0;
+    let cid = stableCaseId(this.key, canonical, occurrence);
+    while (this.casesById.has(cid)) {
+      occurrence += 1;
+      cid = stableCaseId(this.key, canonical, occurrence);
+    }
+    return cid;
+  }
+
   add(
     input: unknown,
     opts: {
@@ -222,18 +237,8 @@ export class Dataset {
     // (not its position), so re-authoring converges (the platform matches by id) and inserting/
     // removing/reordering other cases does not shift this case's id. Duplicate inputs are
     // disambiguated by occurrence (the first free slot), collision-free across removes.
-    let cid: string;
-    if (opts.id) {
-      cid = opts.id;
-    } else {
-      const canonical = canonicalJson(input);
-      let occurrence = 0;
-      cid = stableCaseId(this.key, canonical, occurrence);
-      while (this.casesById.has(cid)) {
-        occurrence += 1;
-        cid = stableCaseId(this.key, canonical, occurrence);
-      }
-    }
+    validatePayload({ input, expected: opts.expected, metadata: opts.metadata });
+    const cid = opts.id ? opts.id : this.contentId(input);
     if (this.casesById.has(cid)) throw new Error(`test case id already exists: ${cid}`);
     const c: EvalCase = {
       input,
@@ -247,9 +252,17 @@ export class Dataset {
     return c;
   }
 
-  /** Add or replace by id; anonymous cases get a stable ULID id. */
+  /**
+   * Add or replace by id.
+   *
+   * An anonymous case gets the SAME content-derived id add() would give it, not a fresh random
+   * one: a random id would fork the case into a new server case on every process, which is
+   * exactly what content-addressed ids exist to prevent.
+   */
   upsert(evalCase: EvalCase): EvalCase {
-    const stored = evalCase.id == null ? { ...evalCase, id: newTestCaseId() } : evalCase;
+    validatePayload(evalCase);
+    const stored =
+      evalCase.id == null ? { ...evalCase, id: this.contentId(evalCase.input) } : evalCase;
     this.casesById.set(stored.id as string, stored);
     return stored;
   }
@@ -259,6 +272,10 @@ export class Dataset {
     const cur = this.casesById.get(id);
     if (!cur) throw new Error(`no such case: ${id}`);
     const updated = { ...cur, ...changes, id };
+    // Validate the MERGED case, like add()/upsert(): update() is an authoring door too, and an
+    // uncanonicalizable value stored here would only fail later at snapshot()/push, far from the
+    // line that introduced it and without naming the field.
+    validatePayload(updated);
     this.casesById.set(id, updated);
     return updated;
   }
@@ -306,6 +323,7 @@ export class Dataset {
       revision: contentRevision(active),
       cases: frozen,
       baseVersionId: this.baseVersionId,
+      key: this.key,
     });
   }
 
@@ -313,35 +331,45 @@ export class Dataset {
   toJSON(): {
     datasetId: string;
     name: string;
+    key: string;
     description: string | null;
     baseVersionId: string | null;
+    datasetVersionId: string | null;
     cases: EvalCase[];
   } {
     return {
       datasetId: this.datasetId,
       name: this.name,
+      // The key is what every case id is derived from, so it must survive save/load: without it
+      // a reloaded dataset falls back to `name` and every case added afterwards gets an id that
+      // no longer converges with locally authored ones.
+      key: this.key,
       description: this.description,
       baseVersionId: this.baseVersionId,
+      // fromJSON reads this back, so dropping it here loses the remote binding — and evaluate()'s
+      // auto-provision guard then re-pushes an already-synced dataset.
+      datasetVersionId: this.datasetVersionId ?? null,
       cases: [...this.casesById.values()], // incl. archived
     };
   }
 
   static fromJSON(d: {
     name: string;
+    key?: string | null;
     description?: string | null;
     datasetId?: string;
     baseVersionId?: string | null;
-    datasetVersionId?: string;
+    datasetVersionId?: string | null;
     cases?: EvalCase[];
   }): Dataset {
-    const ds = new Dataset(d.name, d.description ?? null);
+    const ds = new Dataset(d.name, d.description ?? null, { key: d.key ?? undefined });
     if (d.datasetId) ds.datasetId = d.datasetId;
     ds.baseVersionId = d.baseVersionId ?? null;
-    ds.datasetVersionId = d.datasetVersionId;
-    // Anonymous cases (no id) each get a generated id — otherwise every one keys on `undefined`
+    ds.datasetVersionId = d.datasetVersionId ?? undefined;
+    // Anonymous cases (no id) each get a content id — otherwise every one keys on `undefined`
     // and all but the last silently collapse. Mirrors upsert().
     for (const c of d.cases ?? []) {
-      const stored = c.id == null ? { ...c, id: newTestCaseId() } : c;
+      const stored = c.id == null ? { ...c, id: ds.contentId(c.input) } : c;
       ds.casesById.set(stored.id as string, stored);
     }
     return ds;
@@ -354,15 +382,22 @@ export class Dataset {
         type: 'dataset',
         datasetId: this.datasetId,
         name: this.name,
+        key: this.key,
         description: this.description,
         baseVersionId: this.baseVersionId,
+        datasetVersionId: this.datasetVersionId ?? null,
         schema: 1,
       };
-      const lines = [JSON.stringify(header)];
-      for (const c of this.casesById.values()) lines.push(JSON.stringify({ type: 'case', ...c }));
+      // Serialize through the canonical form (not raw JSON.stringify) so a Date/Map/Set survives
+      // save -> load as the SAME value the revision was computed over: a reloaded dataset must
+      // keep its revision, exactly as a pulled one does.
+      const lines = [JSON.stringify(normalize(header))];
+      for (const c of this.casesById.values()) {
+        lines.push(JSON.stringify(normalize({ type: 'case', ...c })));
+      }
       writeFileSync(path, lines.join('\n') + '\n');
     } else {
-      writeFileSync(path, JSON.stringify(this.toJSON()));
+      writeFileSync(path, JSON.stringify(normalize(this.toJSON())));
     }
   }
 
@@ -377,8 +412,10 @@ export class Dataset {
       return Dataset.fromJSON({
         datasetId: header.datasetId,
         name: header.name,
+        key: header.key,
         description: header.description,
         baseVersionId: header.baseVersionId,
+        datasetVersionId: header.datasetVersionId,
         cases: records.slice(1).map((r) => {
           const { type: _t, ...rest } = r;
           return rest as EvalCase;
@@ -393,16 +430,19 @@ export class Dataset {
    * create versions; this is the deliberate publish boundary. `transport` defaults to a
    * no-op LocalDatasetSync (local-only). `baseVersionId` (defaults to the pinned version)
    * drives optimistic concurrency; a stale base rejects with DatasetConflictError.
+   * `onExisting` overrides the double-check before adding a version to an already-existing
+   * dataset (default: the transport's own, an interactive prompt).
    */
   async push(
     transport?: import('./dataset_sync').DatasetSyncTransport,
     baseVersionId?: string | null,
+    opts?: { onExisting?: import('./dataset_sync').OnExisting },
   ): Promise<import('./dataset_sync').PushResult> {
     const { LocalDatasetSync } = await import('./dataset_sync');
     const sync = transport ?? new LocalDatasetSync();
     const snapshot = this.snapshot();
     const base = baseVersionId !== undefined ? baseVersionId : this.baseVersionId;
-    const result = await sync.pushDataset(snapshot, base);
+    const result = await sync.pushDataset(snapshot, base, opts);
     if (result.status === 'uploaded' && result.datasetVersionId != null) {
       this.datasetVersionId = result.datasetVersionId;
       this.baseVersionId = result.datasetVersionId;

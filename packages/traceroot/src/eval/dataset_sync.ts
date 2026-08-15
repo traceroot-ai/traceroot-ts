@@ -7,6 +7,7 @@
 // PlatformDatasetSync publishes to POST /api/v1/public/datasets + .../{id}/versions.
 
 import { TraceRoot } from '../traceroot';
+import { normalize } from './canonical';
 import { httpJson, pullDatasetVersion } from './platform';
 import type { DatasetSnapshot } from './types';
 
@@ -44,21 +45,32 @@ export type OnExisting = (info: ExistingDatasetInfo) => boolean | Promise<boolea
 /** Default double-check before adding a version to an EXISTING dataset. A dataset's identity is its
  *  name, so re-pushing the same name updates the SAME dataset with a NEW version — usually intended,
  *  but easy to do by accident with a reused name. On an interactive TTY we ask first (default `no`,
- *  so an accidental Enter never publishes); non-interactive contexts (CI, pipes) proceed silently,
- *  and `TRACEROOT_ASSUME_YES=1` skips the prompt everywhere. Mirrors Python `_confirm_new_version`. */
-async function confirmNewVersion(info: ExistingDatasetInfo): Promise<boolean> {
+ *  so neither an accidental Enter nor an EOF ever publishes); non-interactive contexts (CI, pipes)
+ *  proceed silently, and `TRACEROOT_ASSUME_YES=1` skips the prompt everywhere. Mirrors Python
+ *  `_confirm_new_version`. The streams are injectable so the prompt itself is testable. */
+export async function confirmNewVersion(
+  info: ExistingDatasetInfo,
+  input: NodeJS.ReadStream = process.stdin,
+  output: NodeJS.WritableStream = process.stdout,
+): Promise<boolean> {
   const yes = new Set(['1', 'true', 'yes']);
   if (yes.has((process.env.TRACEROOT_ASSUME_YES ?? '').trim().toLowerCase())) return true;
-  if (!process.stdin.isTTY) return true;
+  if (!input.isTTY) return true;
   const readline = await import('node:readline/promises');
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline.createInterface({ input, output });
   try {
     const name = info.name ?? '?';
     const ver = info.current_dataset_version_id ?? null;
-    const ans = await rl.question(
-      `Dataset '${name}' already exists (current version ${ver}). Publish a NEW version? [y/N] `,
-    );
-    return ['y', 'yes'].includes(ans.trim().toLowerCase());
+    // EOF (^D) or a stream that closes under us is NO answer at all, so it declines like a bare
+    // Enter — an unread prompt must never publish (parity with Python's EOFError branch).
+    const closed = new Promise<null>((resolve) => rl.once('close', () => resolve(null)));
+    const ans = await Promise.race([
+      rl.question(
+        `Dataset '${name}' already exists (current version ${ver}). Publish a NEW version? [y/N] `,
+      ),
+      closed,
+    ]);
+    return ans === null ? false : ['y', 'yes'].includes(ans.trim().toLowerCase());
   } finally {
     rl.close();
   }
@@ -189,8 +201,14 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
     return httpJson(method, `${this.baseUrl}${path}`, this.apiKey, body);
   }
 
-  /** The remote dataset's metadata if it ALREADY exists with a published version, else null (a
-   *  fetch error is treated as "new" so the push itself surfaces any real problem). */
+  /**
+   * The remote dataset's metadata if it ALREADY exists with a published version, else null.
+   *
+   * ONLY a 404 means "no such dataset". Any other failure (401/403/5xx/timeout) says nothing
+   * about whether the dataset exists, and reading it as "new" would skip BOTH the idempotent
+   * no-op and the confirmation — publishing an unprompted version off a transient error. So
+   * everything but a 404 propagates.
+   */
   private async existingDataset(datasetId: string): Promise<ExistingDatasetInfo | null> {
     try {
       const meta = await this.request(
@@ -198,8 +216,10 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
         `/api/v1/public/datasets/${encodeURIComponent(datasetId)}`,
       );
       return meta?.current_dataset_version_id ? meta : null;
-    } catch {
-      return null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes(' HTTP 404:')) return null;
+      throw err;
     }
   }
 
@@ -218,6 +238,25 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
     }
   }
 
+  /**
+   * Upsert the dataset's un-versioned metadata (key/name/description). Not a version.
+   *
+   * The `key` is what the datasetId was hashed from, and the platform cannot recover it from the
+   * name (an explicit key, or a rename, hashes from something the name no longer spells). Sending
+   * it lets a later pull return the REAL key instead of a guess, so a case added to a pulled
+   * dataset gets the same id as one authored locally. The backend stores it on create and
+   * backfills a null key; it never clobbers a key already set.
+   */
+  private async upsertDataset(snapshot: DatasetSnapshot): Promise<void> {
+    const body: Record<string, unknown> = {
+      dataset_id: snapshot.datasetId,
+      name: snapshot.name,
+      description: snapshot.description,
+    };
+    if (snapshot.key != null) body.key = snapshot.key;
+    await this.request('POST', '/api/v1/public/datasets', body);
+  }
+
   async pushDataset(
     snapshot: DatasetSnapshot,
     baseVersionId: string | null,
@@ -234,6 +273,11 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
         (await this.publishedRevision(snapshot.datasetId, currentVersion)) === snapshot.revision
       ) {
         // Identical content -> idempotent no-op; keep the current version, never prompt.
+        // `name`/`description` are dataset metadata, NOT part of the content revision, so an edit
+        // to either lands here with an unchanged revision. Returning without the upsert would make
+        // `ds.description = ...; await ds.push()` a silent no-op, so send the metadata first and
+        // only skip the VERSION.
+        await this.upsertDataset(snapshot);
         return {
           status: 'uploaded',
           datasetId: snapshot.datasetId,
@@ -242,22 +286,29 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
       }
       const confirm = opts?.onExisting ?? confirmNewVersion;
       if (!(await confirm(existing)))
+        // A declined publish leaves the remote entirely untouched — metadata included.
         throw new DatasetPublishAborted(
           `publish to existing dataset '${snapshot.name}' declined; no new version created.`,
         );
     }
-    await this.request('POST', '/api/v1/public/datasets', {
-      dataset_id: snapshot.datasetId,
-      name: snapshot.name,
-      description: snapshot.description,
-    });
+    await this.upsertDataset(snapshot);
     // Native JSON at the HTTP boundary: input/expected/metadata are sent as their real
     // values; the backend owns the single JSON-encode. The SDK does NOT pre-encode.
+    //
+    // The value SENT is the SAME canonical form that was HASHED into the revision, so a pulled
+    // version re-hashes to the revision that published it. Sending a differently-shaped value
+    // (a Date here, an ISO string in storage; a Set here, `{}` in storage) would make
+    // publishedRevision() != snapshot.revision forever, so every push — including evaluate()'s
+    // auto-provision — would prompt and publish a no-change version, without bound.
     const changes: Record<string, unknown>[] = [];
     for (const c of snapshot.cases) {
-      const change: Record<string, unknown> = { op: 'upsert', test_case_id: c.id, input: c.input };
-      if (c.expected !== undefined && c.expected !== null) change.expected = c.expected;
-      if (c.metadata != null) change.metadata = c.metadata;
+      const change: Record<string, unknown> = {
+        op: 'upsert',
+        test_case_id: c.id,
+        input: normalize(c.input),
+      };
+      if (c.expected !== undefined && c.expected !== null) change.expected = normalize(c.expected);
+      if (c.metadata != null) change.metadata = normalize(c.metadata);
       if (c.sourceTraceId != null) change.source_trace_id = c.sourceTraceId;
       if (c.sourceSpanId != null) change.source_span_id = c.sourceSpanId;
       changes.push(change);

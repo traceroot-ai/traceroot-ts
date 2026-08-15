@@ -210,9 +210,8 @@ export class ConsoleProgress {
   private readonly animateMode: boolean;
   private readonly cols?: number;
   done = 0;
-  passed = 0;
-  failed = 0;
   errored = 0;
+  notScored = 0;
   private t0 = 0;
   private active = false;
 
@@ -243,8 +242,9 @@ export class ConsoleProgress {
 
   onCaseComplete(item: EvalItemResult, _durationMs: number): void {
     this.done += 1;
-    // Case status is errored | not_scored (no headline pass/fail); only errored is tallied here.
+    // Case status is errored | not_scored (no headline pass/fail); both are tallied here.
     if (caseStatus(item) === 'errored') this.errored += 1;
+    else this.notScored += 1;
     if (this.animateMode) this.render();
     else this.plain();
   }
@@ -264,8 +264,7 @@ export class ConsoleProgress {
   private plain(): void {
     const step = Math.max(1, Math.trunc(this.total / 10));
     if (this.done === this.total || this.total <= 20 || this.done % step === 0) {
-      const bad = this.failed + this.errored;
-      const tail = bad > 0 ? `  (${bad} off)` : '';
+      const tail = this.errored > 0 ? `  (${this.errored} off)` : '';
       this.stream.write(`  ${this.label}  ${this.done}/${this.total}${tail}\n`);
     }
   }
@@ -291,8 +290,7 @@ export class ConsoleProgress {
     const rate = elapsed > 0 ? this.done / elapsed : 0;
     const mm = Math.trunc(elapsed / 60);
     const ss = Math.trunc(elapsed % 60);
-    const badCount = this.failed + this.errored;
-    const tail = badCount > 0 ? `  ${badCount} off` : '';
+    const tail = this.errored > 0 ? `  ${this.errored} off` : '';
     // Clamp to one physical row: a line wider than the terminal wraps, and then \r\x1b[2K
     // only clears the last wrapped row -> the overflow stacks. Trim to cols-1 (leave the
     // last column free so an exactly-full line can't auto-wrap).

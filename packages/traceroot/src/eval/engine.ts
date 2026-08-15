@@ -10,22 +10,19 @@ import { startSpan, usingSpan, Span } from '../spans';
 import type { Tracer } from '@opentelemetry/api';
 import { context, ROOT_CONTEXT } from '@opentelemetry/api';
 import { evalTracer } from './tracer';
-import { Dataset, DeferredScore, EvalCase, Score, ScorerContext } from './types';
+import { Dataset, DatasetSnapshot, DeferredScore, EvalCase, Score, ScorerContext } from './types';
 import {
   EvalItemResult,
   EvalRunResult,
   RunDatasetRef,
-  RunView,
-  ScoreSummary,
-  aggregateScores,
   makeRunResult,
   UploadState,
 } from './results';
-import { EvalTransport, RunHandle } from './transport';
-import { PlatformTransport } from './platform';
+import { EvalCompletionError, EvalTransport, FakeTransport, RunHandle } from './transport';
+import { PlatformTransport, pinnedContentChanged, rememberPinnedContent } from './platform';
 import { PlatformDatasetSync } from './dataset_sync';
 import { collectRunProvenance } from './provenance';
-import { declaredVersion, describeScorers } from './scorers';
+import { declaredVersion, describeScorers, scorerName } from './scorers';
 import { newRunId } from './ids';
 import { ConsoleProgress, printRunUrl, shouldShowProgress } from './progress';
 
@@ -41,18 +38,22 @@ export type ScoreLike =
   | null
   | undefined;
 export type ScorerFn = (ctx: ScorerContext) => ScoreLike | Promise<ScoreLike>;
-export type RunScorerFn = (view: RunView) => ScoreLike | Promise<ScoreLike>;
 
 export interface EvaluateOptions {
   name: string;
-  /** The dataset (or inline cases) to run. `data` is a back-compat alias of `dataset`. */
-  dataset?: Dataset | EvalCase[];
-  data?: Dataset | EvalCase[];
+  /** The dataset, an immutable snapshot of one, or inline cases. `data` aliases `dataset`. */
+  dataset?: Dataset | DatasetSnapshot | EvalCase[];
+  data?: Dataset | DatasetSnapshot | EvalCase[];
   task: TaskFn;
   scorers: ScorerFn[];
-  runScorers?: RunScorerFn[];
   candidateVersion?: string;
   datasetId?: string;
+  /**
+   * The stable identity runs are grouped by, separate from the display `name` (the same split as
+   * a scorer's `key`): set it to keep one history across a rename, or to group the TypeScript and
+   * Python runs of one evaluation. Defaults to `name`.
+   */
+  evaluationKey?: string;
   maxConcurrency?: number;
   /** Bounds each case (seconds); a timeout is an isolated per-case error. */
   timeout?: number;
@@ -61,6 +62,12 @@ export interface EvaluateOptions {
   environment?: string;
   /** Explicit transport wins over the default reporting transport. */
   transport?: EvalTransport;
+  /**
+   * Run in full but report nowhere: the shortcut for `transport: new FakeTransport()`. No
+   * credentials, no dataset publish, no run record — a complete EvalRunResult still comes back.
+   * Mutually exclusive with `transport`.
+   */
+  local?: boolean;
   /**
    * Live console progress bar. Undefined = auto (on for an interactive
    * terminal, off when piped/CI); true/false forces it.
@@ -85,6 +92,13 @@ interface RunIdentity {
   localRunId: string;
 }
 
+/**
+ * `local: true` already answers "where does this run report", so a sink alongside it is a
+ * contradiction rather than a precedence question — say so instead of silently picking one.
+ */
+export const LOCAL_AND_TRANSPORT =
+  "pass local: true OR transport, not both — local: true already means 'do not report'.";
+
 const INLINE_DATASET = '<inline>';
 const EVAL_ATTR_CONTRACT_VERSION = '1';
 const ZERO_TRACE_ID = /^0+$/;
@@ -93,8 +107,30 @@ function fmtError(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 }
 
-function normalizeData(data: Dataset | EvalCase[]): EvalCase[] {
-  const raw = data instanceof Dataset ? [...data] : data;
+/** Attach a completion failure to the error the run ALREADY failed with, as secondary context.
+ *  The original error keeps propagating unchanged — a failed /complete must never be the error
+ *  the user reads first. */
+function attachCompletionFailure(bodyError: unknown, completionErr: unknown): void {
+  if (typeof bodyError === 'object' && bodyError !== null) {
+    (bodyError as { completionError?: unknown }).completionError = completionErr;
+  }
+}
+
+/** A DatasetSnapshot is a frozen plain object (no class), so it is recognized structurally —
+ *  Python gets the same discrimination from `isinstance(data, DatasetSnapshot)`. */
+function isDatasetSnapshot(data: unknown): data is DatasetSnapshot {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    !Array.isArray(data) &&
+    !(data instanceof Dataset) &&
+    Array.isArray((data as DatasetSnapshot).cases) &&
+    typeof (data as DatasetSnapshot).revision === 'string'
+  );
+}
+
+function normalizeData(data: Dataset | DatasetSnapshot | EvalCase[]): EvalCase[] {
+  const raw = data instanceof Dataset ? [...data] : isDatasetSnapshot(data) ? data.cases : data;
   return raw.map((c, i) => {
     if (typeof c !== 'object' || c === null || !('input' in c)) {
       throw new Error(`dataset item at index ${i} is missing required 'input'`);
@@ -249,6 +285,9 @@ export class CancelledError extends Error {
   localRunId?: string;
   runId?: string | null;
   uploadState?: UploadState;
+  /** Set only when finalizing the cancelled run ALSO failed — the cancellation stays the error,
+   *  the finalization failure rides along (the run may still be 'running' on the platform). */
+  completionError?: unknown;
 }
 
 /** Race `p` against the case's shared deadline. `deadline` is an absolute performance.now() ms
@@ -282,6 +321,7 @@ async function runCase(
   onCaseStart?: (c: EvalCase) => void,
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void,
   emittedOwnership?: Map<string, Set<string>>,
+  droppedResults?: string[],
 ): Promise<EvalItemResult> {
   onCaseStart?.(evalCase);
   try {
@@ -354,7 +394,10 @@ async function runCase(
         };
         try {
           for (const scorer of scorers) {
-            const name = fnName(scorer, 'scorer');
+            // The DECLARED name (same resolver the manifest uses) — the emitted Score, the
+            // ownership key and the registered definition must agree or the platform drops the
+            // metric's policy.
+            const name = scorerName(scorer);
             // Record scorer->metric ownership AT THE POINT OF PRODUCTION (never inferred afterward
             // by matching names). Seed the definition now so a scorer that throws before emitting
             // still appears in the completion manifest with no metrics.
@@ -443,34 +486,50 @@ async function runCase(
   try {
     await transport.recordItemResult(run, result);
     await transport.recordScores(run, result.caseId, result.scores);
-  } catch {
-    // reporting is best-effort; the computed result is still returned
+  } catch (err) {
+    // Reporting is best-effort; the computed result is still returned. But a dropped result must
+    // not be invisible — it is counted onto the run's upload state, so a run that completes
+    // "uploaded" with missing results can be told apart from a clean one.
+    droppedResults?.push(fmtError(err));
   }
   onCaseComplete?.(result, result.durationMs ?? 0);
   return result;
 }
 
-/** Whole-run scorers over the completed items. Errors are isolated per scorer. */
-async function runRunScorers(
-  runScorers: RunScorerFn[] | undefined,
-  name: string,
-  itemResults: EvalItemResult[],
-  summary: Record<string, ScoreSummary>,
-): Promise<{ runScores: Score[]; runScorerErrors: Record<string, string> }> {
-  const runScores: Score[] = [];
-  const runScorerErrors: Record<string, string> = {};
-  if (!runScorers || runScorers.length === 0) return { runScores, runScorerErrors };
-  const view: RunView = { name, itemResults, scoreSummary: summary };
-  for (const rs of runScorers) {
-    const rname = fnName(rs, 'run_scorer');
-    try {
-      const raw = await Promise.resolve(rs(view));
-      runScores.push(...normalizeScoreLike(raw, rname));
-    } catch (err) {
-      runScorerErrors[rname] = fmtError(err);
-    }
+/**
+ * Publish `data`'s current content as the version this run will pin.
+ *
+ * Runs BEFORE the first case, so anything it throws aborts the whole evaluation. A raw
+ * DatasetConflictError (or a socket timeout) surfaces there as an SDK crash with no hint of what
+ * to do, so the failure is restated as what actually happened plus the ways out.
+ */
+async function autoPublish(data: Dataset): Promise<void> {
+  try {
+    // Route through push() rather than pushDataset() directly: push() also advances
+    // baseVersionId, the optimistic-concurrency base for the NEXT push. Assigning only
+    // datasetVersionId leaves the base null, so a later explicit push() sends
+    // base_version_id: null against a dataset that now has a version — a spurious 409. The base
+    // is whatever version this dataset is standing on: its push base, or the version it was
+    // pulled at (a pull pins datasetVersionId only).
+    //
+    // Auto-approve the new version instead of falling through to the interactive confirmation: a
+    // versioning decision must never block a run waiting on [y/N]. The run's content is
+    // authoritative — publishing it is what lets the run pin exactly what it scored. The
+    // explicit, user-initiated Dataset.push() keeps the prompt; that is where deliberate version
+    // management lives.
+    await data.push(new PlatformDatasetSync(), data.baseVersionId ?? data.datasetVersionId, {
+      onExisting: () => true,
+    });
+    // What is now pinned is exactly what was published, so the NEXT run can tell a mutation from
+    // an untouched dataset without another round trip.
+    rememberPinnedContent(data);
+  } catch (err) {
+    throw new Error(
+      `could not auto-publish dataset '${data.name}' before the run: ${fmtError(err)}. ` +
+        'Pull the latest version and retry (pullDataset(...)), or pass a dataset that is ' +
+        'already synced, or pass transport / local: true to run without publishing.',
+    );
   }
-  return { runScores, runScorerErrors };
 }
 
 /**
@@ -479,7 +538,7 @@ async function runRunScorers(
  * SDK cannot create server-side); the caller turns that into a clear error (cloud-only).
  */
 function autoTransport(
-  data: Dataset | EvalCase[],
+  data: Dataset | DatasetSnapshot | EvalCase[],
   datasetId: string | undefined,
   scorers: ScorerFn[],
   candidateVersion: string | undefined,
@@ -491,12 +550,18 @@ function autoTransport(
     versionId = data.datasetVersionId ?? null;
     if (effectiveId === undefined && data.datasetId && versionId !== null)
       effectiveId = data.datasetId;
+  } else if (isDatasetSnapshot(data)) {
+    // A snapshot taken from a synced dataset carries baseVersionId; treat it like a synced
+    // Dataset so `evaluate(dataset.snapshot())` reports instead of failing "no synced dataset".
+    versionId = data.baseVersionId;
+    if (effectiveId === undefined && data.datasetId && versionId !== null)
+      effectiveId = data.datasetId;
   }
   if (!effectiveId) return null;
   const { apiKey } = TraceRoot.resolveCredentials();
   if (!apiKey) return null;
   return new PlatformTransport(effectiveId, {
-    scorerNames: scorers.map((s) => fnName(s, 'scorer')),
+    scorerNames: scorers.map((s) => scorerName(s)),
     candidateVersion: candidateVersion ?? null,
     environment,
     datasetVersionId: versionId,
@@ -506,15 +571,47 @@ function autoTransport(
 /** Run an evaluation. Async-first; `evaluate` is an alias of `evaluateAsync`. */
 export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunResult> {
   const { name, task, scorers, maxConcurrency = 10, transport, candidateVersion } = options;
+  const local = options.local === true;
   const environment = options.environment ?? 'evaluation';
   const data = options.dataset ?? options.data;
 
+  if (local && transport !== undefined) throw new Error(LOCAL_AND_TRANSPORT);
   if (!name || name.trim().length === 0) throw new Error("evaluate() requires a non-empty 'name'");
   if (data === undefined) throw new Error("evaluate() requires 'dataset' (or the 'data' alias)");
   if (typeof task !== 'function') throw new Error("'task' must be a function");
   if (!scorers || scorers.length === 0) throw new Error('evaluate() requires at least one scorer');
   for (const s of scorers) {
     if (typeof s !== 'function') throw new Error(`scorer ${String(s)} is not a function`);
+    // A TS scorer is called as scorer(ctx). A Python-style positional (input, output) signature
+    // would bind input=ScorerContext, output=undefined and score every case wrong with no error,
+    // so reject it here instead of at read time. A destructured ({input, output}) arrow declares
+    // one parameter and passes; two-or-more declared parameters cannot be the context form.
+    if (s.length >= 2) {
+      throw new Error(
+        `scorer ${scorerName(s)} takes a single ScorerContext — destructure it: ` +
+          '({ input, output, expected, metadata }) => ...',
+      );
+    }
+  }
+  // A Score row's identity IS its emitted-metric name, and the platform keys that metric's
+  // direction/threshold on the name. Two scorers resolving to the same name make the policy
+  // ambiguous, so the platform drops the metric to non-directional. Catch the static case here,
+  // before a single case runs.
+  const seen = new Map<string, number>();
+  for (const s of scorers) {
+    const n = scorerName(s);
+    seen.set(n, (seen.get(n) ?? 0) + 1);
+  }
+  const duplicated = [...seen.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([n]) => n)
+    .sort();
+  if (duplicated.length > 0) {
+    const listed = duplicated.map((n) => `'${n}'`).join(', ');
+    throw new Error(
+      `two or more scorers report the same metric name (${listed}); metric names must be ` +
+        'unique within a run. Give each scorer a distinct name (or key).',
+    );
   }
   if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
     // Guard NaN / fractional / non-finite too: runBounded would otherwise launch zero workers and
@@ -526,9 +623,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   if (options.select) cases = cases.filter(options.select);
   if (cases.length === 0) throw new Error('evaluate() requires at least one case to run');
 
-  const datasetName = data instanceof Dataset ? data.name : INLINE_DATASET;
+  // A snapshot already IS the immutable description of what ran, so its own name/revision are
+  // reported verbatim rather than re-derived (Python: _to_snapshot returns `data` unchanged).
+  const snapshot = isDatasetSnapshot(data) ? data : null;
+  const datasetName = data instanceof Dataset ? data.name : (snapshot?.name ?? INLINE_DATASET);
   const snapshotRevision =
-    data instanceof Dataset ? data.snapshot().revision : `local-${cases.length}`;
+    data instanceof Dataset
+      ? data.snapshot().revision
+      : (snapshot?.revision ?? `local-${cases.length}`);
   // A run is not identified by which SDK produced it, so no SDK-language identity is reported.
   // But git/CI provenance (commit/branch/dirty, CI build) is NON-IDENTITY reproducibility
   // metadata — it rides the wire as free-form run metadata (user keys win on conflict), so the
@@ -536,39 +638,51 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // local artifact.
   const runMetadata = collectRunProvenance(options.metadata, { detectDirty: false });
 
-  // Cloud-only: an explicit transport wins; otherwise build a reporting transport from
-  // credentials + a synced dataset. Evaluation always reports -- there is no local run.
+  // Cloud-only by default: an explicit transport wins; otherwise build a reporting transport
+  // from credentials + a synced dataset.
   let active: EvalTransport;
-  if (transport !== undefined) {
+  if (local) {
+    // local: true IS transport: new FakeTransport(), spelled as intent rather than as a class the
+    // user has to import: the run executes in full and records itself in memory, but nothing
+    // leaves the process. Selected ahead of the auto path so it also short-circuits the
+    // auto-publish below — a local run needs no credentials and versions no dataset, even one
+    // that is already synced.
+    active = new FakeTransport();
+  } else if (transport !== undefined) {
     active = transport;
   } else {
     // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
-    // server-side version to attach to -- the user never writes a manual "sync then run" step
-    // (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses the
-    // current version; a changed dataset under an existing name prompts to confirm the new version
-    // (TTY) before publishing. Only for a local Dataset with credentials; a pulled dataset, an
-    // explicit datasetId, or an explicit transport skip this.
-    if (
-      data instanceof Dataset &&
-      data.datasetVersionId === undefined &&
-      options.datasetId === undefined
-    ) {
+    // server-side version to attach to -- the user never writes a manual "sync then run" step.
+    // Idempotent: unchanged content reuses the
+    // current version. Only for a local Dataset with credentials; an explicit datasetId or an
+    // explicit transport skip this.
+    //
+    // A dataset that IS pinned republishes only once it has drifted from the version it is pinned
+    // to. A Dataset is mutable and evaluate() is re-runnable, so pinning the version from a
+    // previous run (or from the pull) would attribute the cases this run actually scored to
+    // content that never contained them.
+    if (data instanceof Dataset && options.datasetId === undefined) {
       const { apiKey } = TraceRoot.resolveCredentials();
-      if (apiKey) {
-        const res = await new PlatformDatasetSync().pushDataset(
-          data.snapshot(),
-          data.baseVersionId,
-        );
-        if (res.status === 'uploaded' && res.datasetVersionId)
-          data.datasetVersionId = res.datasetVersionId;
+      if (apiKey && (data.datasetVersionId === undefined || pinnedContentChanged(data))) {
+        await autoPublish(data);
       }
     }
     const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
     if (auto === null) {
+      // autoTransport returns null for two unrelated reasons; saying "no credentials" for both
+      // misdirects a user who HAS a key but passed inline cases or an unsynced dataset.
+      if (TraceRoot.resolveCredentials().apiKey) {
+        throw new Error(
+          'evaluate() reports to the TraceRoot platform, but this run has no synced dataset to ' +
+            'report against. Pass a Dataset that was pulled or pushed (pullDataset(...) / ' +
+            'Dataset.push(...)), or pass datasetId, or pass local: true to run without ' +
+            'reporting.',
+        );
+      }
       throw new Error(
         'evaluate() reports to the TraceRoot platform, but no credentials were found. Set ' +
-          'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass an explicit ' +
-          'transport (e.g. new FakeTransport() to run offline).',
+          'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass local: true to ' +
+          'run without reporting.',
       );
     }
     // A reported run records every score with a per-metric `passed`; no overall run-level pass/fail
@@ -581,17 +695,31 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   if ('scorerSpecs' in active && (active as PlatformTransport).scorerSpecs === undefined) {
     (active as PlatformTransport).scorerSpecs = specs;
   }
+  // Same seam for the evaluation's stable identity: fill it only when the transport has the field
+  // and nothing has set it, so a transport constructed with an explicit key keeps it.
+  if (
+    options.evaluationKey !== undefined &&
+    'evaluationKey' in active &&
+    (active as PlatformTransport).evaluationKey == null
+  ) {
+    (active as PlatformTransport).evaluationKey = options.evaluationKey;
+  }
 
-  // Eval structural spans always export (cloud-only) and are linked to the reported results.
-  const evalSpanTracer = evalTracer();
+  // A reported run's structural spans export and are linked to its results. A local run gets a
+  // non-exporting tracer: the span tree carries the case input and the task output as span I/O, so
+  // exporting it would send off-process exactly the payloads `local: true` promises to keep in.
+  const evalSpanTracer = evalTracer(local);
   const localRunId = newRunId();
   const run = await active.createRun(name, datasetName, runMetadata ?? null, localRunId);
 
   const identity: RunIdentity = {
     name,
     datasetName,
-    datasetId: options.datasetId ?? (data instanceof Dataset ? data.datasetId : 'ds_inline'),
-    datasetVersionId: data instanceof Dataset ? (data.datasetVersionId ?? null) : null,
+    datasetId:
+      options.datasetId ??
+      (data instanceof Dataset ? data.datasetId : (snapshot?.datasetId ?? 'ds_inline')),
+    datasetVersionId:
+      data instanceof Dataset ? (data.datasetVersionId ?? null) : (snapshot?.baseVersionId ?? null),
     candidateVersion: candidateVersion ?? null,
     environment,
     runId: active.runId ?? null,
@@ -613,12 +741,19 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   }
 
   let itemResults: EvalItemResult[] = [];
-  let uploadState: UploadState;
+  // Definitely assigned before any use: the finally below either assigns it or throws.
+  let uploadState!: UploadState;
   let cancelled = false;
-  let summary: Record<string, ScoreSummary> = {};
   // definition name -> the metric names it emitted, accumulated across cases (union: a metric
   // emitted by only some cases still counts). Recorded during execution, sent at completion.
   const emittedOwnership = new Map<string, Set<string>>();
+  // Per-case result POSTs the transport dropped (best-effort reporting), surfaced on the upload
+  // state so a green run with silently-missing results is detectable.
+  const droppedResults: string[] = [];
+  let bodyFailed = false;
+  let bodyError: unknown;
+  // A finalization failure on a CANCELLED run: kept, not thrown, so the cancellation survives.
+  let cancelCompletionError: unknown;
   try {
     const raw = await runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
@@ -640,6 +775,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         options.onCaseStart,
         onCaseComplete,
         emittedOwnership,
+        droppedResults,
       );
     });
     itemResults = raw.filter((r): r is EvalItemResult => r !== null);
@@ -647,18 +783,50 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     // the flag above never flipped — re-check the signal after runBounded settles so an
     // in-flight-only cancellation still finalizes as incomplete and raises CancelledError.
     if (options.signal?.aborted) cancelled = true;
-    if (!cancelled) {
-      summary = aggregateScores(itemResults);
-    }
+  } catch (err) {
+    bodyFailed = true; // remembered, then re-thrown untouched
+    bodyError = err;
+    throw err;
   } finally {
     reporter?.finish();
     // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
     // A cancelled run closes 'incomplete', so a registered run is never left orphaned in 'running'.
-    // Runs AFTER all in-flight cases above have settled.
-    const status = cancelled ? 'incomplete' : null;
+    // Runs AFTER all in-flight cases above have settled. Completion is the LAST thing to run, so
+    // it must never become the story: if the run already failed, the original error keeps
+    // propagating and the completion failure rides along on it (it used to REPLACE the real
+    // cause — a /complete 400 buried the actual exception).
+    // A run whose body did not get through its cases is INCOMPLETE, whatever stopped it — an
+    // abort, or anything that threw out of the case loop. Left to derive its own status the
+    // transport would report 'completed' for an evaluation that scored two cases out of five. An
+    // errored CASE is not an unfinished run: that path leaves the status null so the error counts
+    // decide.
+    const status = cancelled || bodyFailed ? 'incomplete' : null;
     const emitted: Record<string, string[]> = {};
     for (const [def, metrics] of emittedOwnership) emitted[def] = [...metrics].sort();
-    uploadState = await active.finishRun(run, status, emitted);
+    try {
+      uploadState = {
+        ...(await active.finishRun(run, status, emitted)),
+        failedResultCount: droppedResults.length,
+      };
+    } catch (completionErr) {
+      if (bodyFailed) {
+        attachCompletionFailure(bodyError, completionErr);
+      } else if (cancelled) {
+        // Cancellation is the caller's story (Ctrl-C is not a backend fault) and it is what this
+        // path documents raising. An EvalCompletionError thrown here would REPLACE that identity,
+        // leaving an aborted run indistinguishable from a broken backend — so remember the
+        // failure and let the CancelledError below carry it as secondary context.
+        cancelCompletionError = completionErr;
+      } else {
+        // The run itself succeeded: one clear error naming the completion failure, with the
+        // transport error carried as data rather than chained into a cause chain.
+        throw new EvalCompletionError(
+          'the evaluation ran but the run could not be finalized on the platform: ' +
+            `${fmtError(completionErr)}. The run stays 'running' until a retry completes it.`,
+          completionErr,
+        );
+      }
+    }
   }
   if (cancelled) {
     // Surface the run's real identity + upload so the caller's partial artifact stays associated
@@ -667,15 +835,11 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     err.localRunId = localRunId;
     err.runId = active.runId ?? null;
     err.uploadState = uploadState;
+    // Undefined unless finalization ALSO failed (uploadState is then unset): the run may still be
+    // 'running' on the platform, and that is worth handing back with the cancellation.
+    if (cancelCompletionError !== undefined) err.completionError = cancelCompletionError;
     throw err;
   }
-
-  const { runScores, runScorerErrors } = await runRunScorers(
-    options.runScorers,
-    name,
-    itemResults,
-    summary,
-  );
 
   const datasetRef: RunDatasetRef = {
     datasetId: identity.datasetId,
@@ -690,9 +854,24 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     candidateVersion: candidateVersion ?? null,
     dataset: datasetRef,
     metadata: runMetadata,
-    runScores,
-    runScorerErrors,
+    // Retain the declared scorer policy so an explicit result.upload() can re-declare each metric's
+    // threshold/direction rather than re-register policy-less. Captured from the scorers directly
+    // (`specs` above), not the transport, so a local/Fake run — "run now, upload later" — keeps it.
+    scorerSpecs: specs,
+    // Retain the scorer -> emitted-metric ownership so an explicit result.upload() re-declares it on
+    // finishRun (the same manifest this run sent). Built from the run's ownership map; {} when empty.
+    emittedMetrics: Object.fromEntries(
+      [...emittedOwnership].map(([def, metrics]) => [def, [...metrics].sort()]),
+    ),
   });
+
+  // When the bar was shown (interactive), print the run's summary too — so calling evaluate() on a
+  // terminal SHOWS its result (metric means + counts) without the caller writing
+  // console.log(run.summary()). Gated on the reporter, so piped/CI/programmatic callers keep clean
+  // stdout and read result.summary() / result.uploadState themselves.
+  if (reporter) {
+    console.log(result.summary());
+  }
 
   // When the bar was shown (interactive), surface the clickable run link if the backend
   // returned one. Off-terminal callers read result.uploadState instead. (Candidate-vs-

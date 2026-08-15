@@ -3,7 +3,16 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Dataset, evaluate, pullDataset, pullDatasetVersion } from '../src/eval';
+import {
+  Dataset,
+  evaluate,
+  makeRunResult,
+  pullDataset,
+  pullDatasetVersion,
+  scorer,
+  Scorer,
+  EvalRunResult,
+} from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 import { PlatformTransport } from '../src/eval/platform';
 
@@ -115,12 +124,147 @@ describe('pull', () => {
     await assert.rejects(() => pullDatasetVersion('dsv_missing'), /not found/);
   });
 
+  it('pulling a dataset with no current version raises a clear error, not an obscure one', async () => {
+    // No `current` => current_dataset_version_id is absent; without the guard a null version id
+    // reaches pullDatasetVersion and fails obscurely instead of naming the real problem.
+    mockBackend({ versions: {} });
+    await assert.rejects(() => pullDataset('ds_1'), /no published version to pull/);
+  });
+
   it('mismatched dataset/version identity raises', async () => {
     mockBackend({ versions: { dsv_x: version('dsv_x', 'ds_OTHER') } });
     await assert.rejects(
       () => pullDatasetVersion('dsv_x', { datasetId: 'ds_1' }),
       /belongs to dataset/,
     );
+  });
+});
+
+describe('scorer policy is retained for re-upload', () => {
+  it('evaluate captures the declared scorer policy on the result', async () => {
+    const acc = scorer((_ctx: ScorerContext) => 1, {
+      name: 'acc',
+      valueType: 'numeric',
+      direction: 'higher_is_better',
+      threshold: 0.8,
+    });
+    const d = new Dataset('m3');
+    d.add(1, { id: 'c0', expected: 1 });
+    // Captured even for a local run (no transport) — the "run now, upload later" flow.
+    const run = await evaluate({ name: 'r', dataset: d, task: echo, scorers: [acc], local: true });
+    const spec = (run.scorerSpecs ?? []).find((s) => s.name === 'acc');
+    assert.equal(spec?.threshold, 0.8);
+    assert.equal(spec?.direction, 'higher_is_better');
+  });
+
+  it('scorerSpecs round-trips through toJSON/fromJSON', () => {
+    const specs = [
+      {
+        name: 'acc',
+        version: null,
+        value_type: 'numeric',
+        direction: 'higher_is_better',
+        threshold: 0.8,
+      },
+    ];
+    const run = makeRunResult(
+      'r',
+      [],
+      { status: 'uploaded', dashboardUrl: null },
+      {
+        scorerSpecs: specs,
+      },
+    );
+    const loaded = EvalRunResult.fromJSON(JSON.parse(JSON.stringify(run.toJSON())));
+    assert.deepEqual(loaded.scorerSpecs, specs);
+  });
+
+  it('emittedMetrics round-trips through toJSON/fromJSON', () => {
+    const run = makeRunResult(
+      'r',
+      [],
+      { status: 'uploaded', dashboardUrl: null },
+      { emittedMetrics: { acc: ['acc', 'acc_detail'] } },
+    );
+    const loaded = EvalRunResult.fromJSON(JSON.parse(JSON.stringify(run.toJSON())));
+    assert.deepEqual(loaded.emittedMetrics, { acc: ['acc', 'acc_detail'] });
+  });
+});
+
+describe('non-finite scores do not poison the local aggregate', () => {
+  it('a NaN score is excluded from the mean instead of folding into it', async () => {
+    // A non-finite score is errored on the wire; the local aggregate must agree, or run.json and
+    // .summary() disagree with the platform (and Python writes a bare NaN while TS writes null).
+    const bad = scorer((_ctx: ScorerContext) => NaN, {
+      name: 'm',
+      valueType: 'numeric',
+      threshold: 0.5,
+    });
+    const d = new Dataset('nan-agg');
+    d.add(1, { id: 'c0', expected: 1 });
+    const run = await evaluate({ name: 'r', dataset: d, task: echo, scorers: [bad], local: true });
+    const m = Object.values(run.scoreSummary)[0];
+    assert.equal(m.mean, null); // excluded from the mean, not NaN-folded
+    assert.ok(!Number.isNaN(m.mean)); // and specifically not a NaN mean
+    assert.equal(m.count, 1); // still counts as a produced score
+    // The serialized artifact is valid JSON that round-trips (JS stringify never emits a bare NaN).
+    assert.doesNotThrow(() => JSON.parse(JSON.stringify(run.toJSON())));
+  });
+});
+
+describe('summary() shows per-metric pass-rate', () => {
+  it('includes pass=k/n for a scorer with a declared threshold', async () => {
+    const hit = scorer((ctx: ScorerContext) => (ctx.output === ctx.expected ? 1 : 0), {
+      name: 'hit',
+      valueType: 'numeric',
+      direction: 'higher_is_better',
+      threshold: 1.0,
+    });
+    const d = new Dataset('passrate');
+    d.add(1, { id: 'a', expected: 1 }); // pass
+    d.add(0, { id: 'b', expected: 1 }); // fail
+    const run = await evaluate({ name: 'r', dataset: d, task: echo, scorers: [hit], local: true });
+    const line = run
+      .summary()
+      .split('\n')
+      .find((l) => l.trim().startsWith('hit'))!;
+    assert.ok(line.includes('pass=1/2'), line); // one of two cleared the threshold
+    assert.ok(line.includes('count=2'));
+  });
+
+  it('resolves pass-rate name-agnostically for a lone single-emission scorer', async () => {
+    // The scorer's declared name differs from the emitted score name; the lone scorer still owns
+    // its lone metric (same rule as PlatformTransport), so the pass-rate resolves.
+    const s = Scorer.code(
+      { key: 'x', valueType: 'numeric', direction: 'higher_is_better', threshold: 1.0 },
+      () => ({ name: 'differently_named', value: 1.0 }),
+    );
+    const d = new Dataset('agnostic');
+    d.add(1, { id: 'a', expected: 1 });
+    const run = await evaluate({ name: 'r', dataset: d, task: echo, scorers: [s], local: true });
+    const line = run
+      .summary()
+      .split('\n')
+      .find((l) => l.includes('mean='))!;
+    assert.ok(line.includes('pass=1/1'), line);
+  });
+
+  it('omits pass= when no threshold is declared', async () => {
+    const plain = (_ctx: ScorerContext) => 0.5; // no declared policy -> nothing to judge
+    const d = new Dataset('nopolicy');
+    d.add(1, { id: 'a', expected: 1 });
+    const run = await evaluate({
+      name: 'r',
+      dataset: d,
+      task: echo,
+      scorers: [plain],
+      local: true,
+    });
+    const line = run
+      .summary()
+      .split('\n')
+      .find((l) => l.includes('mean='))!;
+    assert.ok(!line.includes('pass='), line); // no fabricated verdict
   });
 });
 
@@ -174,6 +318,46 @@ describe('reporting (cloud-only)', () => {
     assert.equal('main_score_name' in done.body, false);
   });
 
+  it('a snapshot of a synced dataset reports exactly like the dataset', async () => {
+    // Parity with Python's _auto_transport: a DatasetSnapshot carrying baseVersionId is a synced
+    // dataset, so `evaluate(dataset.snapshot())` reports instead of failing "no synced dataset".
+    mockBackend({});
+    const ds = new Dataset('d');
+    ds.datasetId = 'ds_1';
+    ds.datasetVersionId = 'dsv_1';
+    ds.baseVersionId = 'dsv_1'; // pushed/pulled: the snapshot inherits the pinned version
+    ds.upsert({ input: 1, id: 'c0', expected: 1 });
+    const snap = ds.snapshot();
+
+    const result = await evaluate({ name: 'r', dataset: snap, task: echo, scorers: [exact] });
+
+    assert.equal(result.uploadState.status, 'uploaded');
+    assert.equal(result.runId, 'run_1');
+    const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
+    assert.equal(reg.body.dataset_version_id, 'dsv_1');
+    assert.equal(reg.body.dataset_id, 'ds_1'); // reported against the snapshot's dataset
+    assert.ok(calls.some((c) => c.url.endsWith('/complete')));
+    assert.equal(result.dataset.revision, snap.revision);
+    assert.equal(result.dataset.datasetVersionId, 'dsv_1');
+  });
+
+  it('a snapshot with no version id is unsynced -> no upload', async () => {
+    // Negative guard, also Python parity: a locally-authored dataset's snapshot carries no
+    // baseVersionId, so it stays unsynced (no auto-provision for a snapshot) and the run raises
+    // the "no synced dataset" cause rather than uploading.
+    mockBackend({});
+    const ds = new Dataset('local');
+    ds.add(1, { expected: 1 });
+    await assert.rejects(
+      () => evaluate({ name: 'r', dataset: ds.snapshot(), task: echo, scorers: [exact] }),
+      /synced dataset/,
+    );
+    assert.equal(
+      calls.some((c) => c.url.endsWith('/evaluation-runs') || c.url.endsWith('/versions')),
+      false,
+    );
+  });
+
   it('never sends a baseline_run_id (comparison is the backend’s job)', async () => {
     mockBackend({});
     const ds = new Dataset('d');
@@ -223,12 +407,34 @@ describe('reporting (cloud-only)', () => {
       ['not_scored', 'errored', 'errored'],
     );
     for (const b of results) assert.equal('main_score' in b, false);
-    // Completion counts: one task error, one scorer error, no headline scored_count.
+    // Completion counts: one task error, one scorer error. scored_count is a COMPLETENESS
+    // count (cases that produced a score with no task error), not a pass/fail rollup — only
+    // c0 qualifies. Python parity: test_platform.py::test_finish_run_sends_counts_and_no_main_score.
     const done = calls.find((c) => c.url.endsWith('/complete'))!.body;
     assert.equal(done.task_error_count, 1);
     assert.equal(done.scorer_error_count, 1);
-    assert.equal(done.scored_count, 0);
+    assert.equal(done.scored_count, 1);
     assert.equal('main_score' in done, false);
+  });
+
+  it('completion counts survive a replayed case (keyed by test_case_id)', async () => {
+    // scored_count rides the same per-case contribution map as the error totals, so a retried
+    // case (or a second upload() on the same transport) REPLACES its contribution.
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', { scorerNames: ['grade'] });
+    const run = await t.createRun('r', 'd', null);
+    const base = { caseId: 'c0', input: 'i', output: 'o', expected: 'e', traceId: 't' };
+    const scored = {
+      ...base,
+      scores: [{ name: 'quality', value: 1 }],
+      scorerErrors: {},
+      error: null,
+    };
+    await t.recordItemResult(run, scored);
+    await t.recordItemResult(run, scored); // replay
+    await t.finishRun(run, null);
+    const done = calls.find((c) => c.url.endsWith('/complete'))!.body;
+    assert.equal(done.scored_count, 1);
   });
 
   it('sends per-score passed for a single scorer, name-agnostically', async () => {
@@ -291,6 +497,57 @@ describe('reporting (cloud-only)', () => {
     assert.equal('passed' in byName.route, false);
     assert.equal('passed' in byName.mystery, false);
   });
+
+  it('a payload that JSON-serializes to undefined reports as null instead of aborting the case', async () => {
+    // JSON.stringify returns undefined (not a string) for a function, a symbol, or an object whose
+    // toJSON() returns undefined. Reading .length off that threw inside the payload build, so ONE
+    // odd task output aborted the whole case upload. The field must degrade to null/'' instead.
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', {});
+    const run = await t.createRun('r', 'd', null);
+    await t.recordItemResult(run, {
+      caseId: 'c1',
+      input: () => 1,
+      output: { toJSON: () => undefined },
+      expected: Symbol('e'),
+      scores: [{ name: 'acc', value: 1 }],
+      scorerErrors: {},
+      error: null,
+      traceId: 't',
+    });
+    const res = calls.find((c) => c.url.endsWith('/results'))!;
+    assert.equal(res.body.input, ''); // non-nullable on the wire
+    assert.equal(res.body.candidate_output, null);
+    assert.equal(res.body.expected_output, null);
+    assert.equal(res.body.status, 'not_scored');
+  });
+
+  it('lower_is_better is inclusive at the threshold', async () => {
+    // Both directions are INCLUSIVE at the threshold: `latency_ms <= 200` passes at exactly 200
+    // and fails at 200.1, mirroring higher_is_better's `1 >= 1` above. A budget stated as "at most
+    // 200ms" is met by a 200ms answer — an exclusive boundary would fail it. Parity with
+    // traceroot-py test_platform test_lower_is_better_threshold_is_inclusive.
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', {});
+    t.scorerSpecs = [{ name: 'latency_ms', threshold: 200, direction: 'lower_is_better' }];
+    const run = await t.createRun('r', 'd', null);
+    for (const value of [200, 200.1, 199.9]) {
+      await t.recordItemResult(run, {
+        caseId: `c-${value}`,
+        input: 'i',
+        output: 'o',
+        expected: 'e',
+        scores: [{ name: 'latency_ms', value }],
+        scorerErrors: {},
+        error: null,
+        traceId: 't',
+      });
+    }
+    const sent = calls
+      .filter((c) => c.url.endsWith('/results'))
+      .map((c) => (c.body.scores as Record<string, unknown>[])[0].passed);
+    assert.deepEqual(sent, [true, false, true]);
+  });
 });
 
 describe('run URL (run_url preferred, run_path fallback -> dashboardUrl)', () => {
@@ -345,5 +602,101 @@ describe('run URL (run_url preferred, run_path fallback -> dashboardUrl)', () =>
     });
     assert.equal(run.uploadState.dashboardUrl, null);
     assert.equal(run.uploadState.status, 'uploaded');
+  });
+});
+
+describe('re-upload scorer registration', () => {
+  it('registers a scorer that errored on every case (absent from the score summary)', async () => {
+    // Python parity (results.py upload()): the transport built for a re-upload unions the score
+    // summary with every scorer NAME seen on the items — scores AND scorer errors. Registering
+    // only Object.keys(scoreSummary) silently drops an all-failing scorer from the run.
+    mockBackend({});
+    const run = makeRunResult(
+      'r',
+      [
+        {
+          caseId: 'c0',
+          input: 'i',
+          output: 'o',
+          expected: 'e',
+          scores: [{ name: 'acc', value: 1 }],
+          scorerErrors: { flaky: 'boom' },
+          error: null,
+          traceId: null,
+          durationMs: null,
+        },
+      ],
+      { status: 'uploaded', dashboardUrl: null },
+      {
+        localRunId: 'run_local_1',
+        dataset: { datasetId: 'ds_1', revision: 'rev_x', datasetVersionId: 'dsv_1', caseCount: 1 },
+      },
+    );
+    await run.upload();
+    const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
+    const names = (reg.body.scorers as Array<{ name: string }>).map((s) => s.name);
+    assert.deepEqual(names, ['acc', 'flaky']);
+  });
+});
+
+describe('re-upload with an explicit transport', () => {
+  const specs = [
+    {
+      name: 'acc',
+      version: 'v1',
+      value_type: 'numeric',
+      direction: 'higher_is_better',
+      threshold: 0.8,
+    },
+  ];
+
+  function retainedRun(): EvalRunResult {
+    return makeRunResult(
+      'r',
+      [
+        {
+          caseId: 'c0',
+          input: 'i',
+          output: 'o',
+          expected: 'e',
+          scores: [{ name: 'acc', value: 0.9 }],
+          scorerErrors: {},
+          error: null,
+          traceId: null,
+          durationMs: null,
+        },
+      ],
+      { status: 'uploaded', dashboardUrl: null },
+      {
+        localRunId: 'run_local_specs',
+        dataset: { datasetId: 'ds_1', revision: 'rev_x', datasetVersionId: 'dsv_1', caseCount: 1 },
+        scorerSpecs: specs,
+      },
+    );
+  }
+
+  it('forwards the run’s retained scorer specs to a transport that has none', async () => {
+    // The retained thresholds are what give a replayed numeric score its `passed` verdict. They
+    // used to be attached only to the auto-built transport, so `run.upload(new PlatformTransport())`
+    // registered policy-less and the re-upload disagreed with the original run.
+    mockBackend({});
+    const explicit = new PlatformTransport('ds_1');
+    await retainedRun().upload(explicit);
+    assert.deepEqual(explicit.scorerSpecs, specs);
+    const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
+    assert.equal(reg.body.scorers[0].threshold, 0.8);
+    assert.equal(reg.body.scorers[0].direction, 'higher_is_better');
+  });
+
+  it('never overwrites specs the caller put on the transport', async () => {
+    mockBackend({});
+    const own = [{ name: 'acc', version: 'v2', value_type: 'numeric', threshold: 0.5 }];
+    const explicit = new PlatformTransport('ds_1', { scorerSpecs: own });
+    await retainedRun().upload(explicit);
+    assert.deepEqual(explicit.scorerSpecs, own);
+    assert.equal(
+      calls.find((c) => c.url.endsWith('/evaluation-runs'))!.body.scorers[0].threshold,
+      0.5,
+    );
   });
 });

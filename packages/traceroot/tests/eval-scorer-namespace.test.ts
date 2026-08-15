@@ -46,6 +46,42 @@ describe('unified Scorer namespace (TS)', () => {
     assert.equal(scorerMetadata(mk()).version, scorerMetadata(mk()).version);
   });
 
+  type JudgeOpts = Parameters<typeof Scorer.llmJudge>[0];
+  const cfgVersion = (overrides: Partial<JudgeOpts> = {}) =>
+    scorerMetadata(
+      Scorer.llmJudge({
+        name: 'j',
+        model: MODEL,
+        rubric: 'Grade 0..1.',
+        threshold: 1,
+        ...overrides,
+      }),
+    ).version;
+
+  const CHANGES: [string, Partial<JudgeOpts>][] = [
+    ['rubric', { rubric: 'Grade 0..10.' }], // the rubric IS the judge's source
+    ['model', { model: 'claude-opus-4-5' }],
+    ['threshold', { threshold: 0.5 }],
+    ['direction', { direction: 'lower_is_better' }],
+    ['valueType', { valueType: 'categorical' }],
+    ['outputType', { outputType: 'classification' }],
+    ['metadata', { metadata: { team: 'eval' } }],
+  ];
+  for (const [field, override] of CHANGES) {
+    it(`a changed ${field} moves the cfg_ version`, () => {
+      // Determinism alone is satisfied by a constant, so pin the other half: every hashed field
+      // must MOVE the version. A judge whose version survives a rubric edit is a version that lies.
+      assert.notEqual(cfgVersion(override), cfgVersion());
+    });
+  }
+
+  it('the human name is not part of the version', () => {
+    // `name` is a label, not source: renaming a judge must not read as "someone edited the
+    // rubric". `key` is the cross-language identity and is likewise outside the config hash.
+    assert.equal(cfgVersion({ name: 'readability' }), cfgVersion());
+    assert.equal(cfgVersion({ key: 'other_key' }), cfgVersion());
+  });
+
   it('Scorer.llmJudge dynamic: builder returns a variable map', async () => {
     let seen: any[] = [];
     const judge = Scorer.llmJudge(

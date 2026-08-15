@@ -60,8 +60,17 @@ describe('runner', () => {
     const done = events.find((e) => e.type === 'evaluation_completed');
     assert.equal(done.status, 'completed');
     // No headline pass/fail: both error-free cases are not_scored (per-metric verdicts ride scores).
+    // The counts block is the JSONL protocol traceroot-cli parses, so its keys are pinned to
+    // Python's (runner.py::_counts) — a harness must read the same names from either SDK.
+    assert.deepEqual(Object.keys(done.counts), [
+      'cases',
+      'errored',
+      'task_errors',
+      'scorer_errors',
+      'not_scored',
+    ]);
     assert.equal(done.counts.not_scored, 2);
-    assert.equal(done.counts.passed, 0);
+    assert.equal(done.counts.errored, 0);
     assert.ok(done.local_run_id.startsWith('run_'));
     assert.equal(types[types.length - 1], 'suite_completed');
   });

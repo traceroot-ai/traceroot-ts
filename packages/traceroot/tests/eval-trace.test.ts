@@ -245,3 +245,46 @@ describe('llm judge trace', () => {
     }
   });
 });
+
+describe('local runs export nothing', () => {
+  // `local: true` means the run's data never leaves the process. Swapping the transport alone
+  // does not deliver that: the per-case span tree carries the case input and the task output as
+  // span I/O, so creating those spans on the configured (exporting) tracer ships exactly the
+  // payloads local promised to keep in-process.
+  const localRun = () => ({ name: 'r', data: ds(1), task: echo, scorers: [exact], local: true });
+
+  it('exports no eval spans, while a reported run does', async () => {
+    await evaluate(localRun());
+    assert.deepEqual(
+      exporter.getFinishedSpans().map((s) => s.name),
+      [],
+    );
+
+    await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact], ...reported() });
+    assert.deepEqual(
+      exporter
+        .getFinishedSpans()
+        .map((s) => s.name)
+        .sort(),
+      ['evaluation-item', 'exact', 'task'],
+    );
+  });
+
+  it('still runs the whole span-driven pipeline, and reports no trace id', async () => {
+    const result = await evaluate(localRun());
+    assert.equal(result.itemResults[0].scores[0].value, 1); // scored as usual
+    assert.equal(result.itemResults[0].traceId, null); // nothing was exported to link to
+  });
+
+  it('does not warn that the SDK was never initialized', async () => {
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      await evaluate(localRun());
+    } finally {
+      console.warn = realWarn;
+    }
+    assert.deepEqual(warnings, []);
+  });
+});

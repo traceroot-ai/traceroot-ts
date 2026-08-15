@@ -69,8 +69,11 @@ describe('ConsoleProgress', () => {
     bar.onCaseComplete(item('c', 'error'), 5); // errored
     bar.finish();
 
-    // Only errored is tallied now; passed/failed are gone from the case status.
-    assert.deepEqual([bar.passed, bar.failed, bar.errored, bar.done], [0, 0, 1, 3]);
+    // The bar tallies the two statuses that exist (Python progress.py parity); the always-zero
+    // passed/failed counters are gone with the case-level pass/fail they mirrored.
+    assert.deepEqual([bar.errored, bar.notScored, bar.done], [1, 2, 3]);
+    for (const dead of ['passed', 'failed'])
+      assert.equal(dead in (bar as unknown as Record<string, unknown>), false, dead);
     const out = buf.text;
     assert.match(out, /demo/);
     assert.match(out, /3\/3/);
