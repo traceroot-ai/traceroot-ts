@@ -31,6 +31,10 @@ export const SPAN_KIND_MAP: Record<SpanType, string> = {
   tool: 'TOOL',
   llm: 'LLM',
   span: 'CHAIN',
+  // Offline-evaluation kinds (additive).
+  evaluation: 'CHAIN',
+  task: 'CHAIN',
+  scorer: 'EVALUATOR',
 };
 
 export function trySerialize(value: unknown): string | undefined {

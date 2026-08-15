@@ -1,7 +1,7 @@
 // src/types.ts
 import type { PiInstrumentationConfig } from './pi';
 
-export type SpanType = 'span' | 'agent' | 'tool' | 'llm';
+export type SpanType = 'span' | 'agent' | 'tool' | 'llm' | 'evaluation' | 'task' | 'scorer';
 
 /**
  * The object form of `instrumentModules.piCodingAgent`: the pi module ref plus
