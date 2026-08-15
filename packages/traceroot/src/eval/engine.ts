@@ -39,6 +39,7 @@ export type ScoreLike =
   | string
   | Score
   | Score[]
+  | Record<string, number | boolean | string> // a metric -> value map (one Score per entry)
   | DeferredScore
   | null
   | undefined;
@@ -144,8 +145,23 @@ function normalizeScoreLike(raw: ScoreLike, defaultName: string): Score[] {
     });
   }
   if (typeof raw === 'object') {
-    assertScoreShape(raw);
-    return [toScore(raw)];
+    const obj = raw as Record<string, unknown>;
+    // Presence of EITHER reserved key means the single-Score shape is intended (both required);
+    // an object with neither is a metric->value mapping, one Score per entry.
+    if ('name' in obj || 'value' in obj) {
+      assertScoreShape(raw);
+      return [toScore(raw as Score)];
+    }
+    const scores: Score[] = [];
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v !== 'number' && typeof v !== 'boolean' && typeof v !== 'string') {
+        throw new Error(
+          `metric-map value for '${k}' must be a scalar (number/boolean/string), got ${typeof v}`,
+        );
+      }
+      scores.push({ name: k, value: v, comment: null, metadata: null });
+    }
+    return scores;
   }
   return [{ name: defaultName, value: raw, comment: null, metadata: null }];
 }
@@ -271,6 +287,7 @@ async function runCase(
   tracer: Tracer,
   onCaseStart?: (c: EvalCase) => void,
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void,
+  emittedOwnership?: Map<string, Set<string>>,
 ): Promise<EvalItemResult> {
   onCaseStart?.(evalCase);
   try {
@@ -306,6 +323,10 @@ async function runCase(
           type: 'task',
           input: evalCase.input,
           attributes: {
+            // Canonical classification (matches Python engine): without it the platform ingests
+            // this SDK-created span as a generic SPAN with is_evaluation=0. OpenInference span.kind
+            // (from `type: 'task'`) and input/output are set separately and stay intact.
+            [SpanAttributes.SPAN_TYPE]: 'task',
             [SpanAttributes.EVAL_RUN_NAME]: identity.name,
             [SpanAttributes.EVAL_CASE_ID]: evalCase.id as string,
             [SpanAttributes.EVAL_TASK_NAME]: fnName(task, 'task'),
@@ -340,6 +361,11 @@ async function runCase(
         try {
           for (const scorer of scorers) {
             const name = fnName(scorer, 'scorer');
+            // Record scorer->metric ownership AT THE POINT OF PRODUCTION (never inferred afterward
+            // by matching names). Seed the definition now so a scorer that throws before emitting
+            // still appears in the completion manifest with no metrics.
+            if (emittedOwnership && !emittedOwnership.has(name))
+              emittedOwnership.set(name, new Set());
             const scorerInput: Record<string, unknown> = {
               candidate: output,
               expected: evalCase.expected ?? null,
@@ -351,6 +377,10 @@ async function runCase(
                 type: 'scorer',
                 input: scorerInput,
                 attributes: {
+                  // Canonical classification (matches Python engine): without it the platform
+                  // ingests this SDK-created span as a generic SPAN with is_evaluation=0. The
+                  // OpenInference EVALUATOR kind (from `type: 'scorer'`) and I/O stay intact.
+                  [SpanAttributes.SPAN_TYPE]: 'scorer',
                   [SpanAttributes.EVAL_RUN_NAME]: identity.name,
                   [SpanAttributes.EVAL_SCORER_NAME]: name,
                 },
@@ -363,6 +393,10 @@ async function runCase(
               );
               const produced = stampScorerVersion(normalizeScoreLike(raw, name), scorer);
               scores.push(...produced);
+              if (emittedOwnership) {
+                const set = emittedOwnership.get(name)!;
+                for (const s of produced) if (s.name) set.add(s.name);
+              }
               recordScorerSpan(scorerSpan, produced);
               if (produced.length > 0) scorerSpan.update({ output: scorerOutputRepr(produced) });
             } catch (err) {
@@ -597,6 +631,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   let summary: Record<string, ScoreSummary> = {};
   let resolvedMain: string | null = null;
   let resolveError: MainScoreError | null = null;
+  // definition name -> the metric names it emitted, accumulated across cases (union: a metric
+  // emitted by only some cases still counts). Recorded during execution, sent at completion.
+  const emittedOwnership = new Map<string, Set<string>>();
   try {
     const raw = await runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
@@ -617,6 +654,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         evalSpanTracer,
         options.onCaseStart,
         onCaseComplete,
+        emittedOwnership,
       );
     });
     itemResults = raw.filter((r): r is EvalItemResult => r !== null);
@@ -645,7 +683,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     // (before we throw), so a registered run is never left orphaned in 'running'. Runs AFTER all
     // in-flight cases above have settled.
     const status = cancelled ? 'incomplete' : resolveError !== null ? 'failed' : null;
-    uploadState = await active.finishRun(run, status, resolvedMain);
+    const emitted: Record<string, string[]> = {};
+    for (const [def, metrics] of emittedOwnership) emitted[def] = [...metrics].sort();
+    uploadState = await active.finishRun(run, status, resolvedMain, emitted);
   }
   if (cancelled) {
     // Surface the run's real identity + upload so the caller's partial artifact stays associated

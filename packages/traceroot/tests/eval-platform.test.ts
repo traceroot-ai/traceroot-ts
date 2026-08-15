@@ -182,6 +182,92 @@ describe('reporting (cloud-only)', () => {
     const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
     assert.equal('baseline_run_id' in reg.body, false);
   });
+
+  it('explicit transport resolves a single scorer after specs are injected', async () => {
+    // A caller building PlatformTransport directly (no scorerNames) with scorerSpecs assigned
+    // AFTER construction — exactly what the engine does — must still resolve the single scorer's
+    // emitted metric name-agnostically. Freezing the flag from the empty constructor makes every
+    // case report not_scored / null main. A fn 'grade' emitting {name:'quality'} under
+    // lower_is_better must SCORE the case (0.3 > 0.2 -> failed, main 0.3).
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', {}); // no scorerNames
+    t.scorerSpecs = [{ name: 'grade', threshold: 0.2, direction: 'lower_is_better' }];
+    const run = await t.createRun('r', 'd', null);
+    await t.recordItemResult(run, {
+      caseId: 'c1',
+      input: 'i',
+      output: 'o',
+      expected: 'e',
+      scores: [{ name: 'quality', value: 0.3 }], // emitted 'quality' != fn 'grade'
+      scorerErrors: {},
+      error: null,
+      traceId: 't',
+    });
+    const res = calls.find((c) => c.url.endsWith('/results'))!;
+    assert.equal(res.body.status, 'failed');
+    assert.equal(res.body.main_score, 0.3);
+  });
+
+  it('sends per-score passed for a single scorer, name-agnostically', async () => {
+    // Each emitted score carries an SDK-computed `passed` (contract ScoreInput.passed) so the
+    // platform never re-derives policy. A single scorer 'grade' emitting {name:'quality', 0.3}
+    // under lower_is_better threshold 0.2 -> 0.3 <= 0.2 is false -> passed false, consistent with
+    // the case status 'failed'. The emitted name stays the score identity.
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', {});
+    t.scorerSpecs = [{ name: 'grade', threshold: 0.2, direction: 'lower_is_better' }];
+    const run = await t.createRun('r', 'd', null);
+    await t.recordItemResult(run, {
+      caseId: 'c1',
+      input: 'i',
+      output: 'o',
+      expected: 'e',
+      scores: [{ name: 'quality', value: 0.3 }],
+      scorerErrors: {},
+      error: null,
+      traceId: 't',
+    });
+    const res = calls.find((c) => c.url.endsWith('/results'))!;
+    assert.equal(res.body.scores[0].scorer_name, 'quality');
+    assert.equal(res.body.scores[0].passed, false);
+  });
+
+  it('per-score passed is honest per value type and per owning policy', async () => {
+    // Boolean: true = pass. Categorical: no pass/fail -> omitted. With multiple scorers each
+    // numeric score is judged by the scorer whose declared name matches the emitted metric; a
+    // numeric metric matching no declared scorer is left unresolved (omitted, never guessed).
+    mockBackend({});
+    const t = new PlatformTransport('ds_1', {});
+    t.scorerSpecs = [
+      { name: 'accuracy', threshold: 1.0, direction: 'higher_is_better' },
+      { name: 'is_billing' },
+      { name: 'route' },
+    ];
+    const run = await t.createRun('r', 'd', null);
+    await t.recordItemResult(run, {
+      caseId: 'c1',
+      input: 'i',
+      output: 'o',
+      expected: 'e',
+      scores: [
+        { name: 'accuracy', value: 1.0 }, // 1 >= 1 -> passed true
+        { name: 'is_billing', value: true }, // boolean true -> passed true
+        { name: 'route', value: 'billing' }, // categorical -> omitted
+        { name: 'mystery', value: 0.5 }, // numeric, matches no scorer -> omitted
+      ],
+      scorerErrors: {},
+      error: null,
+      traceId: 't',
+    });
+    const res = calls.find((c) => c.url.endsWith('/results'))!;
+    const byName: Record<string, Record<string, unknown>> = {};
+    for (const s of res.body.scores as Record<string, unknown>[])
+      byName[s.scorer_name as string] = s;
+    assert.equal(byName.accuracy.passed, true);
+    assert.equal(byName.is_billing.passed, true);
+    assert.equal('passed' in byName.route, false);
+    assert.equal('passed' in byName.mystery, false);
+  });
 });
 
 describe('run URL (run_url preferred, run_path fallback -> dashboardUrl)', () => {

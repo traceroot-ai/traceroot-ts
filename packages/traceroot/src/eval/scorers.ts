@@ -87,6 +87,7 @@ export type ScoreLikeReturn =
   | string
   | Score
   | Score[]
+  | Record<string, number | boolean | string> // a metric -> value map (one Score per entry)
   | DeferredScore
   | null
   | undefined;
