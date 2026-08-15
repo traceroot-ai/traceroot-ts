@@ -27,7 +27,7 @@ import { SDK_VERSION } from '../processor';
 import { TraceRoot } from '../traceroot';
 import { Evaluation } from './evaluation';
 import { newRunId } from './ids';
-import { Dataset, EvalCase, Score } from './types';
+import { Dataset, DatasetSnapshot, EvalCase, Score } from './types';
 import {
   EvalItemResult,
   EvalRunResult,
@@ -36,10 +36,9 @@ import {
   caseStatus,
   makeRunResult,
 } from './results';
-import { CancelledError } from './engine';
+import { CancelledError, isDatasetSnapshot } from './engine';
 import { PlatformTransport, ScorerSpec } from './platform';
 import { describeScorers } from './scorers';
-import { FakeTransport } from './transport';
 
 export const EVAL_API_VERSION = 1;
 export function capabilities(): Record<string, boolean> {
@@ -159,8 +158,9 @@ export async function discover(paths: string[]): Promise<Array<[string, Evaluati
 }
 
 // --- sampling / filtering ----------------------------------------------------
-function caseIds(data: Dataset | EvalCase[]): string[] {
+function caseIds(data: Dataset | DatasetSnapshot | EvalCase[]): string[] {
   if (data instanceof Dataset) return [...data].map((c) => c.id as string);
+  if (isDatasetSnapshot(data)) return data.cases.map((c) => c.id as string);
   return data.map((item, i) => (item.id ?? `case-${i}`) as string);
 }
 
@@ -572,7 +572,7 @@ async function runOne(
       ? (c: EvalCase) => (baseSelect ? baseSelect(c) : true) && chosen.has(c.id as string)
       : baseSelect;
 
-  const fullCount = caseIds(evaluation.dataset as Dataset | EvalCase[]).length;
+  const fullCount = caseIds(evaluation.dataset as Dataset | DatasetSnapshot | EvalCase[]).length;
   const caseCount = chosen !== null ? chosen.size : fullCount;
   emitter.emit({
     type: 'evaluation_started',
@@ -611,10 +611,12 @@ async function runOne(
   };
   const reporting = Boolean(options.reporting);
   if (!reporting) {
-    // Local-only guarantee: replace any transport the Evaluation supplied (e.g. report_to) with an
-    // in-memory no-op, so lifecycle requests never leave the process even when a real transport was
-    // configured. (A bare `local` flag was ignored by the engine.)
-    overrides.transport = new FakeTransport();
+    // Local-only guarantee: run in LOCAL mode. This clears any transport the Evaluation supplied
+    // (report_to) AND activates the engine's non-exporting eval tracer, so neither lifecycle
+    // requests NOR the case-payload spans can leave the process. Setting `local` rather than
+    // injecting a FakeTransport also stays valid for a definition authored `local: true`.
+    overrides.transport = undefined;
+    overrides.local = true;
   }
   if (options.max_concurrency) overrides.maxConcurrency = Number(options.max_concurrency);
   if (options.timeout != null) overrides.timeout = options.timeout;
@@ -696,6 +698,12 @@ function partialResult(
     datasetId = snap.datasetId;
     revision = snap.revision;
     versionId = data.datasetVersionId ?? null;
+  } else if (isDatasetSnapshot(data)) {
+    // A snapshot carries its own identity — preserve it so a cancelled run over a snapshot stays
+    // associated with the right dataset version instead of degrading to ds_inline/rev_partial.
+    datasetId = data.datasetId;
+    revision = data.revision;
+    versionId = data.baseVersionId ?? null;
   }
   const dataset: RunDatasetRef = {
     datasetId,
