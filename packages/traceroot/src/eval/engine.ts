@@ -832,6 +832,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
       } else {
         // The run itself succeeded: one clear error naming the completion failure, with the
         // transport error carried as data rather than chained into a cause chain.
+        // Reached only in this else branch (body succeeded, nothing propagating), so this throw
+        // overrides no in-flight exception.
+        // eslint-disable-next-line no-unsafe-finally
         throw new EvalCompletionError(
           'the evaluation ran but the run could not be finalized on the platform: ' +
             `${fmtError(completionErr)}. The run stays 'running' until a retry completes it.`,
