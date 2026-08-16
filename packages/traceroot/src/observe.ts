@@ -9,6 +9,7 @@ import {
 } from '@opentelemetry/api';
 import { OUTPUT_VALUE } from '@arizeai/openinference-semantic-conventions';
 import { applyCommonAttributes, trySerialize } from './attributes';
+import { _isGlobalAutoInitSuppressed } from './spans';
 import { ObserveOptions } from './types';
 import {
   assertValidTraceId,
@@ -95,7 +96,7 @@ async function _observeRegular<A extends unknown[], T>(
   fn: (...args: A) => T | Promise<T>,
   args: A,
 ): Promise<T> {
-  if (process.env['TRACEROOT_API_KEY']) {
+  if (process.env['TRACEROOT_API_KEY'] && !_isGlobalAutoInitSuppressed()) {
     const { TraceRoot } = await import('./traceroot');
     if (!TraceRoot.isInitialized()) TraceRoot.initialize();
   }
@@ -173,7 +174,7 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
   fn: (...args: A) => AsyncGenerator<T>,
   args: A,
 ): AsyncGenerator<T> {
-  if (process.env['TRACEROOT_API_KEY']) {
+  if (process.env['TRACEROOT_API_KEY'] && !_isGlobalAutoInitSuppressed()) {
     const { TraceRoot } = await import('./traceroot');
     if (!TraceRoot.isInitialized()) TraceRoot.initialize();
   }

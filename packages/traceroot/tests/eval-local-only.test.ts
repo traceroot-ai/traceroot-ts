@@ -1,0 +1,119 @@
+// truthful local/cloud boundary. A local-only (non-reporting) runner run drops
+// credentials (mirroring traceroot-py) so it can never silently upload eval results on
+// ambient credentials, and makes zero network calls. Parity with the Python local-only tests.
+
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { Dataset, Emitter, evaluate, runSuite } from '../src/eval';
+import { TraceRoot } from '../src/traceroot';
+import { _isGlobalAutoInitSuppressed } from '../src/spans';
+
+const realFetch = globalThis.fetch;
+const evalDir = join(__dirname, '..', 'src', 'eval').replace(/\\/g, '/');
+
+beforeEach(() => {
+  delete process.env['TRACEROOT_API_KEY'];
+  delete process.env['TRACEROOT_ENABLED'];
+});
+afterEach(() => {
+  globalThis.fetch = realFetch;
+  delete process.env['TRACEROOT_API_KEY'];
+  delete process.env['TRACEROOT_ENABLED'];
+});
+
+describe('local-only network boundary', () => {
+  it('_clearCredentials drops resolved credentials (no reporting transport can be built)', () => {
+    process.env['TRACEROOT_API_KEY'] = 'tr-x';
+    assert.notEqual(TraceRoot.resolveCredentials().apiKey, '');
+    delete process.env['TRACEROOT_API_KEY'];
+    TraceRoot._clearCredentials();
+    assert.equal(TraceRoot.resolveCredentials().apiKey, '');
+  });
+
+  it('a local (non-reporting) run makes zero network calls even with ambient credentials', async () => {
+    process.env['TRACEROOT_API_KEY'] = 'tr-ambient';
+    let fetchCalls = 0;
+    globalThis.fetch = ((...args: unknown[]) => {
+      fetchCalls += 1;
+      return (realFetch as any)(...args);
+    }) as any;
+
+    const dir = mkdtempSync(join(tmpdir(), 'localonly-'));
+    const evalFile = join(dir, 'routing_eval.ts');
+    writeFileSync(
+      evalFile,
+      `import { Dataset, Evaluation, FakeTransport } from '${evalDir}';
+       const ds = new Dataset('t');
+       ds.add({ m: 'charge' }, { id: 'a', expected: { r: 'billing' } });
+       function task(x: any) { return { r: 'billing' }; }
+       function acc(ctx: any) { return 1; }
+       export const e = new Evaluation({ name: 'e', dataset: ds, task, scorers: [acc], transport: new FakeTransport() });`,
+    );
+
+    const events: Record<string, any>[] = [];
+    await runSuite(
+      [evalFile],
+      { reporting: false, no_artifact: true },
+      new Emitter((ln) => events.push(JSON.parse(ln))),
+    );
+
+    // Enforced local-only: TRACEROOT_ENABLED is off AND the ambient API key was dropped.
+    assert.equal(fetchCalls, 0);
+    assert.equal(process.env['TRACEROOT_ENABLED'], 'false');
+    assert.equal(process.env['TRACEROOT_API_KEY'], undefined);
+    assert.ok(events.some((e) => e.type === 'evaluation_completed'));
+  });
+});
+
+describe('local-leak hardening + snapshot runner input', () => {
+  it('_clearCredentials keeps the TRACEROOT_HOST_URL fallback (not the hard default host)', () => {
+    process.env['TRACEROOT_HOST_URL'] = 'https://self.example.com';
+    TraceRoot._clearCredentials();
+    assert.equal(TraceRoot.resolveCredentials().baseUrl, 'https://self.example.com');
+    delete process.env['TRACEROOT_HOST_URL'];
+  });
+
+  it('a local run suppresses global auto-init during the task and releases it afterward', async () => {
+    let suppressedDuringTask = false;
+    const ds = new Dataset('supp');
+    ds.add({ q: 1 }, { id: 'a' });
+    await evaluate({
+      name: 'supp',
+      dataset: ds,
+      local: true,
+      task: () => {
+        suppressedDuringTask = _isGlobalAutoInitSuppressed();
+        return { r: 1 };
+      },
+      scorers: [() => 1],
+    });
+    assert.equal(suppressedDuringTask, true, 'suppression active during a local task');
+    assert.equal(_isGlobalAutoInitSuppressed(), false, 'suppression released after the run');
+  });
+
+  it('the runner runs an Evaluation whose dataset is a DatasetSnapshot (no caseIds crash)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'snaprun-'));
+    const evalFile = join(dir, 'snap_eval.ts');
+    writeFileSync(
+      evalFile,
+      `import { Dataset, Evaluation } from '${evalDir}';
+       const ds = new Dataset('snap', null, { key: 'snap' });
+       ds.add({ m: 'a' }, { id: 'a', expected: 1 });
+       ds.add({ m: 'b' }, { id: 'b', expected: 2 });
+       export const e = new Evaluation({ name: 'snap', dataset: ds.snapshot(), task: (x: any) => x.m, scorers: [() => 1] });`,
+    );
+    const events: Record<string, any>[] = [];
+    await runSuite(
+      [evalFile],
+      { reporting: false, no_artifact: true },
+      new Emitter((ln) => events.push(JSON.parse(ln))),
+    );
+    const started = events.find((e) => e.type === 'evaluation_started');
+    assert.equal(started?.dataset?.case_count, 2, 'snapshot cases counted, not crashed on');
+    assert.ok(events.some((e) => e.type === 'evaluation_completed'));
+  });
+});

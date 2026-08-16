@@ -1,3 +1,7 @@
 dist/
 node_modules/
 *.lock
+
+# Cross-SDK parity fixtures: byte-identical to the Python SDK's copies (asserted by the parity
+# tests), so they must NOT be reformatted — reformatting would break the byte-for-byte parity.
+packages/traceroot/tests/fixtures/

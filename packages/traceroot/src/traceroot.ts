@@ -33,6 +33,16 @@ const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 let _isInitialized = false;
 let _tracingActive = false;
 let _provider: NodeTracerProvider | undefined;
+// Resolved on initialize() so the offline-eval module can reach the same credentials
+// (parity with the Python client that eval's _resolve_credentials reads).
+let _apiKey: string | undefined;
+// Left undefined until initialize() so an offline-eval call made before init still honors the
+// TRACEROOT_HOST_URL env fallback (a hard default here would silently route to the default host).
+let _baseUrl: string | undefined;
+// Git context resolved at initialize(), so eval run provenance can reuse the repo/ref supplied
+// through initialization even on packaged deployments with no .git to re-derive from.
+let _gitRepo: string | undefined;
+let _gitRef: string | undefined;
 let _exportTarget: ExportTarget | undefined;
 
 export interface ExportTarget {
@@ -108,6 +118,34 @@ export class TraceRoot {
     return _isInitialized;
   }
 
+  /** Git repo/ref resolved at initialize() (undefined until then). Read by eval provenance. */
+  static get gitRepo(): string | undefined {
+    return _gitRepo;
+  }
+  static get gitRef(): string | undefined {
+    return _gitRef;
+  }
+
+  /**
+   * Resolve eval credentials with the same precedence the client uses: an explicit
+   * argument wins, else the value resolved at initialize(), else the env var, else the
+   * default host. Returns an empty apiKey when none is set (callers degrade to local).
+   */
+  static resolveCredentials(
+    apiKey?: string,
+    baseUrl?: string,
+  ): { apiKey: string; baseUrl: string } {
+    return {
+      apiKey: apiKey ?? _apiKey ?? process.env['TRACEROOT_API_KEY'] ?? '',
+      baseUrl: (
+        baseUrl ??
+        _baseUrl ??
+        process.env['TRACEROOT_HOST_URL'] ??
+        DEFAULT_BASE_URL
+      ).replace(/\/$/, ''),
+    };
+  }
+
   /**
    * True only when initialize() completed AND this SDK's tracer provider actually won
    * the global OpenTelemetry registration. False when never initialized, after
@@ -161,6 +199,10 @@ export class TraceRoot {
       DEFAULT_BASE_URL
     ).replace(/\/$/, '');
 
+    // Expose to the offline-eval module (pull/report reuse the same credentials).
+    _apiKey = apiKey;
+    _baseUrl = baseUrl;
+
     const sdkHeaders: Record<string, string> = {
       'x-traceroot-sdk-name': SDK_NAME,
       'x-traceroot-sdk-version': SDK_VERSION,
@@ -201,6 +243,11 @@ export class TraceRoot {
       gitRepo ??= autoGit.gitRepo;
       gitRef ??= autoGit.gitRef;
     }
+
+    // Persist the resolved git context so eval run provenance reuses exactly what was
+    // initialized here (not only what it can independently re-derive from env/.git).
+    _gitRepo = gitRepo;
+    _gitRef = gitRef;
 
     // Warm git-root cache for per-span source paths (cached/idempotent).
     getGitRoot();
@@ -338,6 +385,17 @@ export class TraceRoot {
       context.disable();
       propagation.disable();
     }
+  }
+
+  /** @internal Drop resolved credentials so no reporting transport can be built. The
+   *  local-only eval runner uses this (mirroring traceroot-py resetting its client) to
+   *  guarantee a local run never uploads on ambient credentials. */
+  static _clearCredentials(): void {
+    _apiKey = undefined;
+    // undefined (not the hard default) so a later resolveCredentials() still honors the
+    // TRACEROOT_HOST_URL env fallback — matching the module-load invariant above.
+    _baseUrl = undefined;
+    _isInitialized = false;
   }
 }
 
