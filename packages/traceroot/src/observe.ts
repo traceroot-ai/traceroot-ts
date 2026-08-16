@@ -1,9 +1,23 @@
 // src/observe.ts
-import { context, SpanStatusCode, trace } from '@opentelemetry/api';
+import {
+  context,
+  Context,
+  ROOT_CONTEXT,
+  Span as OtelSpan,
+  SpanStatusCode,
+  trace,
+} from '@opentelemetry/api';
 import { OUTPUT_VALUE } from '@arizeai/openinference-semantic-conventions';
 import { applyCommonAttributes, trySerialize } from './attributes';
 import { _isGlobalAutoInitSuppressed } from './spans';
 import { ObserveOptions } from './types';
+import {
+  assertValidTraceId,
+  shouldForceTraceId,
+  warnIfForcingFailed,
+  withForcedTraceId,
+} from './trace-id';
+import { assertValidProjectId, contextWithProjectId, shouldAttachProjectId } from './project-id';
 
 // Cached once after the first call; the tracer name never changes.
 let _tracer: ReturnType<typeof trace.getTracer> | undefined;
@@ -64,6 +78,8 @@ export function observe<A extends unknown[], T>(
   ...args: A
 ): Promise<T> | AsyncGenerator<T> {
   const name = options.name ?? (fn.name || 'anonymous');
+  if (options.traceId !== undefined) assertValidTraceId(options.traceId);
+  if (options.projectId !== undefined) assertValidProjectId(options.projectId);
   _tracer ??= trace.getTracer('traceroot-ts');
 
   if (isAsyncGeneratorFunction(fn)) {
@@ -85,8 +101,18 @@ async function _observeRegular<A extends unknown[], T>(
     if (!TraceRoot.isInitialized()) TraceRoot.initialize();
   }
   _tracer ??= trace.getTracer('traceroot-ts');
+  const tracer = _tracer;
+  const forcedId = options.traceId;
+  // `undefined` when absent OR gated off (public mode) — a plain const so the
+  // narrowing survives into the closure below.
+  const attachedProjectId =
+    options.projectId !== undefined && shouldAttachProjectId(options.projectId)
+      ? options.projectId
+      : undefined;
+  const withProjectId = (base: Context): Context =>
+    attachedProjectId !== undefined ? contextWithProjectId(base, attachedProjectId) : base;
 
-  return _tracer.startActiveSpan(name, async (span) => {
+  const run = async (span: OtelSpan) => {
     if (!span.isRecording()) {
       if (!_hasWarnedUninit) {
         _hasWarnedUninit = true;
@@ -118,7 +144,24 @@ async function _observeRegular<A extends unknown[], T>(
     } finally {
       span.end();
     }
-  });
+  };
+
+  if (forcedId !== undefined && shouldForceTraceId(forcedId)) {
+    // Force the id around span CREATION only, then run the callback inside the span's
+    // context. Wrapping the whole callback would leave the forced id visible (via
+    // AsyncLocalStorage, which survives await) to any root a user creates inside fn.
+    // withProjectId(ROOT_CONTEXT) base: ROOT_CONTEXT so no ambient span parents this
+    // root; withProjectId so the root and its descendants carry the project attribution.
+    const span = withForcedTraceId(forcedId, () =>
+      tracer.startSpan(name, undefined, withProjectId(ROOT_CONTEXT)),
+    );
+    warnIfForcingFailed(forcedId, span);
+    return context.with(trace.setSpan(withProjectId(ROOT_CONTEXT), span), () => run(span));
+  }
+  if (attachedProjectId !== undefined) {
+    return tracer.startActiveSpan(name, {}, withProjectId(context.active()), run);
+  }
+  return tracer.startActiveSpan(name, run);
 }
 
 /**
@@ -136,7 +179,23 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
     if (!TraceRoot.isInitialized()) TraceRoot.initialize();
   }
   _tracer ??= trace.getTracer('traceroot-ts');
-  const span = _tracer.startSpan(name);
+  const tracer = _tracer;
+  const forcedId = options.traceId;
+  const attachedProjectId =
+    options.projectId !== undefined && shouldAttachProjectId(options.projectId)
+      ? options.projectId
+      : undefined;
+  const withProjectId = (base: Context): Context =>
+    attachedProjectId !== undefined ? contextWithProjectId(base, attachedProjectId) : base;
+  const force = forcedId !== undefined && shouldForceTraceId(forcedId);
+  const span = force
+    ? withForcedTraceId(forcedId, () =>
+        tracer.startSpan(name, undefined, withProjectId(ROOT_CONTEXT)),
+      )
+    : attachedProjectId !== undefined
+      ? tracer.startSpan(name, undefined, withProjectId(context.active()))
+      : tracer.startSpan(name);
+  if (force) warnIfForcingFailed(forcedId, span);
 
   if (!span.isRecording()) {
     if (!_hasWarnedUninit) {
@@ -156,7 +215,10 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
   // We must wrap each .next() call in context.with() because AsyncLocalStorage
   // does not preserve context across generator yield boundaries when resumed
   // from outside the original run scope.
-  const spanCtx = trace.setSpan(context.active(), span);
+  // Carry the project id into the children's context too — the generator's span
+  // context is rebuilt from context.active(), which does not include the value
+  // the root was started under.
+  const spanCtx = trace.setSpan(withProjectId(context.active()), span);
   const innerGen = fn(...args);
 
   const collected: T[] = [];

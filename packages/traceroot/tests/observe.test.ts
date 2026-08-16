@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { SpanStatusCode } from '@opentelemetry/api';
+import { context, propagation, SpanStatusCode, trace } from '@opentelemetry/api';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { observe } from '../src/observe';
 import { updateCurrentSpan } from '../src/context';
-import { _resetForTesting } from '../src/traceroot';
+import { _resetForTesting, TraceRoot } from '../src/traceroot';
+import { ContextIdGenerator } from '../src/trace-id';
 
 // Attribute keys
 const SPAN_KIND_ATTR = 'openinference.span.kind';
@@ -324,5 +325,115 @@ describe('observe()', () => {
       process.env['TRACEROOT_API_KEY'] = prev;
       _resetForTesting();
     }
+  });
+});
+
+describe('observe() trace-id forcing', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+  const A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+  beforeEach(() => {
+    exporter = new InMemorySpanExporter();
+    // Forcing generator must be on the globally registered provider; initialize()
+    // below only flips internal-mode state (its register() is a silent no-op).
+    provider = new NodeTracerProvider({ idGenerator: new ContextIdGenerator() });
+    provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+    provider.register();
+  });
+
+  afterEach(async () => {
+    await provider.shutdown();
+    exporter.reset();
+    _resetForTesting();
+    trace.disable();
+    context.disable();
+    propagation.disable();
+  });
+
+  it('internal mode: forces the root id; root exports with no parent', async () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    await observe({ name: 'run', traceId: A }, async () => 'ok');
+    const root = exporter.getFinishedSpans().find((s) => s.name === 'run');
+    assert.ok(root);
+    assert.equal(root.spanContext().traceId, A);
+    assert.equal(root.parentSpanId, undefined);
+  });
+
+  it('concurrency: interleaved forced observe() calls keep their own ids', async () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    const mk = (id: string) =>
+      observe({ name: `run-${id}`, traceId: id }, async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        return id;
+      });
+    await Promise.all([mk(A), mk(B)]);
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.find((s) => s.name === `run-${A}`)?.spanContext().traceId, A);
+    assert.equal(spans.find((s) => s.name === `run-${B}`)?.spanContext().traceId, B);
+  });
+
+  it('forces the trace id for async-generator functions too', async () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    async function* gen(): AsyncGenerator<number> {
+      yield 1;
+      yield 2;
+    }
+    const items: number[] = [];
+    for await (const v of observe({ name: 'gen-run', traceId: A }, gen)) {
+      items.push(v);
+    }
+    assert.deepEqual(items, [1, 2]);
+    const root = exporter.getFinishedSpans().find((s) => s.name === 'gen-run');
+    assert.ok(root);
+    assert.equal(root.spanContext().traceId, A);
+    assert.equal(root.parentSpanId, undefined);
+  });
+
+  it('public mode: warns and does not force', async () => {
+    const messages: string[] = [];
+    const restore = console.warn;
+    console.warn = (...a: unknown[]) => {
+      messages.push(a.map(String).join(' '));
+    };
+    try {
+      TraceRoot.initialize({ apiKey: 'k', disableBatch: true });
+      await observe({ name: 'run', traceId: A }, async () => 'ok');
+    } finally {
+      console.warn = restore;
+    }
+    const root = exporter.getFinishedSpans().find((s) => s.name === 'run');
+    assert.ok(root);
+    assert.notEqual(root.spanContext().traceId, A);
+    assert.ok(messages.some((m) => m.includes('internal export mode')));
+  });
+
+  it('throws synchronously on a malformed forced id (regular fn)', () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    assert.throws(() => observe({ name: 'run', traceId: 'bad' }, async () => 'ok'), TypeError);
+  });
+
+  it('throws synchronously on a malformed forced id (async-generator fn)', () => {
+    TraceRoot.initialize({
+      disableBatch: true,
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    async function* gen(): AsyncGenerator<number> {
+      yield 1;
+    }
+    assert.throws(() => observe({ name: 'gen', traceId: 'bad' }, gen), TypeError);
   });
 });

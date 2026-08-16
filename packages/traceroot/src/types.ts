@@ -45,6 +45,22 @@ export interface ObserveOptions {
    * Equivalent to calling updateCurrentTrace({ userId }) inside fn.
    */
   userId?: string;
+  /**
+   * Force this root span's trace id to an explicit lowercase 32-hex string.
+   * Honored ONLY in internal export mode; ignored (with a warning) otherwise.
+   * Malformed ids throw synchronously.
+   */
+  traceId?: string;
+  /**
+   * Attribute this span's whole subtree to a project: every descendant span —
+   * including third-party auto-instrumented spans started in the active context —
+   * is stamped with `traceroot.project_id`. Intended for roots (pair with `traceId`);
+   * under an ambient active span the value applies from this span downward, which
+   * splits the trace's project routing — avoid that unless it is exactly what you
+   * mean. Honored ONLY in internal export mode; ignored (with a warning) otherwise.
+   * Malformed values throw synchronously.
+   */
+  projectId?: string;
 }
 
 export interface InitializeOptions {
@@ -112,6 +128,34 @@ export interface InitializeOptions {
    * then auto-detected via `git rev-parse HEAD`.
    */
   gitRef?: string;
+  /**
+   * Attributes stamped on EVERY span (root and children), applied at span start so
+   * they survive any batch composition. Reserve the `traceroot.*` namespace.
+   * e.g. { 'traceroot.source': 'detector' }.
+   */
+  globalAttributes?: Record<string, string | number | boolean>;
+  /**
+   * Internal / trusted export mode. When set, spans export to `baseUrl + path` with
+   * the project id in an `X-Project-Id` header only when a process-default projectId
+   * is configured, plus the given headers, instead of the public route + Bearer apiKey.
+   * Presence of this option also unlocks deterministic trace-id forcing (see `traceId`
+   * on ObserveOptions/StartSpanOptions). Leave unset for normal (public) operation.
+   */
+  internalExport?: {
+    /** Ingest path appended to baseUrl, e.g. '/api/v1/internal/traces'. Must start with '/'. */
+    path: string;
+    /**
+     * Optional process-default project id, sent as the `X-Project-Id` header.
+     * The server uses it only as a request-level fallback for spans lacking the
+     * per-span attribute. Prefer per-root attribution via the `projectId` option
+     * on observe()/startSpan(); leave this unset when every root sets its own.
+     * When this is unset, spans that end up with no per-span project id are dropped
+     * at export (with a one-time warning) rather than guessed.
+     */
+    projectId?: string;
+    /** Extra headers, e.g. { 'X-Internal-Secret': '...' }. Auth-only by convention. */
+    headers?: Record<string, string>;
+  };
 }
 
 /** LLM token usage. Known fields map to OpenInference token-count keys;
@@ -142,6 +186,22 @@ export interface StartSpanOptions {
   modelParameters?: Record<string, unknown>;
   /** Arbitrary span attributes (see {@link SpanUpdate.attributes}). */
   attributes?: Record<string, string | number | boolean>;
+  /**
+   * Force this root span's trace id to an explicit lowercase 32-hex string.
+   * Honored ONLY in internal export mode; ignored (with a warning) otherwise.
+   * Starts a root — mutually exclusive with `parent` (throws if both are given).
+   * Malformed ids throw.
+   */
+  traceId?: string;
+  /**
+   * Attribute this root and its descendants to a project (`traceroot.project_id`
+   * on every span). Honored ONLY in internal export mode; ignored (with a warning)
+   * otherwise. Applies to a new root — mutually exclusive with `parent` (throws if
+   * both are given); children inherit it. Under an ambient active span the value
+   * applies from this span downward, which splits the trace's project routing —
+   * avoid that unless it is exactly what you mean. Malformed values throw.
+   */
+  projectId?: string;
   /** Explicit parent handle. Default: the current active span. */
   parent?: import('./spans').Span;
 }

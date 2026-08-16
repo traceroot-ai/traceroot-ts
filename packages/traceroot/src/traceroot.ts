@@ -14,7 +14,7 @@ import {
   OpenInferenceSimpleSpanProcessor,
 } from '@arizeai/openinference-vercel';
 import { InitializeOptions } from './types';
-import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor } from './processor';
+import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor, _resetProcessorState } from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
@@ -25,10 +25,13 @@ import {
   gitContextFromFiles,
   _resetGitContextCache,
 } from './git_context';
+import { ContextIdGenerator, _resetTraceIdState, _setInternalMode } from './trace-id';
+import { assertValidProjectId, _resetProjectIdState } from './project-id';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
 let _isInitialized = false;
+let _tracingActive = false;
 let _provider: NodeTracerProvider | undefined;
 // Resolved on initialize() so the offline-eval module can reach the same credentials
 // (parity with the Python client that eval's _resolve_credentials reads).
@@ -40,6 +43,73 @@ let _baseUrl: string | undefined;
 // through initialization even on packaged deployments with no .git to re-derive from.
 let _gitRepo: string | undefined;
 let _gitRef: string | undefined;
+let _exportTarget: ExportTarget | undefined;
+
+export interface ExportTarget {
+  url: string;
+  headers: Record<string, string>;
+  internal: boolean;
+}
+
+/**
+ * Resolve the OTLP export URL + headers. Public mode targets the public traces route
+ * with Bearer auth; internal mode targets the bare baseUrl+path with the project id in
+ * an X-Project-Id header only when a process-default projectId is configured (no
+ * Authorization; a caller-supplied X-Project-Id overrides the option). SDK identity
+ * headers always win on collision with caller-supplied headers.
+ */
+export function resolveExportTarget(
+  baseUrl: string,
+  apiKey: string | undefined,
+  sdkHeaders: Record<string, string>,
+  internalExport: InitializeOptions['internalExport'],
+): ExportTarget {
+  if (internalExport) {
+    // The OTLP exporter strips query strings from its endpoint URL, so the
+    // project id travels as a header (the route accepts X-Project-Id). It is a
+    // request-level fallback only — per-span attribution is primary — so when no
+    // default is configured, no header is sent at all.
+    return {
+      url: `${baseUrl}${internalExport.path}`,
+      headers: {
+        ...(internalExport.projectId !== undefined
+          ? { 'X-Project-Id': internalExport.projectId }
+          : {}),
+        ...(internalExport.headers ?? {}),
+        ...sdkHeaders,
+      },
+      internal: true,
+    };
+  }
+  const headers = { ...sdkHeaders };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+  return { url: `${baseUrl}/api/v1/public/traces`, headers, internal: false };
+}
+
+/** @internal — the target resolved by the last initialize(); for tests only. */
+export function _getExportTargetForTesting(): ExportTarget | undefined {
+  return _exportTarget;
+}
+
+/**
+ * Decide whether unattributed spans should be dropped at export. Only when internal
+ * mode has no request-level fallback at all: no process-default projectId AND no
+ * caller-supplied X-Project-Id header (matched case-insensitively — HTTP header
+ * names are case-insensitive, and a caller may spell it however they like via
+ * `internalExport.headers`) — that header is exactly the same fallback the
+ * process-default projectId would have produced, so it must gate the drop the
+ * same way.
+ */
+export function shouldDropUnattributed(
+  internal: boolean,
+  internalExport: InitializeOptions['internalExport'],
+): boolean {
+  if (!internal || internalExport?.projectId !== undefined) return false;
+  const hasCallerProjectHeader = Object.keys(internalExport?.headers ?? {}).some(
+    (h) => h.toLowerCase() === 'x-project-id',
+  );
+  return !hasCallerProjectHeader;
+}
 
 export class TraceRoot {
   private constructor() {}
@@ -76,6 +146,17 @@ export class TraceRoot {
     };
   }
 
+  /**
+   * True only when initialize() completed AND this SDK's tracer provider actually won
+   * the global OpenTelemetry registration. False when never initialized, after
+   * shutdown(), or when another provider was already registered and ours was rejected
+   * (spans flow elsewhere and trace-id forcing does not take effect). Lets callers
+   * detect a lost registration directly instead of probing span behavior.
+   */
+  static isTracingActive(): boolean {
+    return _isInitialized && _tracingActive;
+  }
+
   static initialize(options: InitializeOptions = {}): void {
     const enabled = options.enabled ?? process.env['TRACEROOT_ENABLED'] !== 'false';
     if (!enabled) {
@@ -87,8 +168,14 @@ export class TraceRoot {
       return;
     }
 
+    if (options.internalExport && !options.internalExport.path.startsWith('/')) {
+      throw new TypeError(
+        `[TraceRoot] internalExport.path must start with '/', got: ${JSON.stringify(options.internalExport.path)}`,
+      );
+    }
+
     const apiKey = options.apiKey ?? process.env['TRACEROOT_API_KEY'];
-    if (!apiKey) {
+    if (!apiKey && !options.internalExport) {
       console.warn(
         '[TraceRoot] No API key provided. Set TRACEROOT_API_KEY env var or pass apiKey to initialize(). ' +
           'Spans will be emitted but export will fail.',
@@ -116,15 +203,15 @@ export class TraceRoot {
     _apiKey = apiKey;
     _baseUrl = baseUrl;
 
-    const headers: Record<string, string> = {
+    const sdkHeaders: Record<string, string> = {
       'x-traceroot-sdk-name': SDK_NAME,
       'x-traceroot-sdk-version': SDK_VERSION,
     };
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    const target = resolveExportTarget(baseUrl, apiKey, sdkHeaders, options.internalExport);
 
     const exporter = new OTLPTraceExporter({
-      url: `${baseUrl}/api/v1/public/traces`,
-      headers,
+      url: target.url,
+      headers: target.headers,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       compression: 'gzip' as any,
     });
@@ -178,6 +265,10 @@ export class TraceRoot {
       );
     }
 
+    if (options.internalExport?.projectId !== undefined) {
+      assertValidProjectId(options.internalExport.projectId);
+    }
+
     // Flush/batch tuning — env vars take precedence over SDK defaults.
     const flushIntervalSec = Number(
       process.env['TRACEROOT_FLUSH_INTERVAL'] || DEFAULT_FLUSH_INTERVAL_SEC,
@@ -200,29 +291,100 @@ export class TraceRoot {
           },
         });
 
-    _provider = new NodeTracerProvider();
+    _provider = new NodeTracerProvider(
+      target.internal ? { idGenerator: new ContextIdGenerator() } : {},
+    );
     _provider.addSpanProcessor(
-      new TraceRootSpanProcessor(innerProcessor, { environment, gitRepo, gitRef }),
+      new TraceRootSpanProcessor(innerProcessor, {
+        environment,
+        gitRepo,
+        gitRef,
+        globalAttributes: options.globalAttributes,
+        dropSpansWithoutProjectId: shouldDropUnattributed(target.internal, options.internalExport),
+      }),
     );
     _provider.register();
 
-    wireInstrumentations(options.instrumentModules);
+    // register() calls trace.setGlobalTracerProvider() internally, which is a no-op
+    // (logs via diag, returns false — never throws) if another OTel provider was
+    // already registered. Detect that by checking whether our provider actually became
+    // the global delegate: if not, spans flow through the other provider and trace-id
+    // forcing silently does nothing. Surface it loudly and record it for isTracingActive().
+    const globalProvider = trace.getTracerProvider();
+    const delegate =
+      'getDelegate' in globalProvider &&
+      typeof (globalProvider as { getDelegate: () => unknown }).getDelegate === 'function'
+        ? (globalProvider as { getDelegate: () => unknown }).getDelegate()
+        : globalProvider;
+    _tracingActive = delegate === _provider;
+    if (!_tracingActive) {
+      console.error(
+        '[TraceRoot] tracer-provider registration was rejected: another OpenTelemetry ' +
+          'provider is already registered globally (registered before TraceRoot.initialize()). ' +
+          'Spans flow through that provider and trace-id forcing will not take effect. ' +
+          'Initialize TraceRoot before any other OpenTelemetry SDK.',
+      );
+    }
 
+    // Wire instrumentations under a rollback guard: if this throws, the global is
+    // already taken by our provider but the init did not complete. Undo the
+    // registration and drop the provider so the NEXT initialize() starts clean —
+    // otherwise it would build a second provider whose register() loses to this one,
+    // leaving flush()/shutdown() operating on a provider that never received spans
+    // (silent data loss).
+    try {
+      wireInstrumentations(options.instrumentModules);
+    } catch (err) {
+      trace.disable();
+      context.disable();
+      propagation.disable();
+      void _provider.shutdown().catch(() => {});
+      _provider = undefined;
+      _tracingActive = false;
+      throw err;
+    }
+
+    // Flip trusted-mode state only now that every fallible step above has
+    // succeeded — a failed init must not leave forced-trace-id behavior
+    // (or a stale _exportTarget) enabled while isInitialized() is false.
+    _exportTarget = target;
+    _setInternalMode(target.internal);
     _isInitialized = true;
     process.once('beforeExit', () => {
       void _provider?.forceFlush();
     });
   }
 
+  /**
+   * Flush buffered spans to the exporter. In batched mode (the default) this rejects
+   * if an in-flight export failed (e.g. the ingest route returned an error status) —
+   * callers whose work must never fail on a bad emit should catch the rejection
+   * themselves. With `disableBatch` the simple processor routes export failures to
+   * the OTel global error handler instead, and flush() resolves.
+   */
   static async flush(): Promise<void> {
     await _provider?.forceFlush();
   }
 
   static async shutdown(): Promise<void> {
-    await _provider?.shutdown();
-    _isInitialized = false;
-    _provider = undefined;
-    _resetObserveState();
+    try {
+      await _provider?.shutdown();
+    } finally {
+      // Reset even when shutdown() rejects (e.g. a flush failure) — otherwise
+      // the SDK is left claiming to be initialized with internal mode still on.
+      _isInitialized = false;
+      _tracingActive = false;
+      _provider = undefined;
+      _exportTarget = undefined;
+      _setInternalMode(false);
+      _resetObserveState();
+
+      // Release the global tracer/context/propagation registration so a later
+      // initialize() re-registers cleanly instead of losing to this dead provider.
+      trace.disable();
+      context.disable();
+      propagation.disable();
+    }
   }
 
   /** @internal Drop resolved credentials so no reporting transport can be built. The
@@ -240,7 +402,13 @@ export class TraceRoot {
 /** @internal */
 export function _resetForTesting(): void {
   _isInitialized = false;
+  _tracingActive = false;
   _provider = undefined;
+  _exportTarget = undefined;
+  _setInternalMode(false);
+  _resetTraceIdState();
+  _resetProjectIdState();
+  _resetProcessorState();
   _resetObserveState();
   _resetGitContextCache();
   trace.disable();

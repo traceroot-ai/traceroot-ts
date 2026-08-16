@@ -3,8 +3,17 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { TraceRoot, _resetForTesting } from '../src/traceroot';
+import {
+  TraceRoot,
+  _resetForTesting,
+  resolveExportTarget,
+  _getExportTargetForTesting,
+  shouldDropUnattributed,
+} from '../src/traceroot';
 import { TraceRootSpanProcessor } from '../src/processor';
+import { isInternalMode, withForcedTraceId } from '../src/trace-id';
+import { trace } from '@opentelemetry/api';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
 describe('TraceRoot.initialize()', () => {
   afterEach(() => {
@@ -197,6 +206,22 @@ describe('TraceRoot.initialize()', () => {
   });
 });
 
+describe('initialize() internalExport projectId validation', () => {
+  it('throws TypeError on an empty-string projectId', () => {
+    try {
+      assert.throws(
+        () =>
+          TraceRoot.initialize({
+            internalExport: { path: '/api/v1/internal/traces', projectId: '' },
+          }),
+        TypeError,
+      );
+    } finally {
+      _resetForTesting();
+    }
+  });
+});
+
 // Shared fixture for TraceRootSpanProcessor unit tests
 function makeProcessorFixture() {
   const attributes: Record<string, unknown> = {};
@@ -243,5 +268,302 @@ describe('TraceRootSpanProcessor', () => {
     const processor = new TraceRootSpanProcessor(inner);
     processor.onStart(span, ctx);
     assert.equal(Object.prototype.hasOwnProperty.call(attributes, 'deployment.environment'), false);
+  });
+
+  it('stamps traceroot.environment alongside deployment.environment when environment is set', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner, { environment: 'prod' });
+    processor.onStart(span, ctx);
+    assert.equal(attributes['deployment.environment'], 'prod');
+    assert.equal(attributes['traceroot.environment'], 'prod');
+  });
+
+  it('does not stamp traceroot.environment when environment is not set', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner);
+    processor.onStart(span, ctx);
+    assert.equal(Object.prototype.hasOwnProperty.call(attributes, 'traceroot.environment'), false);
+  });
+
+  it('stamps every key of globalAttributes on the span', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner, {
+      globalAttributes: { 'traceroot.source': 'detector', 'traceroot.tier': 1 },
+    });
+    processor.onStart(span, ctx);
+    assert.equal(attributes['traceroot.source'], 'detector');
+    assert.equal(attributes['traceroot.tier'], 1);
+  });
+
+  it('does not stamp global attributes when globalAttributes is not set', () => {
+    const { span, inner, attributes, ctx } = makeProcessorFixture();
+    const processor = new TraceRootSpanProcessor(inner);
+    processor.onStart(span, ctx);
+    assert.equal(Object.prototype.hasOwnProperty.call(attributes, 'traceroot.source'), false);
+  });
+});
+
+describe('resolveExportTarget()', () => {
+  const sdkHeaders = { 'x-traceroot-sdk-name': 'traceroot-ts', 'x-traceroot-sdk-version': '9.9.9' };
+
+  it('public mode: public traces path + Bearer auth', () => {
+    const t = resolveExportTarget('https://app.traceroot.ai', 'key-123', sdkHeaders, undefined);
+    assert.equal(t.url, 'https://app.traceroot.ai/api/v1/public/traces');
+    assert.equal(t.headers['Authorization'], 'Bearer key-123');
+    assert.equal(t.internal, false);
+  });
+
+  it('public mode without an apiKey: no Authorization header', () => {
+    const t = resolveExportTarget('https://app.traceroot.ai', undefined, sdkHeaders, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(t.headers, 'Authorization'), false);
+    assert.equal(t.internal, false);
+  });
+
+  it('internal mode: bare baseUrl+path with X-Project-Id header, no Authorization', () => {
+    // The OTLP exporter strips query strings from its endpoint URL, so the URL
+    // must stay query-free and the project id must ride as a header.
+    const t = resolveExportTarget('https://internal.example', 'ignored', sdkHeaders, {
+      path: '/api/v1/internal/traces',
+      projectId: 'proj_123',
+      headers: { 'X-Internal-Secret': 's3cr3t' },
+    });
+    assert.equal(t.url, 'https://internal.example/api/v1/internal/traces');
+    assert.equal(t.url.includes('?'), false);
+    assert.equal(t.headers['X-Project-Id'], 'proj_123');
+    assert.equal(t.headers['X-Internal-Secret'], 's3cr3t');
+    assert.equal(t.headers['x-traceroot-sdk-name'], 'traceroot-ts');
+    assert.equal(Object.prototype.hasOwnProperty.call(t.headers, 'Authorization'), false);
+    assert.equal(t.internal, true);
+  });
+
+  it('caller-supplied X-Project-Id overrides the projectId option (pinned ordering)', () => {
+    const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
+      path: '/i',
+      projectId: 'from-option',
+      headers: { 'X-Project-Id': 'from-headers' },
+    });
+    assert.equal(t.headers['X-Project-Id'], 'from-headers');
+  });
+
+  it('SDK identity headers win over caller-supplied collisions', () => {
+    const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
+      path: '/i',
+      projectId: 'p',
+      headers: { 'x-traceroot-sdk-name': 'imposter' },
+    });
+    assert.equal(t.headers['x-traceroot-sdk-name'], 'traceroot-ts');
+  });
+
+  it('preserves multiple custom headers alongside SDK headers', () => {
+    const t = resolveExportTarget('https://h', undefined, sdkHeaders, {
+      path: '/i',
+      projectId: 'p',
+      headers: { 'X-Internal-Secret': 's', 'X-Trace-Origin': 'worker', 'X-Region': 'us-east-1' },
+    });
+    assert.equal(t.headers['X-Internal-Secret'], 's');
+    assert.equal(t.headers['X-Trace-Origin'], 'worker');
+    assert.equal(t.headers['X-Region'], 'us-east-1');
+    assert.equal(t.headers['x-traceroot-sdk-version'], '9.9.9');
+  });
+
+  describe('resolveExportTarget without a default projectId', () => {
+    it('omits X-Project-Id when internalExport.projectId is unset', () => {
+      const target = resolveExportTarget(
+        'https://app.example.com',
+        undefined,
+        { 'x-traceroot-sdk-name': 'traceroot-ts' },
+        { path: '/api/v1/internal/traces', headers: { 'X-Internal-Secret': 's' } },
+      );
+      assert.equal(target.internal, true);
+      assert.equal(Object.prototype.hasOwnProperty.call(target.headers, 'X-Project-Id'), false);
+      assert.equal(target.headers['X-Internal-Secret'], 's');
+    });
+
+    it('still sends X-Project-Id when configured', () => {
+      const target = resolveExportTarget(
+        'https://app.example.com',
+        undefined,
+        {},
+        { path: '/api/v1/internal/traces', projectId: 'proj-default' },
+      );
+      assert.equal(target.headers['X-Project-Id'], 'proj-default');
+    });
+  });
+});
+
+describe('shouldDropUnattributed()', () => {
+  it('true when internal, no process-default projectId, and no fallback header', () => {
+    assert.equal(shouldDropUnattributed(true, { path: '/i' }), true);
+  });
+
+  it('false when a process-default projectId is configured', () => {
+    assert.equal(shouldDropUnattributed(true, { path: '/i', projectId: 'proj-1' }), false);
+  });
+
+  it('false when the caller supplies an X-Project-Id fallback header (any casing)', () => {
+    assert.equal(
+      shouldDropUnattributed(true, { path: '/i', headers: { 'X-Project-Id': 'proj-1' } }),
+      false,
+    );
+    assert.equal(
+      shouldDropUnattributed(true, { path: '/i', headers: { 'x-project-id': 'proj-1' } }),
+      false,
+    );
+  });
+
+  it('false when not in internal mode', () => {
+    assert.equal(shouldDropUnattributed(false, { path: '/i' }), false);
+    assert.equal(shouldDropUnattributed(false, undefined), false);
+  });
+});
+
+describe('internal export mode init', () => {
+  const FORCED = '11111111111111111111111111111111';
+
+  afterEach(() => {
+    _resetForTesting();
+  });
+
+  it('isInternalMode() is false in public mode', () => {
+    TraceRoot.initialize({ apiKey: 'k', disableBatch: true });
+    assert.equal(isInternalMode(), false);
+  });
+
+  it('isInternalMode() is true after internal init, false after reset', () => {
+    TraceRoot.initialize({
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'proj_1' },
+    });
+    assert.equal(isInternalMode(), true);
+    _resetForTesting();
+    assert.equal(isInternalMode(), false);
+  });
+
+  it('wires the resolved target into the exporter config (public regression + internal)', () => {
+    TraceRoot.initialize({ apiKey: 'k', disableBatch: true });
+    let t = _getExportTargetForTesting();
+    assert.ok(t);
+    assert.ok(t.url.endsWith('/api/v1/public/traces'));
+    assert.equal(t.headers['Authorization'], 'Bearer k');
+    _resetForTesting();
+
+    TraceRoot.initialize({
+      internalExport: {
+        path: '/api/v1/internal/traces',
+        projectId: 'proj_1',
+        headers: { 'X-Internal-Secret': 's' },
+      },
+    });
+    t = _getExportTargetForTesting();
+    assert.ok(t);
+    assert.ok(t.url.endsWith('/api/v1/internal/traces'));
+    assert.equal(t.headers['X-Project-Id'], 'proj_1');
+    assert.equal(t.headers['X-Internal-Secret'], 's');
+    assert.equal(Object.prototype.hasOwnProperty.call(t.headers, 'Authorization'), false);
+  });
+
+  it('does not warn about a missing API key in internal mode', () => {
+    const messages: string[] = [];
+    const restore = console.warn;
+    console.warn = (...a: unknown[]) => {
+      messages.push(a.map(String).join(' '));
+    };
+    try {
+      TraceRoot.initialize({
+        internalExport: { path: '/api/v1/internal/traces', projectId: 'proj_1' },
+      });
+    } finally {
+      console.warn = restore;
+    }
+    assert.equal(
+      messages.some((m) => m.includes('No API key')),
+      false,
+    );
+  });
+
+  it('throws TypeError when internalExport.path is missing its leading slash, leaving no state behind', () => {
+    try {
+      assert.throws(() => {
+        TraceRoot.initialize({
+          internalExport: { path: 'api/v1/internal/traces', projectId: 'p' },
+        });
+      }, TypeError);
+      assert.equal(TraceRoot.isInitialized(), false);
+      assert.equal(isInternalMode(), false);
+    } finally {
+      _resetForTesting();
+    }
+  });
+
+  it('installs the forcing generator in internal mode only (defense in depth)', () => {
+    // Internal init: the globally registered provider carries ContextIdGenerator,
+    // so a root created inside a forced scope gets the forced id. Default batching
+    // means these spans are buffered and never exported — no network.
+    TraceRoot.initialize({
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'p' },
+    });
+    const forced = withForcedTraceId(FORCED, () => trace.getTracer('t').startSpan('root'));
+    assert.equal(forced.spanContext().traceId, FORCED);
+    forced.end();
+    _resetForTesting();
+
+    // Public init: no ContextIdGenerator — even a bypassed gate cannot force.
+    TraceRoot.initialize({ apiKey: 'k' });
+    const unforced = withForcedTraceId(FORCED, () => trace.getTracer('t').startSpan('root'));
+    assert.notEqual(unforced.spanContext().traceId, FORCED);
+    unforced.end();
+  });
+});
+
+describe('TraceRoot.isTracingActive()', () => {
+  afterEach(() => {
+    _resetForTesting();
+  });
+
+  it('is false before any initialize()', () => {
+    assert.equal(TraceRoot.isTracingActive(), false);
+  });
+
+  it('is true after a clean initialize() (no foreign provider)', () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    assert.equal(TraceRoot.isTracingActive(), true);
+  });
+
+  it('is false after shutdown()', async () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    await TraceRoot.shutdown();
+    assert.equal(TraceRoot.isTracingActive(), false);
+  });
+
+  it('reports and warns loudly when another OTel provider already won global registration', () => {
+    const foreign = new NodeTracerProvider();
+    foreign.register();
+
+    const errors: string[] = [];
+    const restore = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.join(' '));
+    };
+    try {
+      TraceRoot.initialize({
+        internalExport: { path: '/x', projectId: 'p' },
+      });
+      assert.equal(TraceRoot.isInitialized(), true);
+      assert.equal(TraceRoot.isTracingActive(), false);
+      assert.equal(errors.length, 1);
+      assert.ok(errors[0].includes('tracer-provider registration was rejected'));
+    } finally {
+      console.error = restore;
+      // _resetForTesting() disables the global registration, releasing both
+      // our provider and the foreign one.
+      _resetForTesting();
+    }
+  });
+
+  it('re-registers cleanly after shutdown() then a second initialize()', async () => {
+    TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+    assert.equal(TraceRoot.isTracingActive(), true);
+    await TraceRoot.shutdown();
+    TraceRoot.initialize({ apiKey: 'test-key-2', disableBatch: true });
+    assert.equal(TraceRoot.isTracingActive(), true);
   });
 });
