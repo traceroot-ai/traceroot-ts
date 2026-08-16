@@ -37,6 +37,12 @@ describe('llmJudge score parsing', () => {
     assert.equal(await value('1.0.'), 1.0);
   });
 
+  it('accepts leading-dot decimals (.5 is 0.5, not 5.0; sign kept)', async () => {
+    assert.equal(await value('.5'), 0.5);
+    assert.equal(await value('-.5'), -0.5);
+    assert.equal(await value('.25'), 0.25);
+  });
+
   it('accepts a single unambiguous number in prose', async () => {
     assert.equal(await value('The score is 0.8'), 0.8);
   });

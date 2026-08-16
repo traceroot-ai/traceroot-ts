@@ -71,10 +71,33 @@ export interface EvalItemResult {
   durationMs: number | null;
 }
 
+// JSON has no NaN/Infinity: JSON.stringify turns a non-finite score value into `null`, which on
+// reload would masquerade as a legitimate categorical/null score on re-upload. Round-trip a scorer's
+// non-finite result AS non-finite (no pass verdict, excluded from the mean) via explicit string
+// tokens, matching the Python SDK's artifact tokens.
+const _TOKEN_TO_NONFINITE: Record<string, number> = {
+  NaN: Number.NaN,
+  Infinity: Number.POSITIVE_INFINITY,
+  '-Infinity': Number.NEGATIVE_INFINITY,
+};
+
+function scoreValueToJSON(value: unknown): unknown {
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    return Number.isNaN(value) ? 'NaN' : value > 0 ? 'Infinity' : '-Infinity';
+  }
+  return value;
+}
+
+function restoreScoreValue(value: unknown): number | string | boolean {
+  return (
+    typeof value === 'string' && value in _TOKEN_TO_NONFINITE ? _TOKEN_TO_NONFINITE[value] : value
+  ) as number | string | boolean;
+}
+
 function scoreToJSON(s: Score): Record<string, unknown> {
   return {
     name: s.name,
-    value: s.value,
+    value: scoreValueToJSON(s.value),
     comment: s.comment ?? null,
     metadata: s.metadata ?? null,
     version: s.version ?? null,
@@ -103,7 +126,7 @@ function itemFromJSON(d: Record<string, any>): EvalItemResult {
     expected: d.expected ?? null,
     scores: (d.scores ?? []).map((s: any) => ({
       name: s.name,
-      value: s.value,
+      value: restoreScoreValue(s.value),
       comment: s.comment ?? null,
       metadata: s.metadata ?? null,
       version: s.version ?? null,
@@ -361,7 +384,7 @@ export class EvalRunResult {
       expected: null,
       scores: (c.scores ?? []).map((s: any) => ({
         name: s.scorer_name,
-        value: s.value,
+        value: restoreScoreValue(s.value),
         comment: s.explanation ?? null,
         version: s.scorer_version ?? null,
       })),

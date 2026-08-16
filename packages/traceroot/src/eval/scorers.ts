@@ -320,12 +320,16 @@ function renderMessages(messages: JudgeMessage[], ctx: ScorerContext): JudgeMess
  * a single unambiguous number in prose, and otherwise throw -- a malformed/ambiguous response
  * is an isolated scorer error with the raw text preserved, never a wrong silent score.
  */
+// Numeric grammar matching the Python SDK's judge parser: accepts leading-dot decimals (`.5`),
+// signs, and exponents, so `.5` parses as 0.5 (not 5.0) and `-.5` keeps its sign.
+const JUDGE_NUMBER = String.raw`[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?`;
+
 function parseJudgeOutput(text: string, outputType: OutputType): number | string {
   if (outputType === 'classification') return (text ?? '').trim();
   const stripped = (text ?? '').trim();
   const candidate = stripped.replace(/\.+$/, ''); // tolerate a trailing period on an exact answer
-  if (/^-?\d+(?:\.\d+)?$/.test(candidate)) return Number(candidate);
-  const numbers = stripped.match(/-?\d+(?:\.\d+)?/g) ?? [];
+  if (new RegExp(`^${JUDGE_NUMBER}$`).test(candidate)) return Number(candidate);
+  const numbers = stripped.match(new RegExp(JUDGE_NUMBER, 'g')) ?? [];
   if (numbers.length === 1) return Number(numbers[0]);
   throw new Error(
     `llmJudge: expected a single numeric score, found ${numbers.length} in model output: ` +

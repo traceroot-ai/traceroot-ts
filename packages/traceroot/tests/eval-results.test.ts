@@ -89,6 +89,21 @@ describe('EvalRunResult.toJSON', () => {
     assert.equal(reloaded.uploadState.failedResultCount, 3);
   });
 
+  it('a non-finite score round-trips as non-finite, not null or categorical', () => {
+    // JSON.stringify turns a raw NaN into null; a scorer failure would then reload as a null/
+    // categorical score and re-upload as a legitimate metric. It must restore AS non-finite —
+    // excluded from the mean, no pass verdict. (Python parity: test_results.py.)
+    const items = [
+      item('a', [{ name: 'acc', value: Number.NaN }]),
+      item('b', [{ name: 'acc', value: 1 }]),
+    ];
+    const run = makeRunResult('r', items, { status: 'uploaded', dashboardUrl: null });
+    const reloaded = EvalRunResult.fromJSON(JSON.parse(JSON.stringify(run.toJSON())));
+    const v = reloaded.itemResults[0].scores[0].value;
+    assert.ok(typeof v === 'number' && Number.isNaN(v), 'NaN restored as a non-finite number');
+    assert.equal(reloaded.scoreSummary['acc'].mean, 1); // non-finite excluded; only 1 contributes
+  });
+
   it('a run with no dropped results reloads as zero, not undefined', () => {
     const run = makeRunResult('r', [item('a', [{ name: 'acc', value: 1 }])], {
       status: 'uploaded',
