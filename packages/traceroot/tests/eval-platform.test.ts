@@ -29,6 +29,7 @@ function mockBackend(
   opts: {
     current?: string;
     versions?: Record<string, any>;
+    meta?: Record<string, any>;
     apiKey?: string;
     runPath?: string;
     runUrl?: string;
@@ -52,7 +53,11 @@ function mockBackend(
     }
     if (u.match(/\/datasets\/[^/]+$/)) {
       return new Response(
-        JSON.stringify({ name: 'test', current_dataset_version_id: opts.current }),
+        JSON.stringify({
+          name: 'test',
+          current_dataset_version_id: opts.current,
+          ...(opts.meta ?? {}),
+        }),
         { status: 200 },
       );
     }
@@ -133,6 +138,25 @@ describe('pull', () => {
     });
     const ds = await pullDataset('ds_1');
     assert.equal(ds.description, 'weather cases');
+  });
+
+  it('takes the description from the datasets endpoint when the version snapshot omits it', async () => {
+    // The real backend echoes `description` on GET /datasets/{id} but NOT on the version snapshot,
+    // so pullDataset must thread meta.description through — else pull → edit → push blanks it.
+    mockBackend({
+      current: 'dsv_cur',
+      meta: { description: 'from datasets endpoint', key: 'weather' },
+      versions: {
+        dsv_cur: {
+          dataset_id: 'ds_1',
+          dataset_version_id: 'dsv_cur',
+          // no `description` here — mirrors the real version endpoint
+          items: [{ test_case_id: 'c0', input: { i: 0 }, expected: { i: 0 } }],
+        },
+      },
+    });
+    const ds = await pullDataset('ds_1');
+    assert.equal(ds.description, 'from datasets endpoint');
   });
 
   it('missing version raises a clear error', async () => {

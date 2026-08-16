@@ -218,15 +218,22 @@ function recoveredKey(name: string, datasetId: string | undefined): string | und
  * authored locally, even under a display name that is not the key. Only when the platform echoes
  * no key does the name-hash heuristic run.
  */
-function datasetFromVersion(snapshot: any, name: string, key?: string | null): Dataset {
+function datasetFromVersion(
+  snapshot: any,
+  name: string,
+  key?: string | null,
+  description?: string | null,
+): Dataset {
   // Native JSON at the HTTP boundary: the backend already JSON-decodes input/expected
   // before returning them, so the SDK takes the values as-is (no re-decode).
   const datasetId = snapshot.dataset_id ?? undefined;
   // `||`, not `??`: an empty key is no key, and Python resolves this same chain by truthiness.
   const resolvedKey = key || snapshot.key || recoveredKey(name, datasetId) || datasetId;
   // Carry the server-side description through: without it a pull → edit → push round-trip would
-  // publish a new version with `description: null` and silently erase it.
-  const ds = new Dataset(name, snapshot.description ?? null, { key: resolvedKey });
+  // publish a new version with `description: null` and silently erase it. Prefer the description
+  // threaded from the datasets endpoint (the version snapshot may not carry it); fall back to the
+  // snapshot for a bare-version pull. Mirrors py's `description or snapshot.get("description")`.
+  const ds = new Dataset(name, description ?? snapshot.description ?? null, { key: resolvedKey });
   ds.datasetId = datasetId;
   ds.datasetVersionId = snapshot.dataset_version_id ?? undefined;
   for (const item of snapshot.items ?? []) {
@@ -272,9 +279,11 @@ export async function pullDataset(datasetId: string, opts: PullOptions = {}): Pr
   return pullDatasetVersion(versionId, {
     datasetId,
     name: meta.name ?? datasetId,
-    // The dataset response echoes the authoring key (null for datasets that predate the contract
-    // or were authored in the UI); the version endpoint does not carry it.
+    // The dataset response echoes the authoring key + description (null for datasets that predate
+    // the contract or were authored in the UI); the version endpoint carries neither, so thread
+    // them through -- otherwise a pull -> edit -> push blanks the server description.
     key: meta.key ?? null,
+    description: meta.description ?? null,
     apiKey,
     baseUrl,
   });
@@ -289,6 +298,11 @@ export interface PullVersionOptions {
    * result get ids that converge with local authoring.
    */
   key?: string | null;
+  /**
+   * The server-side description, as echoed by `pullDataset` from the datasets endpoint (the version
+   * endpoint does not carry it). Threaded through so a pull → edit → push round-trip does not blank it.
+   */
+  description?: string | null;
   apiKey?: string;
   baseUrl?: string;
 }
@@ -331,6 +345,7 @@ export async function pullDatasetVersion(
     snapshot,
     opts.name ?? returnedDatasetId ?? opts.datasetId ?? versionId,
     opts.key,
+    opts.description,
   );
   ds.datasetVersionId = ds.datasetVersionId ?? versionId;
   ds.datasetId = ds.datasetId ?? opts.datasetId ?? undefined;
