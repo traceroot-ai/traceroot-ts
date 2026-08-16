@@ -119,6 +119,22 @@ describe('pull', () => {
     assert.ok(!calls.some((c) => c.url.endsWith('/dataset-versions/dsv_cur')));
   });
 
+  it('carries the server description through (pull → edit → push must not erase it)', async () => {
+    mockBackend({
+      current: 'dsv_cur',
+      versions: {
+        dsv_cur: {
+          dataset_id: 'ds_1',
+          dataset_version_id: 'dsv_cur',
+          description: 'weather cases',
+          items: [{ test_case_id: 'c0', input: { i: 0 }, expected: { i: 0 } }],
+        },
+      },
+    });
+    const ds = await pullDataset('ds_1');
+    assert.equal(ds.description, 'weather cases');
+  });
+
   it('missing version raises a clear error', async () => {
     mockBackend({ versions: {} });
     await assert.rejects(() => pullDatasetVersion('dsv_missing'), /not found/);

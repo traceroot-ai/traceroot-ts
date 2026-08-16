@@ -51,7 +51,7 @@ export function compareCodePoints(a: string, b: string): number {
 // by a high one. Such a string is not valid Unicode text.
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
-function rejectLoneSurrogate(s: string): void {
+export function rejectLoneSurrogate(s: string): void {
   // Parity with Python `_reject_lone_surrogate`: a lone surrogate cannot be encoded as UTF-8, so
   // Python would raise while hashing it and this SDK would silently hash the escaped form — the two
   // must agree, so reject it explicitly in both.

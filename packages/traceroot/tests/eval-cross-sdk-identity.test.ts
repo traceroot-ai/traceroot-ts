@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { scorer, scorerMetadata } from '../src/eval/scorers';
+import { stableDatasetId, stableCaseId } from '../src/eval/ids';
 import type { ScorerContext } from '../src/eval';
 
 const FIX = JSON.parse(
@@ -76,5 +77,19 @@ describe('cross-SDK case-id identity', () => {
     d.remove(x0.id);
     const x2 = d.add({ q: 'x' });
     assert.notEqual(x2.id, x1.id);
+  });
+});
+
+describe('stable id hashing rejects a lone surrogate key (Python parity)', () => {
+  // Python `key.encode('utf-8')` RAISES on a lone surrogate; Node would silently substitute U+FFFD
+  // and hash that, so the same key yields an id in TS but errors in Python. Reject in both.
+  it('stableDatasetId throws on a lone surrogate key', () => {
+    assert.throws(() => stableDatasetId('x\uD800'), /surrogate/);
+  });
+  it('stableCaseId throws on a lone surrogate dataset key', () => {
+    assert.throws(() => stableCaseId('x\uDC00', '{"q":1}', 0), /surrogate/);
+  });
+  it('a well-formed (paired) surrogate key is fine', () => {
+    assert.ok(stableDatasetId('emoji-\u{1F600}').startsWith('ds_'));
   });
 });

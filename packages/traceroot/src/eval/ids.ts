@@ -7,6 +7,8 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 
+import { rejectLoneSurrogate } from './canonical';
+
 // Crockford base32 (excludes I, L, O, U).
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -43,6 +45,9 @@ export const newRunId = (): string => newId('run');
  *  (upsert on (project, client_dataset_id)) instead of forking a new dataset each run. Must
  *  stay byte-for-byte identical to the Python `stable_dataset_id`. */
 export function stableDatasetId(key: string): string {
+  // A lone surrogate cannot be UTF-8 encoded: Python raises while hashing it, so reject it here too
+  // rather than silently hashing Node's U+FFFD substitution (which would diverge cross-SDK).
+  rejectLoneSurrogate(key);
   const digest = createHash('sha256').update(key, 'utf8').digest('hex');
   return `ds_${digest.slice(0, 26)}`;
 }
@@ -57,6 +62,9 @@ export function stableDatasetId(key: string): string {
  *  disambiguates duplicate inputs (0, 1, ...). `inputCanonical` is the canonical-JSON of the input,
  *  so this stays byte-for-byte identical to the Python `stable_case_id`. */
 export function stableCaseId(datasetKey: string, inputCanonical: string, occurrence = 0): string {
+  // inputCanonical already passed canonicalization; the raw datasetKey has not, so guard it (parity
+  // with Python, which would raise UTF-8-encoding it).
+  rejectLoneSurrogate(datasetKey);
   const digest = createHash('sha256')
     .update(`${datasetKey}\x00${inputCanonical}\x00${occurrence}`, 'utf8')
     .digest('hex');

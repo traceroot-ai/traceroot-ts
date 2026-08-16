@@ -224,7 +224,9 @@ function datasetFromVersion(snapshot: any, name: string, key?: string | null): D
   const datasetId = snapshot.dataset_id ?? undefined;
   // `||`, not `??`: an empty key is no key, and Python resolves this same chain by truthiness.
   const resolvedKey = key || snapshot.key || recoveredKey(name, datasetId) || datasetId;
-  const ds = new Dataset(name, null, { key: resolvedKey });
+  // Carry the server-side description through: without it a pull → edit → push round-trip would
+  // publish a new version with `description: null` and silently erase it.
+  const ds = new Dataset(name, snapshot.description ?? null, { key: resolvedKey });
   ds.datasetId = datasetId;
   ds.datasetVersionId = snapshot.dataset_version_id ?? undefined;
   for (const item of snapshot.items ?? []) {
