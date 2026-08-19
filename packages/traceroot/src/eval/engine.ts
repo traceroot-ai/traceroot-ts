@@ -16,6 +16,7 @@ import {
 import type { Tracer } from '@opentelemetry/api';
 import { context, ROOT_CONTEXT } from '@opentelemetry/api';
 import { evalTracer } from './tracer';
+import { _pushSuppressSpanExport, _popSuppressSpanExport } from '../processor';
 import { Dataset, DatasetSnapshot, DeferredScore, EvalCase, Score, ScorerContext } from './types';
 import {
   EvalItemResult,
@@ -760,11 +761,16 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   let bodyError: unknown;
   // A finalization failure on a CANCELLED run: kept, not thrown, so the cancellation survives.
   let cancelCompletionError: unknown;
-  // While a local run executes, stop any application span (user observe/startSpan, provider
-  // auto-instrumentation, a default-dispatch judge) from lazily bringing up the exporting provider —
-  // local: true promises that nothing leaves the process. Released in the finally below (balanced,
-  // and nestable via the depth counter). A reported run wants the global provider, so it is not touched.
-  if (local) _pushSuppressGlobalAutoInit();
+  // While a local run executes, keep everything in-process: (1) stop any application span (user
+  // observe/startSpan, provider auto-instrumentation, a default-dispatch judge) from lazily bringing
+  // up the exporting provider, and (2) drop export from an ALREADY-initialized provider, whose
+  // auto-instrumented spans would otherwise leak. local: true promises that nothing leaves the
+  // process. Released in the finally below (balanced, nestable via the depth counters). A reported
+  // run wants the global provider, so it is not touched.
+  if (local) {
+    _pushSuppressGlobalAutoInit();
+    _pushSuppressSpanExport();
+  }
   try {
     const raw = await runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
@@ -799,7 +805,10 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     bodyError = err;
     throw err;
   } finally {
-    if (local) _popSuppressGlobalAutoInit();
+    if (local) {
+      _popSuppressGlobalAutoInit();
+      _popSuppressSpanExport();
+    }
     reporter?.finish();
     // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
     // A cancelled run closes 'incomplete', so a registered run is never left orphaned in 'running'.
