@@ -11,9 +11,12 @@ export const SDK_VERSION = version;
 
 let _hasWarnedUnattributedDrop = false;
 
-/** @internal — reset warn-once state between tests. */
+/** @internal — reset warn-once state and the export-suppression depth between tests. */
 export function _resetProcessorState(): void {
   _hasWarnedUnattributedDrop = false;
+  // Reset the scoped-export gate too: a test that leaked a _pushSuppressSpanExport()
+  // (unbalanced push) must not bleed suppression into the next test.
+  _suppressSpanExportDepth = 0;
 }
 
 // --- Scoped export suppression -------------------------------------------------

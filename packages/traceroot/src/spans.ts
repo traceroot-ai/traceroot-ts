@@ -81,8 +81,12 @@ let _hasWarnedUninit = false;
 // While > 0, startSpan()/observe() must NOT lazily initialize the global exporting
 // provider. A local evaluation raises this for the duration of the run so that nested
 // application spans (user startSpan/observe, auto-instrumentation) created during a
-// local eval cannot bring up the OTLP exporter and leak to the network. It has no effect
-// once the app has already initialized tracing itself (see the eval-tracer contract).
+// local eval cannot bring up the OTLP exporter and leak to the network. This guard only
+// covers the *lazy* case; once the app has ALREADY initialized tracing itself, the
+// export-suppression gate in processor.ts (`_pushSuppressSpanExport` / `onEnd`) closes the
+// gap by dropping export from the already-running provider for the run's duration. That
+// gate is process-global, so it currently over-suppresses a concurrent reported run's spans
+// — an accepted, tracked limitation (traceroot-ai/traceroot#1969).
 let _suppressGlobalAutoInitDepth = 0;
 export function _pushSuppressGlobalAutoInit(): void {
   _suppressGlobalAutoInitDepth += 1;
