@@ -46,7 +46,12 @@ describe('basic runs', () => {
       await sleep(0);
       return ctx.output === ctx.expected ? 1 : 0;
     };
-    const result = await evaluateAsync({ name: 'r', dataset: ds(2), task: atask, scorers: [ascore] });
+    const result = await evaluateAsync({
+      name: 'r',
+      dataset: ds(2),
+      task: atask,
+      scorers: [ascore],
+    });
     assert.equal(result.scoreSummary.ascore.mean, 1);
   });
 
