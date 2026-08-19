@@ -16,7 +16,7 @@ const exact = (ctx: ScorerContext) => (ctx.output === ctx.expected ? 1 : 0);
 describe('cloud-only default', () => {
   it('bare evaluate requires reporting (no credentials + inline dataset -> throws)', async () => {
     await assert.rejects(
-      evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact] }),
+      evaluate({ name: 'r', dataset: ds(1), task: echo, scorers: [exact] }),
       /reports to the TraceRoot platform/,
     );
   });
@@ -25,7 +25,7 @@ describe('cloud-only default', () => {
 describe('FakeTransport wiring', () => {
   it('call order: create_run first, finish_run last, register before records', async () => {
     const fake = new FakeTransport();
-    await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact], transport: fake });
+    await evaluate({ name: 'r', dataset: ds(1), task: echo, scorers: [exact], transport: fake });
     const kinds = fake.calls.map((c) => c[0]);
     assert.equal(kinds[0], 'create_run');
     assert.equal(kinds[kinds.length - 1], 'finish_run');
@@ -37,7 +37,7 @@ describe('FakeTransport wiring', () => {
     const fake = new FakeTransport();
     await evaluate({
       name: 'r',
-      data: ds(4),
+      dataset: ds(4),
       task: echo,
       scorers: [exact],
       transport: fake,
@@ -56,7 +56,7 @@ describe('FakeTransport wiring', () => {
       return x;
     };
     const fake = new FakeTransport();
-    await evaluate({ name: 'r', data: ds(3), task: boom, scorers: [exact], transport: fake });
+    await evaluate({ name: 'r', dataset: ds(3), task: boom, scorers: [exact], transport: fake });
     const registered = new Set(fake.calls.filter((c) => c[0] === 'register_item').map((c) => c[1]));
     assert.deepEqual([...registered].sort(), ['c0', 'c1', 'c2']);
   });
@@ -65,7 +65,7 @@ describe('FakeTransport wiring', () => {
     const fake = new FakeTransport();
     const result = await evaluate({
       name: 'r',
-      data: ds(3),
+      dataset: ds(3),
       task: echo,
       scorers: [exact],
       transport: fake,

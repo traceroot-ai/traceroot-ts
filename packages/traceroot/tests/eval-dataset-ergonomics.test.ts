@@ -410,7 +410,7 @@ describe('cloud-only error names the real cause', () => {
       () =>
         evaluate({
           name: 'r',
-          data: [{ input: 1, id: 'c0', expected: 1 }],
+          dataset: [{ input: 1, id: 'c0', expected: 1 }],
           task: echo,
           scorers: [exact],
         }),

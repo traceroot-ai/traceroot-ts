@@ -28,7 +28,7 @@ const exact = (ctx: ScorerContext) => (ctx.output === ctx.expected ? 1 : 0);
 
 describe('basic runs', () => {
   it('sync task + sync scorer', async () => {
-    const result = await evaluate({ name: 'r', data: ds(3), task: echo, scorers: [exact] });
+    const result = await evaluate({ name: 'r', dataset: ds(3), task: echo, scorers: [exact] });
     assert.deepEqual(
       result.itemResults.map((it) => it.caseId),
       ['c0', 'c1', 'c2'],
@@ -46,12 +46,12 @@ describe('basic runs', () => {
       await sleep(0);
       return ctx.output === ctx.expected ? 1 : 0;
     };
-    const result = await evaluateAsync({ name: 'r', data: ds(2), task: atask, scorers: [ascore] });
+    const result = await evaluateAsync({ name: 'r', dataset: ds(2), task: atask, scorers: [ascore] });
     assert.equal(result.scoreSummary.ascore.mean, 1);
   });
 
   it('evaluate resolves to a completed result and reports uploaded', async () => {
-    const result = await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact] });
+    const result = await evaluate({ name: 'r', dataset: ds(1), task: echo, scorers: [exact] });
     assert.equal(result.uploadState.status, 'uploaded');
     assert.equal(result.itemResults[0].traceId ?? null, result.itemResults[0].traceId); // defined key
   });
@@ -63,7 +63,7 @@ describe('ordering and concurrency', () => {
       await sleep((5 - x) * 5);
       return x;
     };
-    const result = await evaluateAsync({ name: 'r', data: ds(5), task: slow, scorers: [exact] });
+    const result = await evaluateAsync({ name: 'r', dataset: ds(5), task: slow, scorers: [exact] });
     assert.deepEqual(
       result.itemResults.map((it) => it.caseId),
       ['c0', 'c1', 'c2', 'c3', 'c4'],
@@ -86,7 +86,7 @@ describe('ordering and concurrency', () => {
     };
     await evaluateAsync({
       name: 'r',
-      data: ds(10),
+      dataset: ds(10),
       task: tracked,
       scorers: [exact],
       maxConcurrency: 2,
@@ -101,7 +101,7 @@ describe('failure isolation', () => {
       if (x === 1) throw new Error('nope');
       return x;
     };
-    const result = await evaluate({ name: 'r', data: ds(3), task: boom, scorers: [exact] });
+    const result = await evaluate({ name: 'r', dataset: ds(3), task: boom, scorers: [exact] });
     const byId = Object.fromEntries(result.itemResults.map((it) => [it.caseId, it]));
     assert.ok(byId.c1.error?.includes('nope'));
     assert.deepEqual(byId.c1.scores, []);
@@ -113,7 +113,7 @@ describe('failure isolation', () => {
     const bad = () => {
       throw new Error('scorer boom');
     };
-    const result = await evaluate({ name: 'r', data: ds(2), task: echo, scorers: [exact, bad] });
+    const result = await evaluate({ name: 'r', dataset: ds(2), task: echo, scorers: [exact, bad] });
     const it = result.itemResults[0];
     assert.ok('bad' in it.scorerErrors);
     assert.ok(it.scorerErrors.bad.includes('scorer boom'));
@@ -123,7 +123,7 @@ describe('failure isolation', () => {
 
 describe('score normalization', () => {
   const one = async (scorer: (ctx: ScorerContext) => unknown) =>
-    (await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [scorer as never] }))
+    (await evaluate({ name: 'r', dataset: ds(1), task: echo, scorers: [scorer as never] }))
       .itemResults[0];
 
   it('number scalar', async () => {
@@ -169,7 +169,7 @@ describe('score normalization', () => {
 
   it('malformed array element becomes a scorer error, not a crash', async () => {
     const bad = (_ctx: ScorerContext) => [{ value: 1 }] as never; // missing name
-    const result = await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [bad] });
+    const result = await evaluate({ name: 'r', dataset: ds(1), task: echo, scorers: [bad] });
     assert.ok('bad' in result.itemResults[0].scorerErrors);
   });
 });
@@ -178,7 +178,7 @@ describe('data coercion and config errors', () => {
   it('array of eval cases', async () => {
     const result = await evaluate({
       name: 'r',
-      data: [
+      dataset: [
         { input: 1, id: 'a', expected: 1 },
         { input: 2, id: 'b', expected: 2 },
       ],
@@ -194,7 +194,7 @@ describe('data coercion and config errors', () => {
   it('anonymous list items get positional ids', async () => {
     const result = await evaluate({
       name: 'r',
-      data: [
+      dataset: [
         { input: 1, expected: 1 },
         { input: 2, expected: 2 },
       ],
@@ -208,13 +208,13 @@ describe('data coercion and config errors', () => {
   });
 
   for (const [label, opts] of [
-    ['empty name', { name: '', data: ds(1), task: echo, scorers: [exact] }],
-    ['empty data', { name: 'r', data: ds(0), task: echo, scorers: [exact] }],
-    ['task not function', { name: 'r', data: ds(1), task: 'nope' as never, scorers: [exact] }],
-    ['empty scorers', { name: 'r', data: ds(1), task: echo, scorers: [] }],
+    ['empty name', { name: '', dataset: ds(1), task: echo, scorers: [exact] }],
+    ['empty data', { name: 'r', dataset: ds(0), task: echo, scorers: [exact] }],
+    ['task not function', { name: 'r', dataset: ds(1), task: 'nope' as never, scorers: [exact] }],
+    ['empty scorers', { name: 'r', dataset: ds(1), task: echo, scorers: [] }],
     [
       'bad concurrency',
-      { name: 'r', data: ds(1), task: echo, scorers: [exact], maxConcurrency: 0 },
+      { name: 'r', dataset: ds(1), task: echo, scorers: [exact], maxConcurrency: 0 },
     ],
   ] as const) {
     it(`throws on ${label}`, async () => {
