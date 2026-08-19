@@ -7,17 +7,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { trace } from '@opentelemetry/api';
+import { trace, type Span } from '@opentelemetry/api';
 
 import { Dataset, Emitter, evaluate, runSuite } from '../src/eval';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
 import { _isGlobalAutoInitSuppressed } from '../src/spans';
-import {
-  TraceRootSpanProcessor,
-  _resetProcessorState,
-  _pushSuppressSpanExport,
-  _popSuppressSpanExport,
-} from '../src/processor';
+import { TraceRootSpanProcessor, _resetProcessorState } from '../src/processor';
 
 const realFetch = globalThis.fetch;
 const evalDir = join(__dirname, '..', 'src', 'eval').replace(/\\/g, '/');
@@ -174,8 +169,9 @@ describe('local: true export suppression at the exporter boundary', () => {
       name: 'leak',
       dataset: ds,
       local: true,
-      // An app / auto-instrumentation span created through the GLOBAL exporting provider
-      // during the run. Without the export-suppression gate this leaks to the exporter.
+      // An app / auto-instrumentation span created through the GLOBAL exporting provider during
+      // the run. Under context.with(suppressTracing(...)) it is created non-recording, so it
+      // never reaches the processor's onEnd at all — the spy records nothing.
       task: () => {
         trace.getTracer('app').startSpan('messages.create').end();
         return { r: 1 };
@@ -185,24 +181,67 @@ describe('local: true export suppression at the exporter boundary', () => {
     assert.deepEqual(exported, [], 'no span reached the exporter during a local run');
   });
 
-  it(
-    'an unrelated span ended during suppression should still export (over-reach, traceroot-ai/traceroot#1969)',
-    {
-      todo: 'process-global gate over-suppresses a concurrent reported run — traceroot-ai/traceroot#1969',
-    },
-    () => {
-      const exported = spyExporterAfterInit();
-      // A span that is NOT part of a local run, ended while a local run elsewhere holds the
-      // gate. Desired: it still exports. Current behavior: the process-global gate drops it,
-      // so this assertion fails — kept `todo` (traceroot-ai/traceroot#1969) to pin the limit
-      // without turning the suite red.
-      _pushSuppressSpanExport();
-      try {
-        trace.getTracer('other').startSpan('unrelated.work').end();
-      } finally {
-        _popSuppressSpanExport();
-      }
-      assert.deepEqual(exported, ['unrelated.work']);
-    },
-  );
+  it('a concurrent span on a different (un-suppressed) context still exports during a local run', async () => {
+    const exported = spyExporterAfterInit();
+    // Hold the local run open mid-flight so an unrelated span can be created WHILE it runs, but
+    // on the test's own context — which never entered the suppressed context. Origin scoping (not
+    // the old process-global gate) means that span must still export. This is the case #1969 filed.
+    let releaseTask!: () => void;
+    const taskGate = new Promise<void>((r) => {
+      releaseTask = r;
+    });
+    let signalStarted!: () => void;
+    const taskStarted = new Promise<void>((r) => {
+      signalStarted = r;
+    });
+    const ds = new Dataset('concurrent');
+    ds.add({ q: 1 }, { id: 'a' });
+    const runPromise = evaluate({
+      name: 'concurrent',
+      dataset: ds,
+      local: true,
+      task: async () => {
+        signalStarted(); // the run is now mid-flight, holding its suppressed context
+        await taskGate;
+        return { r: 1 };
+      },
+      scorers: [() => 1],
+    });
+    await taskStarted;
+    // Created + ended on the test's own (un-suppressed) context, concurrent with the live run.
+    trace.getTracer('other').startSpan('unrelated.work').end();
+    releaseTask();
+    await runPromise;
+    assert.deepEqual(
+      exported,
+      ['unrelated.work'],
+      'a concurrent span outside the run still exports',
+    );
+  });
+
+  it('a span created inside the suppressed run is non-recording — a late .end() never forwards', async () => {
+    const exported = spyExporterAfterInit();
+    // Captured inside the run (under suppression) but NOT ended there; ended after the run
+    // returns and its context is gone. It was created non-recording, so onEnd never fires at the
+    // processor even when .end() runs later — the leak the origin-scoped gate closes for real.
+    let lateSpan: Span | undefined;
+    const ds = new Dataset('late');
+    ds.add({ q: 1 }, { id: 'a' });
+    await evaluate({
+      name: 'late',
+      dataset: ds,
+      local: true,
+      task: () => {
+        lateSpan = trace.getTracer('app').startSpan('late.work');
+        return { r: 1 };
+      },
+      scorers: [() => 1],
+    });
+    lateSpan?.end();
+    assert.deepEqual(
+      exported,
+      [],
+      'a late-ended span from a suppressed run never reaches the exporter',
+    );
+  });
 });
