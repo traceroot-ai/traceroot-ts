@@ -5,7 +5,7 @@
 import { evaluateAsync, EvaluateOptions, LOCAL_AND_TRANSPORT } from './engine';
 import type { EvalRunResult } from './results';
 
-export interface EvaluationOptions extends Omit<EvaluateOptions, 'dataset' | 'data'> {
+export interface EvaluationOptions extends Omit<EvaluateOptions, 'dataset'> {
   dataset: EvaluateOptions['dataset'];
   /** Not implemented in V1 (semantics deliberately deferred); passing it throws. */
   retry?: unknown;

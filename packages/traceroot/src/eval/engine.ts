@@ -47,9 +47,11 @@ export type ScorerFn = (ctx: ScorerContext) => ScoreLike | Promise<ScoreLike>;
 
 export interface EvaluateOptions {
   name: string;
-  /** The dataset, an immutable snapshot of one, or inline cases. `data` aliases `dataset`. */
-  dataset?: Dataset | DatasetSnapshot | EvalCase[];
-  data?: Dataset | DatasetSnapshot | EvalCase[];
+  /**
+   * The dataset, an immutable snapshot of one, or inline cases. Reporting to the platform requires
+   * a synced dataset, so inline cases must be run with `local: true`.
+   */
+  dataset: Dataset | DatasetSnapshot | EvalCase[];
   task: TaskFn;
   scorers: ScorerFn[];
   candidateVersion?: string;
@@ -579,11 +581,11 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   const { name, task, scorers, maxConcurrency = 10, transport, candidateVersion } = options;
   const local = options.local === true;
   const environment = options.environment ?? 'evaluation';
-  const data = options.dataset ?? options.data;
+  const data = options.dataset;
 
   if (local && transport !== undefined) throw new Error(LOCAL_AND_TRANSPORT);
   if (!name || name.trim().length === 0) throw new Error("evaluate() requires a non-empty 'name'");
-  if (data === undefined) throw new Error("evaluate() requires 'dataset' (or the 'data' alias)");
+  if (data === undefined) throw new Error("evaluate() requires 'dataset'");
   if (typeof task !== 'function') throw new Error("'task' must be a function");
   if (!scorers || scorers.length === 0) throw new Error('evaluate() requires at least one scorer');
   for (const s of scorers) {
