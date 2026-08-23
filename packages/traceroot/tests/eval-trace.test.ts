@@ -49,7 +49,7 @@ function byName(spans: ReadableSpan[]): Record<string, ReadableSpan> {
 
 describe('span hierarchy', () => {
   it('emits evaluation-item -> task + scorer sibling', async () => {
-    await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact], ...reported() });
+    await evaluate({ name: 'r', dataset: ds(1), task: echo, scorers: [exact], ...reported() });
     const spans = exporter.getFinishedSpans();
     assert.deepEqual(spans.map((s) => s.name).sort(), ['evaluation-item', 'exact', 'task']);
     const by = byName(spans);
@@ -64,7 +64,7 @@ describe('span hierarchy', () => {
       observe({ name: 'inner_llm', type: 'llm' }, () => x);
     await evaluateAsync({
       name: 'r',
-      data: ds(1),
+      dataset: ds(1),
       task: taskWithInner,
       scorers: [exact],
       ...reported(),
@@ -79,7 +79,7 @@ describe('concurrency isolation', () => {
   it('5 concurrent cases produce 5 clean traces', async () => {
     await evaluate({
       name: 'r',
-      data: ds(5),
+      dataset: ds(5),
       task: echo,
       scorers: [exact],
       maxConcurrency: 5,
@@ -107,7 +107,7 @@ describe('eval attributes and trace id', () => {
     const dataset = ds(1, { metadata: { cat: 'x' }, sourceTraceId: 't1', sourceSpanId: 's1' });
     await evaluate({
       name: 'routing-v2',
-      data: dataset,
+      dataset: dataset,
       task: echo,
       scorers: [exact],
       ...reported(),
@@ -130,7 +130,7 @@ describe('eval attributes and trace id', () => {
     // Regression: TASK and SCORER spans must set traceroot.span.type ('task'/'scorer') exactly as
     // Python does; without it the platform ingests them as generic SPAN with is_evaluation=0. The
     // root already set it -- the SDK-created children did not. OpenInference kind + I/O preserved.
-    await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact], ...reported() });
+    await evaluate({ name: 'r', dataset: ds(1), task: echo, scorers: [exact], ...reported() });
     const by = byName(exporter.getFinishedSpans());
     assert.equal(by['evaluation-item'].attributes['traceroot.span.type'], 'evaluation');
     assert.equal(by['task'].attributes['traceroot.span.type'], 'task');
@@ -144,7 +144,7 @@ describe('eval attributes and trace id', () => {
   it('has_expected false when absent, run_name on all spans', async () => {
     const d = new Dataset('d');
     d.upsert({ input: 1, id: 'c0' });
-    await evaluate({ name: 'run-x', data: d, task: echo, scorers: [exact], ...reported() });
+    await evaluate({ name: 'run-x', dataset: d, task: echo, scorers: [exact], ...reported() });
     const by = byName(exporter.getFinishedSpans());
     assert.equal(by['evaluation-item'].attributes['traceroot.eval.has_expected'], false);
     for (const n of ['evaluation-item', 'task', 'exact']) {
@@ -157,7 +157,7 @@ describe('eval attributes and trace id', () => {
     const { FakeTransport } = await import('../src/eval');
     const result = await evaluate({
       name: 'r',
-      data: ds(1),
+      dataset: ds(1),
       task: echo,
       scorers: [exact],
       transport: new FakeTransport(),
@@ -173,7 +173,7 @@ describe('eval attributes and trace id', () => {
     };
     const result = await evaluate({
       name: 'r',
-      data: ds(3),
+      dataset: ds(3),
       task: boom,
       scorers: [exact],
       ...reported(),
@@ -251,7 +251,7 @@ describe('local runs export nothing', () => {
   // does not deliver that: the per-case span tree carries the case input and the task output as
   // span I/O, so creating those spans on the configured (exporting) tracer ships exactly the
   // payloads local promised to keep in-process.
-  const localRun = () => ({ name: 'r', data: ds(1), task: echo, scorers: [exact], local: true });
+  const localRun = () => ({ name: 'r', dataset: ds(1), task: echo, scorers: [exact], local: true });
 
   it('exports no eval spans, while a reported run does', async () => {
     await evaluate(localRun());
@@ -260,7 +260,7 @@ describe('local runs export nothing', () => {
       [],
     );
 
-    await evaluate({ name: 'r', data: ds(1), task: echo, scorers: [exact], ...reported() });
+    await evaluate({ name: 'r', dataset: ds(1), task: echo, scorers: [exact], ...reported() });
     assert.deepEqual(
       exporter
         .getFinishedSpans()

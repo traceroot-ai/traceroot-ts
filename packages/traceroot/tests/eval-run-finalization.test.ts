@@ -43,7 +43,7 @@ describe('completion never masks the real error', () => {
     };
     const err = await evaluate({
       name: 'r',
-      data: ds(1),
+      dataset: ds(1),
       task: echo,
       scorers: [ok],
       transport: new BrokenFinish(),
@@ -62,7 +62,7 @@ describe('completion never masks the real error', () => {
   it('a completion failure alone is one clear error', async () => {
     const err = await evaluate({
       name: 'r',
-      data: ds(1),
+      dataset: ds(1),
       task: echo,
       scorers: [ok],
       transport: new BrokenFinish(),
@@ -88,7 +88,7 @@ describe('a cancelled run keeps its cancellation identity', () => {
     controller.abort();
     const err = await evaluate({
       name: 'r',
-      data: ds(2),
+      dataset: ds(2),
       task: echo,
       scorers: [ok],
       transport: new BrokenFinish(),
@@ -108,7 +108,7 @@ describe('dropped per-case results are counted', () => {
   it('surfaces dropped result posts on the upload state', async () => {
     const run = await evaluate({
       name: 'r',
-      data: ds(3),
+      dataset: ds(3),
       task: echo,
       scorers: [ok],
       transport: new DroppingResults(),
@@ -120,7 +120,7 @@ describe('dropped per-case results are counted', () => {
   it('a clean run reports no dropped results', async () => {
     const run = await evaluate({
       name: 'r',
-      data: ds(2),
+      dataset: ds(2),
       task: echo,
       scorers: [ok],
       transport: new FakeTransport(),
