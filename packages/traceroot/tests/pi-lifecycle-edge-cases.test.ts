@@ -14,6 +14,7 @@ import {
   trace,
 } from '@opentelemetry/api';
 import type { Context, ContextManager, SpanContext } from '@opentelemetry/api';
+import { isTracingSuppressed, suppressTracing } from '@opentelemetry/core';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { instrumentPiCodingAgent, stampRootOutput, type AgentMessage } from '../src/pi';
@@ -224,6 +225,34 @@ describe('pi span context parenting', () => {
       llmSpan!.spanContext().traceId,
       AMBIENT_SPAN_CONTEXT.traceId,
       'the stray LLM span must not join the ambient hosts trace',
+    );
+  });
+
+  it('a stray message_start with no rootCtx is still suppressed inside a local eval run', async () => {
+    // Same "no root established" starting point as the test above (steer() before any prompt()),
+    // but this time the ambient context is a local run's suppressTracing(), not a host span. The
+    // fallback at pi.ts's message_start/tool_execution_start branches used to be a bare
+    // ROOT_CONTEXT, which drops every ambient context value including that suppression flag --
+    // the same bug shape already fixed via forcedTraceRootContext() in spans.ts/observe.ts, found
+    // here too by a later audit and fixed the same way.
+    const { capture, Session } = makeSteerRig();
+    const session = new Session();
+    await session.steer(
+      'a stray assistant message with no prompt() ever called, inside a local run',
+    );
+
+    await context.with(suppressTracing(context.active()), async () => {
+      assert.ok(isTracingSuppressed(context.active()), 'sanity: suppression really is active here');
+      session.emit({ type: 'message_start', message: assistantMessage() });
+      session.emit({ type: 'message_end', message: assistantMessage() });
+    });
+
+    const llmSpan = capture.spans.find((s) => attrs(s)['openinference.span.kind'] === 'LLM');
+    assert.equal(
+      llmSpan,
+      undefined,
+      'a stray message_start with no rootCtx must stay suppressed inside a local run, not fall ' +
+        'back to a bare ROOT_CONTEXT that silently drops the suppression flag',
     );
   });
 });
