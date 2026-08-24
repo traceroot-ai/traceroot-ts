@@ -15,8 +15,8 @@ import {
 } from '../spans';
 import type { Tracer } from '@opentelemetry/api';
 import { context, ROOT_CONTEXT } from '@opentelemetry/api';
+import { suppressTracing } from '@opentelemetry/core';
 import { evalTracer } from './tracer';
-import { _pushSuppressSpanExport, _popSuppressSpanExport } from '../processor';
 import { Dataset, DatasetSnapshot, DeferredScore, EvalCase, Score, ScorerContext } from './types';
 import {
   EvalItemResult,
@@ -763,18 +763,22 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   let bodyError: unknown;
   // A finalization failure on a CANCELLED run: kept, not thrown, so the cancellation survives.
   let cancelCompletionError: unknown;
-  // While a local run executes, keep everything in-process: (1) stop any application span (user
-  // observe/startSpan, provider auto-instrumentation, a default-dispatch judge) from lazily bringing
-  // up the exporting provider, and (2) drop export from an ALREADY-initialized provider, whose
-  // auto-instrumented spans would otherwise leak. local: true promises that nothing leaves the
-  // process. Released in the finally below (balanced, nestable via the depth counters). A reported
-  // run wants the global provider, so it is not touched.
+  // While a local run executes, keep everything in-process by suppressing tracing on the
+  // OTel context that its cases run under (see the context.with(suppressTracing(...)) wrapper
+  // below). OTel-JS honours suppression inside Tracer.startSpan, so any application span (user
+  // observe/startSpan, provider auto-instrumentation, a default-dispatch judge) started under
+  // that context is non-recording and never reaches the exporter — even from a provider the app
+  // already initialized. This is origin-scoped, not process-global: a concurrent reported run on
+  // a different context is unaffected, and a span that escapes the run's context still exports.
+  // The lazy-init guard below is still needed for the case where no provider exists yet: a
+  // suppressed context does not stop startSpan()/observe() from BOOTING the exporting provider,
+  // so keep stopping that. Released in the finally (balanced, nestable via the depth counter). A
+  // reported run wants the global provider, so it is not suppressed.
   if (local) {
     _pushSuppressGlobalAutoInit();
-    _pushSuppressSpanExport();
   }
-  try {
-    const raw = await runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
+  const runCases = () =>
+    runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
       // but already-running cases are still awaited by runBounded — so every case that began
       // finishes recording before we finish the run below (no lost in-flight results).
@@ -797,6 +801,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         droppedResults,
       );
     });
+  try {
+    // Scope suppression to exactly the case-execution phase of a local run: spans created under
+    // this context (and their auto-instrumented descendants) are non-recording, so they never
+    // forward to the exporter — including late spans whose .end() fires after the run returns.
+    const raw = local
+      ? await context.with(suppressTracing(context.active()), runCases)
+      : await runCases();
     itemResults = raw.filter((r): r is EvalItemResult => r !== null);
     // If every case was already in flight when the abort arrived, no worker pulled a new case, so
     // the flag above never flipped — re-check the signal after runBounded settles so an
@@ -809,7 +820,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   } finally {
     if (local) {
       _popSuppressGlobalAutoInit();
-      _popSuppressSpanExport();
     }
     reporter?.finish();
     // Finish the run inside finally so a mid-run failure never leaves it open on the backend.

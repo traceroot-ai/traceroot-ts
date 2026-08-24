@@ -6,7 +6,8 @@
 // traceroot.ts — because observe.ts must read it and traceroot.ts already imports
 // from observe.ts; a static import in the other direction would be a require cycle.
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { Span } from '@opentelemetry/api';
+import { context, ROOT_CONTEXT, type Context, type Span } from '@opentelemetry/api';
+import { isTracingSuppressed, suppressTracing } from '@opentelemetry/core';
 import { IdGenerator, RandomIdGenerator } from '@opentelemetry/sdk-trace-base';
 
 const HEX32 = /^[0-9a-f]{32}$/;
@@ -53,6 +54,23 @@ export class ContextIdGenerator implements IdGenerator {
  */
 export function withForcedTraceId<T>(traceId: string, fn: () => T): T {
   return _forcedTraceId.run(traceId, fn);
+}
+
+/**
+ * The base context every forced-trace-id root must build on: ROOT_CONTEXT (never
+ * context.active()), because an ambient active span would parent the new root and the
+ * id generator would never be asked for a trace id — the whole point of forcing.
+ *
+ * ROOT_CONTEXT drops every ambient context value, though, including a suppression flag
+ * a local eval run installed on the active context (see spans.ts / observe.ts callers).
+ * That one value is carried forward explicitly: it is not a parent-span relationship,
+ * so re-applying it here does not reintroduce the parenting problem ROOT_CONTEXT exists
+ * to avoid. Centralized here — every forced-trace-id call site (startSpan, observe,
+ * the async-generator variant of observe) must use this, not a bare ROOT_CONTEXT, or it
+ * silently re-opens the same leak this closes.
+ */
+export function forcedTraceRootContext(): Context {
+  return isTracingSuppressed(context.active()) ? suppressTracing(ROOT_CONTEXT) : ROOT_CONTEXT;
 }
 
 /**

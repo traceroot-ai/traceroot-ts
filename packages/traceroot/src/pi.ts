@@ -1,5 +1,5 @@
 import { win32 } from 'node:path';
-import { context, diag, ROOT_CONTEXT, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
+import { context, diag, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import type { Context, Span, Tracer } from '@opentelemetry/api';
 import {
   OI_INPUT_VALUE,
@@ -15,6 +15,7 @@ import {
   TOOL_NAME,
 } from './constants';
 import { SDK_VERSION } from './processor';
+import { forcedTraceRootContext } from './trace-id';
 import type { PiCodingAgentInstrumentation } from './types';
 
 /**
@@ -802,8 +803,12 @@ function handleEvent(
       if (event.message.role !== 'assistant') return;
       // A second message_start with no intervening message_end means the previous LLM span was abandoned — force-close it first.
       closeDanglingSpan(state.llmSpan);
-      // Falls back to ROOT_CONTEXT, never context.active(): the latter is the host's ambient OTel context, unrelated to this session, and would risk cross-trace contamination.
-      const parentCtx = state.rootCtx ?? ROOT_CONTEXT;
+      // Falls back to forcedTraceRootContext() (ROOT_CONTEXT-shaped), never context.active(): the
+      // latter is the host's ambient OTel context, unrelated to this session, and would risk
+      // cross-trace contamination. forcedTraceRootContext() carries a local eval run's suppression
+      // flag forward onto the fresh root instead of silently dropping it the way a bare ROOT_CONTEXT
+      // would -- the same fix already applied to spans.ts/observe.ts's forced-trace-id branches.
+      const parentCtx = state.rootCtx ?? forcedTraceRootContext();
       state.llmSpan = openLlmSpan(tracer, parentCtx, event.message);
       state.llmCtx = trace.setSpan(parentCtx, state.llmSpan);
       break;
@@ -824,7 +829,8 @@ function handleEvent(
       // An already-open toolCallId would have its Map slot silently overwritten — force-close first.
       const existing = state.toolSpans.get(event.toolCallId);
       closeDanglingSpan(existing);
-      const parentCtx = state.llmCtx ?? state.rootCtx ?? ROOT_CONTEXT;
+      // Same forcedTraceRootContext() fallback as message_start above, for the same reason.
+      const parentCtx = state.llmCtx ?? state.rootCtx ?? forcedTraceRootContext();
       const span = openToolSpan(
         tracer,
         parentCtx,

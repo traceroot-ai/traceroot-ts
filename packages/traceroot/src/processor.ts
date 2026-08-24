@@ -11,30 +11,9 @@ export const SDK_VERSION = version;
 
 let _hasWarnedUnattributedDrop = false;
 
-/** @internal — reset warn-once state and the export-suppression depth between tests. */
+/** @internal — reset warn-once state between tests. */
 export function _resetProcessorState(): void {
   _hasWarnedUnattributedDrop = false;
-  // Reset the scoped-export gate too: a test that leaked a _pushSuppressSpanExport()
-  // (unbalanced push) must not bleed suppression into the next test.
-  _suppressSpanExportDepth = 0;
-}
-
-// --- Scoped export suppression -------------------------------------------------
-// When active, onEnd DROPS the span instead of forwarding it to the inner (exporting) processor.
-// A `local: true` eval run turns this on for its duration so an app that already called
-// initialize() exports NOTHING during the run — including auto-instrumented library spans
-// (OpenAI/Anthropic/...), which flow through the global provider and would otherwise leak. This is
-// the missing half of the local-only guarantee: _suppressGlobalAutoInit only stops a *lazy*
-// provider; it cannot stop an *already-initialized* exporting provider. Reentrant depth counter.
-let _suppressSpanExportDepth = 0;
-export function _pushSuppressSpanExport(): void {
-  _suppressSpanExportDepth += 1;
-}
-export function _popSuppressSpanExport(): void {
-  _suppressSpanExportDepth = Math.max(0, _suppressSpanExportDepth - 1);
-}
-export function _isSpanExportSuppressed(): boolean {
-  return _suppressSpanExportDepth > 0;
 }
 
 export interface TraceRootSpanProcessorOptions {
@@ -200,11 +179,6 @@ export class TraceRootSpanProcessor implements SpanProcessor {
             'Further drops will not be logged.',
         );
       }
-      return;
-    }
-    if (_isSpanExportSuppressed()) {
-      // A local: true eval run is in progress: drop the span instead of forwarding it to the
-      // exporting inner processor, so nothing (including auto-instrumented spans) leaves the process.
       return;
     }
     this.inner.onEnd(span);

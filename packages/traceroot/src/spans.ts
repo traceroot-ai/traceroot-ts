@@ -6,13 +6,18 @@ import {
   SpanStatusCode,
   Span as OtelSpan,
   Tracer,
-  ROOT_CONTEXT,
 } from '@opentelemetry/api';
+import { isTracingSuppressed } from '@opentelemetry/core';
 import { applyCommonAttributes, applyModel, applyUsage, applyIO, trySerialize } from './attributes';
 import { SPAN_METADATA } from './constants';
 import { StartSpanOptions, SpanUpdate } from './types';
 import { TraceRoot } from './traceroot';
-import { shouldForceTraceId, warnIfForcingFailed, withForcedTraceId } from './trace-id';
+import {
+  forcedTraceRootContext,
+  shouldForceTraceId,
+  warnIfForcingFailed,
+  withForcedTraceId,
+} from './trace-id';
 import { contextWithoutProjectId, contextWithProjectId, shouldAttachProjectId } from './project-id';
 
 export interface Span {
@@ -82,11 +87,11 @@ let _hasWarnedUninit = false;
 // provider. A local evaluation raises this for the duration of the run so that nested
 // application spans (user startSpan/observe, auto-instrumentation) created during a
 // local eval cannot bring up the OTLP exporter and leak to the network. This guard only
-// covers the *lazy* case; once the app has ALREADY initialized tracing itself, the
-// export-suppression gate in processor.ts (`_pushSuppressSpanExport` / `onEnd`) closes the
-// gap by dropping export from the already-running provider for the run's duration. That
-// gate is process-global, so it currently over-suppresses a concurrent reported run's spans
-// — an accepted, tracked limitation (traceroot-ai/traceroot#1969).
+// covers the *lazy* case (no provider exists yet); once the app has ALREADY initialized
+// tracing itself, the leak is closed by native OTel context suppression: the eval engine
+// runs a local run's cases under context.with(suppressTracing(...)), so any span started on
+// that context is non-recording and never exported. That mechanism is origin-scoped — a
+// concurrent reported run on a different context still exports normally (traceroot-ai/traceroot#1969).
 let _suppressGlobalAutoInitDepth = 0;
 export function _pushSuppressGlobalAutoInit(): void {
   _suppressGlobalAutoInitDepth += 1;
@@ -139,12 +144,13 @@ export function startSpan(options: StartSpanOptions, tracerOverride?: Tracer): S
 
   let otel: OtelSpan;
   if (forcedId !== undefined && shouldForceTraceId(forcedId)) {
-    // ROOT_CONTEXT, not context.active(): an ambient active span would parent this
-    // span and the generator would never be asked for a trace id.
     otel = withForcedTraceId(forcedId, () =>
-      tracer.startSpan(options.name, undefined, withProjectId(ROOT_CONTEXT)),
+      tracer.startSpan(options.name, undefined, withProjectId(forcedTraceRootContext())),
     );
-    warnIfForcingFailed(forcedId, otel);
+    // A non-recording span (e.g. suppressed by a local eval run, same as any other sampler
+    // decision) never gets the forced id — that is expected, not a forcing failure, so it
+    // must not trip the "was another provider registered?" warning below.
+    if (otel.isRecording()) warnIfForcingFailed(forcedId, otel);
   } else {
     const parentOtel = options.parent ? (options.parent as TracerootSpan).otelSpan : undefined;
     // Strip any ambient project id when parenting explicitly: a different root's
@@ -157,8 +163,16 @@ export function startSpan(options: StartSpanOptions, tracerOverride?: Tracer): S
   }
   // Only the DEFAULT tracer can be un-initialized by accident. A supplied tracer that does not
   // record is a deliberate choice by its caller (the eval engine's non-exporting tracer for a
-  // local run), so telling that caller to call initialize() would be wrong advice.
-  if (!tracerOverride && !otel.isRecording() && !_hasWarnedUninit) {
+  // local run), so telling that caller to call initialize() would be wrong advice. A DEFAULT
+  // tracer that does not record because the active context is suppressed (any startSpan()/
+  // observe() call made from inside a local run's task) is the same kind of deliberate choice,
+  // just made via the context instead of via tracerOverride -- same exemption.
+  if (
+    !tracerOverride &&
+    !otel.isRecording() &&
+    !isTracingSuppressed(context.active()) &&
+    !_hasWarnedUninit
+  ) {
     _hasWarnedUninit = true;
     console.warn(
       '[TraceRoot] startSpan() called but TraceRoot.initialize() was not called. Spans will not be recorded.',

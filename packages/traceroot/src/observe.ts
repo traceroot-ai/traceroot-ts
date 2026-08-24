@@ -1,18 +1,13 @@
 // src/observe.ts
-import {
-  context,
-  Context,
-  ROOT_CONTEXT,
-  Span as OtelSpan,
-  SpanStatusCode,
-  trace,
-} from '@opentelemetry/api';
+import { context, Context, Span as OtelSpan, SpanStatusCode, trace } from '@opentelemetry/api';
+import { isTracingSuppressed } from '@opentelemetry/core';
 import { OUTPUT_VALUE } from '@arizeai/openinference-semantic-conventions';
 import { applyCommonAttributes, trySerialize } from './attributes';
 import { _isGlobalAutoInitSuppressed } from './spans';
 import { ObserveOptions } from './types';
 import {
   assertValidTraceId,
+  forcedTraceRootContext,
   shouldForceTraceId,
   warnIfForcingFailed,
   withForcedTraceId,
@@ -114,7 +109,11 @@ async function _observeRegular<A extends unknown[], T>(
 
   const run = async (span: OtelSpan) => {
     if (!span.isRecording()) {
-      if (!_hasWarnedUninit) {
+      // A span that is non-recording because the active context is suppressed (any
+      // observe() call made from inside a local eval run's task) is a deliberate
+      // choice, not a forgotten initialize() -- same exemption as startSpan()'s
+      // analogous guard in spans.ts.
+      if (!isTracingSuppressed(context.active()) && !_hasWarnedUninit) {
         _hasWarnedUninit = true;
         console.warn(
           '[TraceRoot] observe() called but TraceRoot.initialize() was not called. Spans will not be recorded.',
@@ -150,13 +149,20 @@ async function _observeRegular<A extends unknown[], T>(
     // Force the id around span CREATION only, then run the callback inside the span's
     // context. Wrapping the whole callback would leave the forced id visible (via
     // AsyncLocalStorage, which survives await) to any root a user creates inside fn.
-    // withProjectId(ROOT_CONTEXT) base: ROOT_CONTEXT so no ambient span parents this
-    // root; withProjectId so the root and its descendants carry the project attribution.
+    // forcedTraceRootContext(): ROOT_CONTEXT so no ambient span parents this root, but
+    // carrying forward a local eval run's suppression flag if the caller's active
+    // context has one (see trace-id.ts) — otherwise a forced-id observe() call inside a
+    // local run would export despite the run's suppression.
+    const rootCtx = forcedTraceRootContext();
     const span = withForcedTraceId(forcedId, () =>
-      tracer.startSpan(name, undefined, withProjectId(ROOT_CONTEXT)),
+      tracer.startSpan(name, undefined, withProjectId(rootCtx)),
     );
-    warnIfForcingFailed(forcedId, span);
-    return context.with(trace.setSpan(withProjectId(ROOT_CONTEXT), span), () => run(span));
+    if (span.isRecording()) warnIfForcingFailed(forcedId, span);
+    // withProjectId so the root and its descendants carry the project attribution; the
+    // callback body runs under the SAME base as the span itself, so a nested span/
+    // observe() call created inside fn() inherits both the project id and (if present)
+    // the suppression flag rather than escaping it via a second bare ROOT_CONTEXT.
+    return context.with(trace.setSpan(withProjectId(rootCtx), span), () => run(span));
   }
   if (attachedProjectId !== undefined) {
     return tracer.startActiveSpan(name, {}, withProjectId(context.active()), run);
@@ -190,15 +196,15 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
   const force = forcedId !== undefined && shouldForceTraceId(forcedId);
   const span = force
     ? withForcedTraceId(forcedId, () =>
-        tracer.startSpan(name, undefined, withProjectId(ROOT_CONTEXT)),
+        tracer.startSpan(name, undefined, withProjectId(forcedTraceRootContext())),
       )
     : attachedProjectId !== undefined
       ? tracer.startSpan(name, undefined, withProjectId(context.active()))
       : tracer.startSpan(name);
-  if (force) warnIfForcingFailed(forcedId, span);
+  if (force && span.isRecording()) warnIfForcingFailed(forcedId, span);
 
   if (!span.isRecording()) {
-    if (!_hasWarnedUninit) {
+    if (!isTracingSuppressed(context.active()) && !_hasWarnedUninit) {
       _hasWarnedUninit = true;
       console.warn(
         '[TraceRoot] observe() called but TraceRoot.initialize() was not called. Spans will not be recorded.',
