@@ -244,4 +244,115 @@ describe('local: true export suppression at the exporter boundary', () => {
       'a late-ended span from a suppressed run never reaches the exporter',
     );
   });
+
+  it('a forced-trace-id span inside a local run is still suppressed (internal export mode)', async () => {
+    // Deterministic trace-id forcing rebuilds its root on ROOT_CONTEXT (so an ambient parent
+    // span never steals the root, and the id generator is always asked) rather than on
+    // context.active() -- which is exactly the context the local-run suppression flag lives
+    // on. ROOT_CONTEXT must still carry that ONE flag forward, or a forced-id span silently
+    // escapes suppression while every other span kind stays caught. Only reachable in
+    // internal export mode (unlocked by `internalExport`), which is where trace-id forcing is
+    // used at all.
+    TraceRoot.initialize({
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'proj-1' },
+      baseUrl: 'http://127.0.0.1:9',
+      disableBatch: true,
+      instrumentModules: {},
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const gp = trace.getTracerProvider() as any;
+    const delegate = typeof gp.getDelegate === 'function' ? gp.getDelegate() : gp;
+    const proc = (delegate._registeredSpanProcessors as unknown[]).find(
+      (p) => p instanceof TraceRootSpanProcessor,
+    ) as TraceRootSpanProcessor | undefined;
+    assert.ok(proc, 'a TraceRootSpanProcessor should be registered after initialize()');
+    const exported: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (proc as any).inner.onEnd = (span: { name: string }) => exported.push(span.name);
+
+    const { startSpan } = await import('../src/spans');
+    const ds = new Dataset('forced-id');
+    ds.add({ q: 1 }, { id: 'a' });
+    let wasRecording: boolean | undefined;
+    await evaluate({
+      name: 'forced-id',
+      dataset: ds,
+      local: true,
+      task: () => {
+        const s = startSpan({
+          name: 'forced.id.span',
+          traceId: 'abcdef0123456789abcdef0123456789',
+          projectId: 'proj-1',
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        wasRecording = (s as any).otelSpan.isRecording();
+        s.end();
+        return { r: 1 };
+      },
+      scorers: [() => 1],
+    });
+    assert.equal(wasRecording, false, 'a forced-trace-id span inside a local run is non-recording');
+    assert.deepEqual(exported, [], 'a forced-trace-id span inside a local run never exports');
+  });
+
+  it('a forced-trace-id observe() call inside a local run is still suppressed, including a nested span', async () => {
+    // observe()'s forced-id branch has the SAME ROOT_CONTEXT shape as startSpan()'s (both
+    // now go through trace-id.ts's forcedTraceRootContext()), but observe() has a second
+    // failure mode startSpan() does not: it also re-activates a FRESH base context to run
+    // the callback body under, so a span nested inside the observed function must inherit
+    // the suppression flag from that activation, not just from the outer span's own
+    // creation. Covers both observe() and the nested startSpan() inside it.
+    TraceRoot.initialize({
+      internalExport: { path: '/api/v1/internal/traces', projectId: 'proj-1' },
+      baseUrl: 'http://127.0.0.1:9',
+      disableBatch: true,
+      instrumentModules: {},
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const gp = trace.getTracerProvider() as any;
+    const delegate = typeof gp.getDelegate === 'function' ? gp.getDelegate() : gp;
+    const proc = (delegate._registeredSpanProcessors as unknown[]).find(
+      (p) => p instanceof TraceRootSpanProcessor,
+    ) as TraceRootSpanProcessor | undefined;
+    assert.ok(proc, 'a TraceRootSpanProcessor should be registered after initialize()');
+    const exported: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (proc as any).inner.onEnd = (span: { name: string }) => exported.push(span.name);
+
+    const { observe } = await import('../src/observe');
+    const { startSpan } = await import('../src/spans');
+    const ds = new Dataset('forced-id-observe');
+    ds.add({ q: 1 }, { id: 'a' });
+    let nestedWasRecording: boolean | undefined;
+    await evaluate({
+      name: 'forced-id-observe',
+      dataset: ds,
+      local: true,
+      task: async () => {
+        const result = await observe(
+          { name: 'observed.fn', traceId: 'fedcba9876543210fedcba9876543210', projectId: 'proj-1' },
+          async (n: number) => {
+            const nested = startSpan({ name: 'nested.inside.observe' });
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            nestedWasRecording = (nested as any).otelSpan.isRecording();
+            nested.end();
+            return n * 2;
+          },
+          1,
+        );
+        return { r: result };
+      },
+      scorers: [() => 1],
+    });
+    assert.equal(
+      nestedWasRecording,
+      false,
+      'a span nested inside a forced-trace-id observe() call is non-recording',
+    );
+    assert.deepEqual(
+      exported,
+      [],
+      'neither the observed span nor its nested child exports from a local run',
+    );
+  });
 });
