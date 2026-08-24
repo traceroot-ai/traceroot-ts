@@ -7,10 +7,17 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { trace } from '@opentelemetry/api';
 
 import { Dataset, Emitter, evaluate, runSuite } from '../src/eval';
-import { TraceRoot } from '../src/traceroot';
+import { TraceRoot, _resetForTesting } from '../src/traceroot';
 import { _isGlobalAutoInitSuppressed } from '../src/spans';
+import {
+  TraceRootSpanProcessor,
+  _resetProcessorState,
+  _pushSuppressSpanExport,
+  _popSuppressSpanExport,
+} from '../src/processor';
 
 const realFetch = globalThis.fetch;
 const evalDir = join(__dirname, '..', 'src', 'eval').replace(/\\/g, '/');
@@ -116,4 +123,86 @@ describe('local-leak hardening + snapshot runner input', () => {
     assert.equal(started?.dataset?.case_count, 2, 'snapshot cases counted, not crashed on');
     assert.ok(events.some((e) => e.type === 'evaluation_completed'));
   });
+});
+
+// Measures at the EXPORTER boundary, not at span creation. After the app has already
+// initialized tracing, we spy the inner (exporting) processor's onEnd on the registered
+// TraceRootSpanProcessor and record which span names it would hand off. The spy does NOT
+// forward to the real OTLP exporter, so the test stays offline even if a span leaks.
+describe('local: true export suppression at the exporter boundary', () => {
+  // Records the names the inner exporter would receive, and returns them. Replaces
+  // inner.onEnd with a non-forwarding recorder so no network export can happen.
+  function spyExporterAfterInit(): string[] {
+    TraceRoot.initialize({
+      apiKey: 'dummy-key',
+      baseUrl: 'http://127.0.0.1:9', // unroutable; guards against a real background export
+      disableBatch: true,
+      instrumentModules: {}, // no auto-instrumentation; we create the app span by hand
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const gp = trace.getTracerProvider() as any;
+    const delegate = typeof gp.getDelegate === 'function' ? gp.getDelegate() : gp;
+    const registered = delegate._registeredSpanProcessors as unknown[];
+    const proc = registered.find((p) => p instanceof TraceRootSpanProcessor) as
+      | TraceRootSpanProcessor
+      | undefined;
+    assert.ok(proc, 'a TraceRootSpanProcessor should be registered after initialize()');
+    const exported: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (proc as any).inner.onEnd = (span: { name: string }) => {
+      exported.push(span.name);
+    };
+    return exported;
+  }
+
+  beforeEach(() => {
+    // Never let a real background export reject and crash the run (defense in depth:
+    // the spy above already blocks forwarding).
+    process.on('unhandledRejection', () => {});
+  });
+  afterEach(() => {
+    process.removeAllListeners('unhandledRejection');
+    _resetForTesting();
+    _resetProcessorState();
+  });
+
+  it('a local: true run forwards NOTHING from an already-initialized provider to the exporter', async () => {
+    const exported = spyExporterAfterInit();
+    const ds = new Dataset('leak');
+    ds.add({ q: 1 }, { id: 'a' });
+    await evaluate({
+      name: 'leak',
+      dataset: ds,
+      local: true,
+      // An app / auto-instrumentation span created through the GLOBAL exporting provider
+      // during the run. Without the export-suppression gate this leaks to the exporter.
+      task: () => {
+        trace.getTracer('app').startSpan('messages.create').end();
+        return { r: 1 };
+      },
+      scorers: [() => 1],
+    });
+    assert.deepEqual(exported, [], 'no span reached the exporter during a local run');
+  });
+
+  it(
+    'an unrelated span ended during suppression should still export (over-reach, traceroot-ai/traceroot#1969)',
+    {
+      todo: 'process-global gate over-suppresses a concurrent reported run — traceroot-ai/traceroot#1969',
+    },
+    () => {
+      const exported = spyExporterAfterInit();
+      // A span that is NOT part of a local run, ended while a local run elsewhere holds the
+      // gate. Desired: it still exports. Current behavior: the process-global gate drops it,
+      // so this assertion fails — kept `todo` (traceroot-ai/traceroot#1969) to pin the limit
+      // without turning the suite red.
+      _pushSuppressSpanExport();
+      try {
+        trace.getTracer('other').startSpan('unrelated.work').end();
+      } finally {
+        _popSuppressSpanExport();
+      }
+      assert.deepEqual(exported, ['unrelated.work']);
+    },
+  );
 });
