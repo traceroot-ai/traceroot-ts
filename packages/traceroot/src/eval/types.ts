@@ -427,19 +427,38 @@ export class Dataset {
 
   /**
    * Explicitly publish this dataset as ONE immutable server version. Local mutations never
-   * create versions; this is the deliberate publish boundary. `transport` defaults to a
-   * no-op LocalDatasetSync (local-only). `baseVersionId` (defaults to the pinned version)
-   * drives optimistic concurrency; a stale base rejects with DatasetConflictError.
-   * `onExisting` overrides the double-check before adding a version to an already-existing
-   * dataset (default: the transport's own, an interactive prompt).
+   * create versions; this is the deliberate publish boundary. `transport` defaults to the
+   * platform transport (PlatformDatasetSync), so `push()` publishes to TraceRoot — the same
+   * cloud-by-default behaviour as `evaluate()`. When no credentials are configured it throws a
+   * clear error rather than silently staying local; for a deliberate offline push pass
+   * `new LocalDatasetSync()`. `baseVersionId` (defaults to the pinned version) drives optimistic
+   * concurrency; a stale base rejects with DatasetConflictError. `onExisting` overrides the
+   * double-check before adding a version to an already-existing dataset (default: the
+   * transport's own, an interactive prompt).
    */
   async push(
     transport?: import('./dataset_sync').DatasetSyncTransport,
     baseVersionId?: string | null,
     opts?: { onExisting?: import('./dataset_sync').OnExisting },
   ): Promise<import('./dataset_sync').PushResult> {
-    const { LocalDatasetSync } = await import('./dataset_sync');
-    const sync = transport ?? new LocalDatasetSync();
+    let sync: import('./dataset_sync').DatasetSyncTransport;
+    if (transport != null) {
+      sync = transport;
+    } else {
+      const { PlatformDatasetSync } = await import('./dataset_sync');
+      try {
+        sync = new PlatformDatasetSync();
+      } catch (e) {
+        // Only the missing-credentials case gets the friendly message (parity with Python's
+        // `except ValueError`); any other constructor error propagates unchanged.
+        if (!(e instanceof Error && e.message.includes('needs an API key'))) throw e;
+        throw new Error(
+          'Dataset.push() publishes to the TraceRoot platform, but no credentials are configured. ' +
+            'Call initialize({ apiKey, baseUrl }) first, or pass an explicit transport ' +
+            '(new LocalDatasetSync() keeps it local).',
+        );
+      }
+    }
     const snapshot = this.snapshot();
     const base = baseVersionId !== undefined ? baseVersionId : this.baseVersionId;
     const result = await sync.pushDataset(snapshot, base, opts);

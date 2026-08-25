@@ -14,6 +14,7 @@ import {
   newRunId,
   newDatasetId,
 } from '../src/eval';
+import { TraceRoot } from '../src/traceroot';
 
 describe('ids', () => {
   it('typed ULID ids, time-sortable-ish and unique', () => {
@@ -78,6 +79,23 @@ describe('push seam', () => {
     const r = await ds.push(new LocalDatasetSync());
     assert.equal(r.status, 'local_only');
     assert.equal(ds.datasetVersionId, undefined);
+  });
+
+  it('bare push() without credentials rejects (parity with Python)', async () => {
+    // push() publishes to the platform by default; with no credentials it must reject with an
+    // actionable error rather than silently stay local.
+    const orig = TraceRoot.resolveCredentials;
+    (TraceRoot as { resolveCredentials: typeof TraceRoot.resolveCredentials }).resolveCredentials =
+      () => ({ apiKey: '', baseUrl: 'http://localhost' });
+    try {
+      const ds = new Dataset('d');
+      ds.add(1, { id: 'a' });
+      await assert.rejects(() => ds.push(), /publishes to the TraceRoot platform/);
+    } finally {
+      (
+        TraceRoot as { resolveCredentials: typeof TraceRoot.resolveCredentials }
+      ).resolveCredentials = orig;
+    }
   });
 
   it('FakeDatasetSync versions, idempotency, and conflict', async () => {
