@@ -445,19 +445,24 @@ export class Dataset {
     if (transport != null) {
       sync = transport;
     } else {
-      const { PlatformDatasetSync } = await import('./dataset_sync');
-      try {
-        sync = new PlatformDatasetSync();
-      } catch (e) {
-        // Only the missing-credentials case gets the friendly message (parity with Python's
-        // `except ValueError`); any other constructor error propagates unchanged.
-        if (!(e instanceof Error && e.message.includes('needs an API key'))) throw e;
+      // Resolve the credentials HERE and pass them explicitly, rather than constructing the
+      // transport bare and recognising its missing-key failure by its message text. Only a
+      // genuinely absent key becomes the actionable error below; every other constructor
+      // failure propagates untouched, and no cross-module string stays load-bearing. Mirrors
+      // Python's `Dataset.push`.
+      const [{ PlatformDatasetSync }, { TraceRoot }] = await Promise.all([
+        import('./dataset_sync'),
+        import('../traceroot'),
+      ]);
+      const { apiKey, baseUrl } = TraceRoot.resolveCredentials();
+      if (!apiKey) {
         throw new Error(
           'Dataset.push() publishes to the TraceRoot platform, but no credentials are configured. ' +
-            'Call initialize({ apiKey, baseUrl }) first, or pass an explicit transport ' +
-            '(new LocalDatasetSync() keeps it local).',
+            'Call initialize({ apiKey, baseUrl }) first (or set TRACEROOT_API_KEY), or pass an ' +
+            'explicit transport (new LocalDatasetSync() keeps it local).',
         );
       }
+      sync = new PlatformDatasetSync({ apiKey, baseUrl });
     }
     const snapshot = this.snapshot();
     const base = baseVersionId !== undefined ? baseVersionId : this.baseVersionId;
