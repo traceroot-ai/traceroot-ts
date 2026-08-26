@@ -35,6 +35,12 @@ type ClaudeUsage = {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  // Per-TTL breakdown of cache_creation_input_tokens (Anthropic prices 1h
+  // writes at 2.0x input vs 1.25x for the default 5m writes).
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: number;
+    ephemeral_1h_input_tokens?: number;
+  };
 };
 
 type ClaudeAgentSDKQueryParams = {
@@ -122,6 +128,10 @@ const LLM_TOKEN_ATTRIBUTES = {
   TOTAL: 'llm.token_count.total',
   CACHE_READ: 'llm.token_count.prompt_details.cache_read',
   CACHE_CREATION: 'llm.token_count.prompt_details.cache_creation',
+  // 1h-retention subset of CACHE_CREATION; additive alongside the total. The
+  // 5m portion needs no attribute — it's the remainder, priced at the base
+  // cache-write rate.
+  CACHE_WRITE_1H: 'llm.token_count.prompt_details.cache_write_1h',
 } as const;
 
 const GEN_AI_ATTRIBUTES = {
@@ -193,6 +203,10 @@ function setUsageAttributes(span: OTelSpan, usage: ClaudeUsage | undefined): voi
   }
   if (cacheCreation > 0) {
     span.setAttribute(LLM_TOKEN_ATTRIBUTES.CACHE_CREATION, cacheCreation);
+  }
+  const cacheWrite1h = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+  if (cacheWrite1h > 0) {
+    span.setAttribute(LLM_TOKEN_ATTRIBUTES.CACHE_WRITE_1H, cacheWrite1h);
   }
 }
 
@@ -642,6 +656,13 @@ function adjustPendingAssistantUsageFromResult(
   }
   if (finalUsage.cache_creation_input_tokens !== undefined) {
     lastUsage.cache_creation_input_tokens = finalUsage.cache_creation_input_tokens;
+  }
+  if (finalUsage.cache_creation !== undefined) {
+    lastUsage.cache_creation = finalUsage.cache_creation;
+  } else if (finalUsage.cache_creation_input_tokens !== undefined) {
+    // The total was replaced without a breakdown; a streamed breakdown would
+    // now describe a total that no longer exists (it could even exceed it).
+    delete lastUsage.cache_creation;
   }
 }
 

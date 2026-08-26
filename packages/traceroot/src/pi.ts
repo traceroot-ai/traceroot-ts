@@ -6,6 +6,7 @@ import {
   OI_LLM_MODEL_NAME,
   OI_LLM_TOKEN_COUNT_CACHE_READ,
   OI_LLM_TOKEN_COUNT_CACHE_WRITE,
+  OI_LLM_TOKEN_COUNT_CACHE_WRITE_1H,
   OI_LLM_TOKEN_COUNT_COMPLETION,
   OI_LLM_TOKEN_COUNT_PROMPT,
   OI_LLM_TOKEN_COUNT_TOTAL,
@@ -27,6 +28,8 @@ export interface Usage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Subset of `cacheWrite` written with 1h retention. Only Anthropic reports this split. */
+  cacheWrite1h?: number;
   reasoning?: number;
   totalTokens: number;
   cost: {
@@ -177,6 +180,9 @@ const GEN_AI_ATTRIBUTES = {
   USAGE_INPUT_TOKENS: 'gen_ai.usage.input_tokens',
   USAGE_OUTPUT_TOKENS: 'gen_ai.usage.output_tokens',
   CACHE_WRITE_INPUT_TOKENS: 'gen_ai.usage.cache_creation_input_tokens',
+  // Anthropic 1h-retention subset of the cache write above (2.0x input vs the
+  // default 5m write's 1.25x); additive alongside the collapsed total.
+  CACHE_WRITE_1H_INPUT_TOKENS: 'gen_ai.usage.cache_creation.ephemeral_1h_input_tokens',
   CACHE_READ_INPUT_TOKENS: 'gen_ai.usage.cache_read_input_tokens',
   TOOL_NAME: 'gen_ai.tool.name',
   TOOL_CALL_ID: 'gen_ai.tool.call.id',
@@ -383,6 +389,7 @@ export function closeLlmSpan(span: Span, message: AssistantMessage, captureConte
   setAttr(span, GEN_AI_ATTRIBUTES.USAGE_OUTPUT_TOKENS, message.usage?.output);
   setAttr(span, GEN_AI_ATTRIBUTES.CACHE_READ_INPUT_TOKENS, message.usage?.cacheRead);
   setAttr(span, GEN_AI_ATTRIBUTES.CACHE_WRITE_INPUT_TOKENS, message.usage?.cacheWrite);
+  setAttr(span, GEN_AI_ATTRIBUTES.CACHE_WRITE_1H_INPUT_TOKENS, message.usage?.cacheWrite1h);
   // OpenInference llm.* dual-write of the same numbers (see openLlmSpan). Pi
   // reports totalTokens directly, so llm.token_count.total uses it as-is rather
   // than recomputing prompt+completion.
@@ -392,6 +399,7 @@ export function closeLlmSpan(span: Span, message: AssistantMessage, captureConte
   setAttr(span, OI_LLM_TOKEN_COUNT_TOTAL, message.usage?.totalTokens);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_READ, message.usage?.cacheRead);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_WRITE, message.usage?.cacheWrite);
+  setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_WRITE_1H, message.usage?.cacheWrite1h);
   if (captureContent) {
     setAttr(span, OI_OUTPUT_VALUE, assistantOutputValue(message));
   }

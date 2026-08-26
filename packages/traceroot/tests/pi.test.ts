@@ -142,6 +142,50 @@ describe('pi spans and config boundary coverage', () => {
     assert.equal(a['llm.token_count.prompt_details.cache_write'], 13);
   });
 
+  it('closeLlmSpan forwards the 1h cache-write split when pi reports it', () => {
+    const { tracer, spans } = makeTracer();
+    const message = assistantMessage({
+      usage: {
+        input: 5,
+        output: 7,
+        cacheRead: 11,
+        cacheWrite: 13,
+        cacheWrite1h: 4,
+        totalTokens: 36,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    });
+    const span = openLlmSpan(tracer, ROOT_CONTEXT, message);
+    closeLlmSpan(span, message, false);
+
+    const a = attrs(spans[0]!);
+    // The collapsed total keeps its attribute; the 1h subset rides alongside,
+    // dual-written into both families like every other usage number here.
+    assert.equal(a['gen_ai.usage.cache_creation_input_tokens'], 13);
+    assert.equal(a['gen_ai.usage.cache_creation.ephemeral_1h_input_tokens'], 4);
+    assert.equal(a['llm.token_count.prompt_details.cache_write_1h'], 4);
+  });
+
+  it('closeLlmSpan omits the 1h cache-write attribute when pi does not report the split', () => {
+    const { tracer, spans } = makeTracer();
+    const message = assistantMessage({
+      usage: {
+        input: 5,
+        output: 7,
+        cacheRead: 11,
+        cacheWrite: 13,
+        totalTokens: 36,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    });
+    const span = openLlmSpan(tracer, ROOT_CONTEXT, message);
+    closeLlmSpan(span, message, false);
+
+    const a = attrs(spans[0]!);
+    assert.equal(a['gen_ai.usage.cache_creation_input_tokens'], 13);
+    assert.equal('gen_ai.usage.cache_creation.ephemeral_1h_input_tokens' in a, false);
+  });
+
   it('closeLlmSpan updates the span name to responseModel when it differs from the request model', () => {
     const { tracer, spans } = makeTracer();
     const message = assistantMessage({ model: 'claude-req', responseModel: 'claude-resp-dated' });
