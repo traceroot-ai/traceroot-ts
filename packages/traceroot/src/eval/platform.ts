@@ -380,7 +380,6 @@ export interface PlatformTransportOptions {
   environment?: string;
   datasetVersionId?: string | null;
   clientRunId?: string | null;
-  passThreshold?: number | null;
   /** Stable identity for the evaluation this run belongs to; defaults to the run's name. */
   evaluationKey?: string | null;
   apiKey?: string;
@@ -434,7 +433,6 @@ export class PlatformTransport implements EvalTransport {
   private readonly environment: string;
   private readonly datasetVersionId: string | null;
   private readonly clientRunId: string | null;
-  private readonly passThreshold: number | null;
   private readonly apiKey: string;
   private readonly baseUrl: string;
 
@@ -456,7 +454,6 @@ export class PlatformTransport implements EvalTransport {
     this.environment = opts.environment ?? 'evaluation';
     this.datasetVersionId = opts.datasetVersionId ?? null;
     this.clientRunId = opts.clientRunId ?? null;
-    this.passThreshold = opts.passThreshold ?? null;
     this.evaluationKey = opts.evaluationKey ?? null;
     this.apiKey = apiKey;
     this.baseUrl = baseUrl;
