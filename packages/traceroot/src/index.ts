@@ -25,6 +25,8 @@ export { startSpan, usingSpan } from './spans';
 export type { Span } from './spans';
 export type { StartSpanOptions, SpanUpdate, TokenUsage } from './types';
 export type { PiInstrumentationConfig } from './pi';
+export { instrumentPiAgentCore } from './pi-agent-core';
+export type { PiAgentCoreConfig } from './pi-agent-core';
 
 // Offline evaluation (local-first, trace-native) — full surface (parity with traceroot-py).
 export {
