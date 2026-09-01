@@ -7,7 +7,7 @@
 // and pull. Parity with traceroot-py/tests/eval/test_dataset_ergonomics.py.
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -362,6 +362,66 @@ describe('datasetVersionId survives save/load', () => {
     const path = tmpFile('ds.jsonl');
     d.save(path);
     assert.equal(Dataset.load(path).datasetVersionId, 'dsv_7');
+  });
+});
+
+// `versionNumber` is documented as riding alongside `datasetVersionId`, so every path that moves
+// the id must move the ordinal too — otherwise a pushed dataset reports the id of v3 with the
+// ordinal of v2, or loses it entirely across save/load. Parity with Python's
+// TestVersionNumberStaysWithTheId.
+describe('versionNumber stays with the id', () => {
+  /** A transport that reports `versionNumber` (or deliberately does not). */
+  function transport(versionNumber: number | null) {
+    return {
+      pushDataset: async (snapshot: { datasetId: string }) => ({
+        status: 'uploaded' as const,
+        datasetId: snapshot.datasetId,
+        datasetVersionId: 'dsv_7',
+        versionNumber,
+      }),
+    };
+  }
+
+  it('push() pins the ordinal onto the dataset', async () => {
+    const d = new Dataset('d');
+    d.add({ m: 1 });
+    const result = await d.push(transport(3) as never);
+    assert.equal(result.versionNumber, 3);
+    assert.equal(d.datasetVersionId, 'dsv_7');
+    assert.equal(d.versionNumber, 3); // not left undefined while the id advanced
+  });
+
+  it('a push that reports no ordinal clears a stale one', async () => {
+    const d = new Dataset('d');
+    d.add({ m: 1 });
+    await d.push(transport(3) as never);
+    await d.push(transport(null) as never);
+    assert.equal(d.datasetVersionId, 'dsv_7');
+    assert.equal(d.versionNumber, undefined); // a stale ordinal is worse than an absent one
+  });
+
+  for (const suffix of ['json', 'jsonl']) {
+    it(`save -> load round-trips the ordinal (.${suffix})`, async () => {
+      const d = new Dataset('d');
+      d.add({ m: 1 });
+      await d.push(transport(4) as never);
+      const path = tmpFile(`ds.${suffix}`);
+      d.save(path);
+      const reloaded = Dataset.load(path);
+      assert.equal(reloaded.datasetVersionId, 'dsv_7');
+      assert.equal(reloaded.versionNumber, 4); // the binding is the PAIR, not just the id
+    });
+  }
+
+  it('a file written before the field existed still loads', () => {
+    const path = tmpFile('old.json');
+    writeFileSync(
+      path,
+      JSON.stringify({ name: 'd', key: 'd', datasetVersionId: 'dsv_7', cases: [] }),
+    );
+    const reloaded = Dataset.load(path);
+    assert.equal(reloaded.datasetVersionId, 'dsv_7');
+    assert.equal(reloaded.versionNumber, undefined);
   });
 });
 

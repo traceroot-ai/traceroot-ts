@@ -337,6 +337,7 @@ export class Dataset {
     description: string | null;
     baseVersionId: string | null;
     datasetVersionId: string | null;
+    versionNumber: number | null;
     cases: EvalCase[];
   } {
     return {
@@ -351,6 +352,7 @@ export class Dataset {
       // fromJSON reads this back, so dropping it here loses the remote binding — and evaluate()'s
       // auto-provision guard then re-pushes an already-synced dataset.
       datasetVersionId: this.datasetVersionId ?? null,
+      versionNumber: this.versionNumber ?? null,
       cases: [...this.casesById.values()], // incl. archived
     };
   }
@@ -362,12 +364,14 @@ export class Dataset {
     datasetId?: string;
     baseVersionId?: string | null;
     datasetVersionId?: string | null;
+    versionNumber?: number | null;
     cases?: EvalCase[];
   }): Dataset {
     const ds = new Dataset(d.name, d.description ?? null, { key: d.key ?? undefined });
     if (d.datasetId) ds.datasetId = d.datasetId;
     ds.baseVersionId = d.baseVersionId ?? null;
     ds.datasetVersionId = d.datasetVersionId ?? undefined;
+    ds.versionNumber = d.versionNumber ?? undefined;
     // Anonymous cases (no id) each get a content id — otherwise every one keys on `undefined`
     // and all but the last silently collapse. Mirrors upsert().
     for (const c of d.cases ?? []) {
@@ -388,6 +392,7 @@ export class Dataset {
         description: this.description,
         baseVersionId: this.baseVersionId,
         datasetVersionId: this.datasetVersionId ?? null,
+        versionNumber: this.versionNumber ?? null,
         schema: 1,
       };
       // Serialize through the canonical form (not raw JSON.stringify) so a Date/Map/Set survives
@@ -418,6 +423,7 @@ export class Dataset {
         description: header.description,
         baseVersionId: header.baseVersionId,
         datasetVersionId: header.datasetVersionId,
+        versionNumber: header.versionNumber,
         cases: records.slice(1).map((r) => {
           const { type: _t, ...rest } = r;
           return rest as EvalCase;
@@ -472,6 +478,9 @@ export class Dataset {
     if (result.status === 'uploaded' && result.datasetVersionId != null) {
       this.datasetVersionId = result.datasetVersionId;
       this.baseVersionId = result.datasetVersionId;
+      // Set alongside the id, never left behind: a transport that does not report the ordinal
+      // must clear it, not leave the PREVIOUS version's number pinned to the new id.
+      this.versionNumber = result.versionNumber ?? undefined;
     }
     return result;
   }
