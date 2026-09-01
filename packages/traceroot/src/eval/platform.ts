@@ -348,6 +348,14 @@ export async function pullDatasetVersion(
     opts.description,
   );
   ds.datasetVersionId = ds.datasetVersionId ?? versionId;
+  // The version's ordinal rides along on the same payload; keep it so callers that reuse a
+  // pulled version (e.g. the idempotent no-op push) can report which version they landed on
+  // without a second request.
+  if (ds.versionNumber === undefined) {
+    const ordinal = snapshot.version_number;
+    const parsed = typeof ordinal === 'string' ? Number(ordinal) : ordinal;
+    ds.versionNumber = Number.isInteger(parsed) ? (parsed as number) : undefined;
+  }
   ds.datasetId = ds.datasetId ?? opts.datasetId ?? undefined;
   // A freshly pulled dataset IS its pinned version; remember that, so a later mutation is
   // detectable and evaluate() republishes instead of reporting the version it left behind.

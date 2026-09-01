@@ -179,7 +179,10 @@ function mockPlatformSync(exists: boolean, publishedRev: string | null = 'rev_di
     return {};
   };
   // Stub the published-revision fetch: `publishedRev` drives changed-vs-unchanged detection.
-  (sync as unknown as { publishedRevision: unknown }).publishedRevision = async () => publishedRev;
+  (sync as unknown as { publishedRevision: unknown }).publishedRevision = async () => [
+    publishedRev,
+    7,
+  ];
   return sync;
 }
 
@@ -201,6 +204,7 @@ describe('existing-dataset confirmation on push (TS)', () => {
       },
     });
     assert.equal(res.datasetVersionId, 'dsv_9'); // reuses the current version
+    assert.equal(res.versionNumber, 7); // and reports THAT version's ordinal, not null
     assert.equal(called, false); // unchanged -> never prompts
     assert.ok(!sync.calls.some((c) => c.endsWith('/versions'))); // no new version published
   });

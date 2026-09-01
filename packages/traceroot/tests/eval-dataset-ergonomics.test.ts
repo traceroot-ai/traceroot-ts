@@ -151,8 +151,8 @@ describe('metadata-only push', () => {
       name: 'old-name',
       current_dataset_version_id: 'dsv_9',
     }));
-    (sync as unknown as { publishedRevision(): Promise<string> }).publishedRevision = async () =>
-      revision;
+    (sync as unknown as { publishedRevision(): Promise<[string, number]> }).publishedRevision =
+      async () => [revision, 9];
 
     d.description = 'now documented';
     const res = await sync.pushDataset(d.snapshot(), null);
@@ -174,8 +174,8 @@ describe('metadata-only push', () => {
       name: 'old-name',
       current_dataset_version_id: 'dsv_9',
     }));
-    (sync as unknown as { publishedRevision(): Promise<string> }).publishedRevision = async () =>
-      'rev_something_else';
+    (sync as unknown as { publishedRevision(): Promise<[string, number]> }).publishedRevision =
+      async () => ['rev_something_else', 9];
     await assert.rejects(
       () => sync.pushDataset(snapOf(), null, { onExisting: async () => false }),
       /declined/,
@@ -302,8 +302,8 @@ describe('dataset key on the wire', () => {
       name: 'Billing',
       current_dataset_version_id: 'dsv_9',
     }));
-    (sync as unknown as { publishedRevision(): Promise<string> }).publishedRevision = async () =>
-      d.snapshot().revision;
+    (sync as unknown as { publishedRevision(): Promise<[string, number]> }).publishedRevision =
+      async () => [d.snapshot().revision, 9];
     await sync.pushDataset(d.snapshot(), null);
     assert.equal(upserts(calls)[0]!.body.key, 'billing');
   });

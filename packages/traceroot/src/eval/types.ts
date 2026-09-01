@@ -171,7 +171,8 @@ export interface DatasetSnapshot {
  * the SAME id and the platform converges their runs instead of forking a new dataset each
  * run. Pass an explicit `key` to keep identity stable across a display-name rename.
  * `datasetVersionId` is set only when this mirrors a pushed/pulled remote version; changed
- * content under the same key becomes a new VERSION.
+ * content under the same key becomes a new VERSION. `versionNumber` is that version's ordinal,
+ * carried alongside the id when the platform reports it (a locally-authored dataset has neither).
  */
 export class Dataset {
   name: string;
@@ -180,6 +181,7 @@ export class Dataset {
   readonly key!: string;
   datasetId: string;
   datasetVersionId?: string;
+  versionNumber?: number;
   baseVersionId: string | null = null;
   private readonly casesById = new Map<string, EvalCase>();
 
