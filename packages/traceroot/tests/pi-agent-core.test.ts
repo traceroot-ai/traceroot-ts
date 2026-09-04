@@ -5,7 +5,7 @@
 // tests/pi-lifecycle-edge-cases.test.ts (node:test + node:assert/strict).
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { context, trace } from '@opentelemetry/api';
+import { context, SpanStatusCode, trace } from '@opentelemetry/api';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
@@ -164,6 +164,67 @@ describe('instrumentPiAgentCore', () => {
     await new Agent().prompt('hi');
     const tool = exporter.getFinishedSpans().find((s) => s.name.startsWith('bash'))!;
     assert.equal((tool.attributes as Record<string, unknown>)['output.value'], '[withheld]');
+  });
+
+  it('a throwing captureToolIo does not abort the run', async () => {
+    const Agent = makeFakeAgentClass();
+    instrumentPiAgentCore(
+      { Agent },
+      {
+        captureToolIo: () => {
+          throw new Error('policy exploded');
+        },
+      },
+    );
+    // The fake agent's dispatcher calls subscribers synchronously: an uncaught
+    // throw here would have escaped prompt() and rejected the run.
+    await new Agent().prompt('hi');
+    const root = exporter.getFinishedSpans().find((s) => s.name === 'Agent.prompt')!;
+    assert.equal(root.status.code, SpanStatusCode.OK);
+  });
+
+  it('an overlapping prompt() on the same Agent supersedes the first run', async () => {
+    // A fake whose prompt() parks until released, so two runs can overlap.
+    class ParkedAgent {
+      listeners: Listener[] = [];
+      release: (() => void)[] = [];
+      subscribe(l: Listener): () => void {
+        this.listeners.push(l);
+        return () => {
+          this.listeners = this.listeners.filter((x) => x !== l);
+        };
+      }
+      prompt(_text: string): Promise<void> {
+        const emit = (e: unknown): void => this.listeners.forEach((l) => l(e));
+        emit({
+          type: 'message_start',
+          message: { role: 'assistant', model: 'm1', provider: 'p1' },
+        });
+        return new Promise<void>((resolve) => {
+          this.release.push(() => {
+            emit({ type: 'agent_end', messages: [] });
+            resolve();
+          });
+        });
+      }
+    }
+    instrumentPiAgentCore({ Agent: ParkedAgent });
+    const agent = new ParkedAgent();
+    const first = agent.prompt('one');
+    const second = agent.prompt('two');
+    // The first run was closed out the moment the second started …
+    const roots = () => exporter.getFinishedSpans().filter((s) => s.name === 'Agent.prompt');
+    assert.equal(roots().length, 1);
+    assert.equal(roots()[0].status.code, SpanStatusCode.ERROR);
+    assert.match(String(roots()[0].status.message), /superseded/);
+    // … and its late settle must not clear the second run's state: the second
+    // run still finalizes its own root normally.
+    agent.release[0]();
+    await first;
+    agent.release[1]();
+    await second;
+    assert.equal(roots().length, 2);
+    assert.equal(roots()[1].status.code, SpanStatusCode.OK);
   });
 
   it('closes dangling spans when the run throws', async () => {

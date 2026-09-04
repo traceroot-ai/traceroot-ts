@@ -5,8 +5,9 @@
 // pi-agent-core trace renders identically to a pi-coding-agent one in the UI.
 import {
   context,
-  trace,
+  diag,
   SpanStatusCode,
+  trace,
   type Context,
   type Span,
   type Tracer,
@@ -266,7 +267,13 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
     agent.subscribe((event: AgentEvent) => {
       const state = states.get(agent);
       if (!state) return;
-      handlePiAgentCoreEvent(event, resolved, config, state);
+      // Instrumentation must never abort the run: a throwing captureToolIo /
+      // onToolSpan (or a span builder) is logged and the agent carries on.
+      try {
+        handlePiAgentCoreEvent(event, resolved, config, state);
+      } catch (err) {
+        diag.warn('[traceroot-pi-agent-core] instrumentation error (agent run continues):', err);
+      }
     });
   };
 
@@ -283,6 +290,18 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
     root.updateName('Agent.prompt');
     const rootCtx = trace.setSpan(parentCtx, root);
     const state: RunState = { root, rootCtx, tools: new Map() };
+    // One RunState per Agent: a second prompt() overlapping the first would
+    // otherwise route both runs' events into whichever state was set last, and
+    // the first run's settle path would delete the second's state. Close the
+    // prior run out as superseded (its spans force_closed) before replacing it.
+    const prior = states.get(this);
+    if (prior) {
+      sweepRunState(prior);
+      finalizeRootSpan(prior.root, 0, {
+        code: SpanStatusCode.ERROR,
+        message: 'superseded by an overlapping prompt() on the same Agent',
+      });
+    }
     states.set(this, state);
 
     const finalize = (
@@ -290,7 +309,9 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
       error?: unknown,
     ): void => {
       sweepRunState(state);
-      states.delete(this);
+      // Only the current run may clear the slot; a superseded run finalizing
+      // late must not delete the run that replaced it.
+      if (states.get(this) === state) states.delete(this);
       finalizeRootSpan(root, 0, status, error);
     };
 
