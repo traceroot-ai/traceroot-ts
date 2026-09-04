@@ -16,6 +16,14 @@ export function _resetProcessorState(): void {
   _hasWarnedUnattributedDrop = false;
 }
 
+// Cross-language span-name normalization for auto-instrumentation. Some OpenInference JS
+// instrumentors label spans differently from their Python counterparts for the SAME call; we
+// rewrite the JS label to the Python/method-style name so a trace reads identically in both SDKs.
+// Keyed by the upstream JS span name → the normalized name. Display-only (attributes/kind stay).
+const SPAN_NAME_NORMALIZATION: Record<string, string> = {
+  'Anthropic Messages': 'messages.create',
+};
+
 export interface TraceRootSpanProcessorOptions {
   environment?: string;
   gitRepo?: string;
@@ -97,8 +105,15 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     const isRealContext = typeof (parentContext as any)?.getValue === 'function';
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parentSpan = (isRealContext ? otelTrace.getSpan(parentContext) : undefined) as any;
+    // Normalize auto-instrumentation span names so the SAME call reads the same across SDK
+    // languages. The JS OpenInference Anthropic instrumentor hardcodes `Anthropic Messages`;
+    // the Python one names the identical call `messages.create` (the literal SDK method path).
+    // We adopt the method-style name for py/ts parity. Display-only: attributes/kind untouched.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const spanName = ((span as any).name as string) ?? '';
+    const rawName = ((span as any).name as string) ?? '';
+    const normalizedName = SPAN_NAME_NORMALIZATION[rawName];
+    if (normalizedName !== undefined) span.updateName(normalizedName);
+    const spanName = normalizedName ?? rawName;
 
     // `span.name` and `span.parentSpanId` are not on the public @opentelemetry/api
     // Span interface but are stable internal fields on the SDK implementation.
