@@ -102,6 +102,16 @@ export interface InitializeOptions {
      * pipeline of its own, so there is no apiKey/baseUrl to thread here.
      */
     piCodingAgent?: unknown;
+    /**
+     * @earendil-works/pi-agent-core module ref (`import * as piAgentCore from
+     * '@earendil-works/pi-agent-core'`), passed as `{ Agent }` or the module
+     * namespace itself. Instruments the standalone `Agent` class's `prompt()`/
+     * `subscribe()` — a narrower surface than {@link piCodingAgent}'s AgentSession
+     * (no steer()/followUp()/dispose()). Config (captureContent/captureToolIo/
+     * onToolSpan) is not threaded through this option; call
+     * `instrumentPiAgentCore(mod, config)` directly for that.
+     */
+    piAgentCore?: unknown;
   };
   /** Use SimpleSpanProcessor instead of BatchSpanProcessor. Useful for scripts/tests. */
   disableBatch?: boolean;
