@@ -93,6 +93,9 @@ interface RunState {
   llmSpan?: Span;
   llmCtx?: Context;
   tools: Map<string, Span>;
+  // Set when a later prompt() on the same Agent took over: the root is already
+  // ended, so this run's own settle path must not touch it again.
+  superseded?: boolean;
 }
 
 // resolve at use, never capture: TraceRoot.shutdown() calls trace.disable(), which
@@ -296,6 +299,7 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
     // prior run out as superseded (its spans force_closed) before replacing it.
     const prior = states.get(this);
     if (prior) {
+      prior.superseded = true;
       sweepRunState(prior);
       finalizeRootSpan(prior.root, 0, {
         code: SpanStatusCode.ERROR,
@@ -312,6 +316,9 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
       // Only the current run may clear the slot; a superseded run finalizing
       // late must not delete the run that replaced it.
       if (states.get(this) === state) states.delete(this);
+      // A superseded run's root was already ended (as ERROR) by the prompt()
+      // that replaced it; ending it twice would only log an OTel warning.
+      if (state.superseded) return;
       finalizeRootSpan(root, 0, status, error);
     };
 

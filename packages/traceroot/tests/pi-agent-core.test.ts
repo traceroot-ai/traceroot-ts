@@ -224,6 +224,10 @@ describe('instrumentPiAgentCore', () => {
     agent.release[1]();
     await second;
     assert.equal(roots().length, 2);
+    // The superseded root keeps its ERROR/superseded status after its own late
+    // settle — that settle must not re-finalize it as OK.
+    assert.equal(roots()[0].status.code, SpanStatusCode.ERROR);
+    assert.match(String(roots()[0].status.message), /superseded/);
     assert.equal(roots()[1].status.code, SpanStatusCode.OK);
   });
 
