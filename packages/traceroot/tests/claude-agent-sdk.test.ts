@@ -83,6 +83,10 @@ describe('Claude Agent SDK instrumentation', () => {
               output_tokens: 1,
               cache_read_input_tokens: 20,
               cache_creation_input_tokens: 30,
+              cache_creation: {
+                ephemeral_5m_input_tokens: 18,
+                ephemeral_1h_input_tokens: 12,
+              },
             },
             content: [
               {
@@ -242,7 +246,12 @@ describe('Claude Agent SDK instrumentation', () => {
     assert.equal(opus.attributes['llm.token_count.prompt'], 60);
     assert.equal(opus.attributes['llm.token_count.prompt_details.cache_read'], 20);
     assert.equal(opus.attributes['llm.token_count.prompt_details.cache_creation'], 30);
+    // 1h subset rides alongside the collapsed total; 5m needs no attribute
+    // (the platform prices the remainder at the base cache-write rate).
+    assert.equal(opus.attributes['llm.token_count.prompt_details.cache_write_1h'], 12);
     assert.equal(haiku.attributes['llm.token_count.prompt'], 5);
+    // No breakdown on the haiku usage -> no 1h attribute.
+    assert.equal(haiku.attributes['llm.token_count.prompt_details.cache_write_1h'], undefined);
     assert.equal(subagent.attributes['claude_agent_sdk.agent_type'], 'researcher');
     assert.equal(subagent.attributes['claude_agent_sdk.tool_use_count'], 1);
   });
@@ -742,6 +751,7 @@ describe('Claude Agent SDK instrumentation', () => {
             output_tokens: 110,
             cache_read_input_tokens: 20,
             cache_creation_input_tokens: 30,
+            cache_creation: { ephemeral_1h_input_tokens: 9 },
           },
         };
       },
@@ -765,5 +775,61 @@ describe('Claude Agent SDK instrumentation', () => {
     assert.equal(llmSpans[1].attributes['llm.token_count.completion'], 100);
     assert.equal(llmSpans[1].attributes['llm.token_count.prompt_details.cache_read'], 20);
     assert.equal(llmSpans[1].attributes['llm.token_count.prompt_details.cache_creation'], 30);
+    assert.equal(llmSpans[1].attributes['llm.token_count.prompt_details.cache_write_1h'], 9);
+  });
+
+  it('drops a streamed 1h breakdown when the final result replaces the total without one', async () => {
+    // The final usage overwrites cache_creation_input_tokens; a breakdown left over
+    // from the streamed message would then describe a total that no longer exists
+    // (it could even exceed it), so it must be cleared along with the replacement.
+    const sdk = {
+      async *query(_params: QueryParams) {
+        yield {
+          type: 'assistant',
+          message: {
+            id: 'msg_only',
+            role: 'assistant',
+            model: 'claude-opus-4-7',
+            usage: {
+              input_tokens: 100,
+              output_tokens: 10,
+              cache_creation_input_tokens: 50,
+              cache_creation: { ephemeral_1h_input_tokens: 40 },
+            },
+            content: [{ type: 'text', text: 'answer' }],
+          },
+        };
+        yield {
+          type: 'result',
+          result: 'answer',
+          usage: {
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_read_input_tokens: 20,
+            cache_creation_input_tokens: 30,
+          },
+        };
+      },
+    };
+
+    wireClaudeAgentSDKInstrumentation(sdk);
+
+    for await (const _message of sdk.query({
+      prompt: 'test prompt',
+      options: { model: 'claude-opus-4-7' },
+    })) {
+      // Exhaust the stream.
+    }
+
+    const llmSpans = exporter
+      .getFinishedSpans()
+      .filter((s) => s.name === 'anthropic.messages.create');
+
+    assert.equal(llmSpans.length, 1);
+    assert.equal(llmSpans[0].attributes['llm.token_count.prompt_details.cache_creation'], 30);
+    assert.equal(
+      llmSpans[0].attributes['llm.token_count.prompt_details.cache_write_1h'],
+      undefined,
+    );
   });
 });
