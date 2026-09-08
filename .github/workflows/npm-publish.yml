@@ -23,6 +23,11 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: pnpm
 
+      # Trusted publishing authenticates over OIDC and needs npm >= 11.5.1.
+      # Node 22 ships npm 10, so upgrade before publishing.
+      - name: Update npm
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -47,10 +52,13 @@ jobs:
       - name: Test
         run: pnpm --filter @traceroot-ai/traceroot test
 
+      # No token: npm verifies the OIDC claim that this run came from this repo
+      # and workflow. Published with npm rather than pnpm because pnpm's publish
+      # does not perform the OIDC exchange; safe because this package has no
+      # workspace: dependencies to rewrite.
       - name: Publish @traceroot-ai/traceroot
-        run: pnpm --filter @traceroot-ai/traceroot publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
+        working-directory: packages/traceroot
 
   # Triggered by tags like: mastra-v0.1.0, mastra-v1.0.0
   publish-mastra:
@@ -69,6 +77,11 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
           cache: pnpm
+
+      # Trusted publishing authenticates over OIDC and needs npm >= 11.5.1.
+      # Node 22 ships npm 10, so upgrade before publishing.
+      - name: Update npm
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -92,6 +105,5 @@ jobs:
         run: pnpm --filter @traceroot-ai/mastra build
 
       - name: Publish @traceroot-ai/mastra
-        run: pnpm --filter @traceroot-ai/mastra publish --provenance --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
+        working-directory: packages/mastra
