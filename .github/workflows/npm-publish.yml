@@ -24,9 +24,11 @@ jobs:
           cache: pnpm
 
       # Trusted publishing authenticates over OIDC and needs npm >= 11.5.1.
-      # Node 22 ships npm 10, so upgrade before publishing.
+      # Node 22 ships npm 10, so upgrade before publishing. Pinned to the 11
+      # line: npm 12 requires Node ^22.22.2 and `@latest` broke the
+      # traceroot-cli v0.3.0 publish the day npm 12 shipped.
       - name: Update npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -79,9 +81,11 @@ jobs:
           cache: pnpm
 
       # Trusted publishing authenticates over OIDC and needs npm >= 11.5.1.
-      # Node 22 ships npm 10, so upgrade before publishing.
+      # Node 22 ships npm 10, so upgrade before publishing. Pinned to the 11
+      # line: npm 12 requires Node ^22.22.2 and `@latest` broke the
+      # traceroot-cli v0.3.0 publish the day npm 12 shipped.
       - name: Update npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
