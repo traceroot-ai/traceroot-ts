@@ -223,18 +223,23 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
     }
   }
 
-  /** The content revision of the dataset's current published version, for change detection. Null
-   *  when it can't be fetched (then we fall through to confirm rather than assume unchanged). */
-  private async publishedRevision(datasetId: string, versionId: string): Promise<string | null> {
+  /** The current published version's content revision AND its ordinal. The revision drives change
+   *  detection; the ordinal rides along on the same payload so an idempotent no-op can report the
+   *  version it kept without a second request. `[null, null]` when it can't be fetched (then we
+   *  fall through to confirm rather than assume unchanged). */
+  private async publishedRevision(
+    datasetId: string,
+    versionId: string,
+  ): Promise<[string | null, number | null]> {
     try {
       const current = await pullDatasetVersion(versionId, {
         datasetId,
         apiKey: this.apiKey,
         baseUrl: this.baseUrl,
       });
-      return current.snapshot().revision;
+      return [current.snapshot().revision, current.versionNumber ?? null];
     } catch {
-      return null;
+      return [null, null];
     }
   }
 
@@ -269,19 +274,24 @@ export class PlatformDatasetSync implements DatasetSyncTransport {
     const existing = await this.existingDataset(snapshot.datasetId);
     if (existing) {
       const currentVersion = existing.current_dataset_version_id as string;
-      if (
-        (await this.publishedRevision(snapshot.datasetId, currentVersion)) === snapshot.revision
-      ) {
+      const [publishedRevision, publishedNumber] = await this.publishedRevision(
+        snapshot.datasetId,
+        currentVersion,
+      );
+      if (publishedRevision === snapshot.revision) {
         // Identical content -> idempotent no-op; keep the current version, never prompt.
         // `name`/`description` are dataset metadata, NOT part of the content revision, so an edit
         // to either lands here with an unchanged revision. Returning without the upsert would make
         // `ds.description = ...; await ds.push()` a silent no-op, so send the metadata first and
         // only skip the VERSION.
         await this.upsertDataset(snapshot);
+        // Report the version we kept, not just its id: a caller re-pushing unchanged content
+        // should see the same versionNumber the original push returned.
         return {
           status: 'uploaded',
           datasetId: snapshot.datasetId,
           datasetVersionId: currentVersion,
+          versionNumber: publishedNumber,
         };
       }
       const confirm = opts?.onExisting ?? confirmNewVersion;
