@@ -37,20 +37,18 @@ export function __setInstrumentedProvidersForTest(providers: string[]): void {
 // One static require per supported package. Keeping the module names literal (rather than
 // passing them through require(pkg)) means bundlers and security scanners can see the full set,
 // while the packages stay optional: each require only runs when its provider is wired.
+/* eslint-disable @typescript-eslint/no-require-imports -- lazy optional peers, loaded on demand */
 const OPENINFERENCE_LOADERS: Record<string, () => Record<string, unknown>> = {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   '@arizeai/openinference-instrumentation-openai': () =>
     require('@arizeai/openinference-instrumentation-openai'),
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   '@arizeai/openinference-instrumentation-anthropic': () =>
     require('@arizeai/openinference-instrumentation-anthropic'),
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   '@arizeai/openinference-instrumentation-langchain': () =>
     require('@arizeai/openinference-instrumentation-langchain'),
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   '@arizeai/openinference-instrumentation-bedrock': () =>
     require('@arizeai/openinference-instrumentation-bedrock'),
 };
+/* eslint-enable @typescript-eslint/no-require-imports */
 
 function loadInstrumentation(pkg: string, exportName: string): InstrumentationCtor | null {
   const load = OPENINFERENCE_LOADERS[pkg];
