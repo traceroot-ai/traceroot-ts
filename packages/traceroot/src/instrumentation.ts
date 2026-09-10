@@ -34,10 +34,29 @@ export function __setInstrumentedProvidersForTest(providers: string[]): void {
   for (const p of providers) _instrumentedProviders.add(p);
 }
 
+// One static require per supported package. Keeping the module names literal (rather than
+// passing them through require(pkg)) means bundlers and security scanners can see the full set,
+// while the packages stay optional: each require only runs when its provider is wired.
+const OPENINFERENCE_LOADERS: Record<string, () => Record<string, unknown>> = {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  '@arizeai/openinference-instrumentation-openai': () =>
+    require('@arizeai/openinference-instrumentation-openai'),
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  '@arizeai/openinference-instrumentation-anthropic': () =>
+    require('@arizeai/openinference-instrumentation-anthropic'),
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  '@arizeai/openinference-instrumentation-langchain': () =>
+    require('@arizeai/openinference-instrumentation-langchain'),
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  '@arizeai/openinference-instrumentation-bedrock': () =>
+    require('@arizeai/openinference-instrumentation-bedrock'),
+};
+
 function loadInstrumentation(pkg: string, exportName: string): InstrumentationCtor | null {
+  const load = OPENINFERENCE_LOADERS[pkg];
+  if (!load) return null;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require(pkg) as Record<string, unknown>;
+    const mod = load();
     const ctor = mod[exportName];
     if (typeof ctor !== 'function') return null;
     return ctor as InstrumentationCtor;
