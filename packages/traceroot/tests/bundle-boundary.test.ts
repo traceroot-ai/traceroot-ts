@@ -15,14 +15,28 @@ describe('consumer bundling boundary', () => {
       platform: 'node',
       format: 'cjs',
       write: false,
+      metafile: true,
       logLevel: 'silent',
     });
-    const text = result.outputFiles[0].text;
+    // metafile.inputs lists every module esbuild inlined into the bundle.
+    const inlined = Object.keys(result.metafile.inputs);
+
+    // Positive control: a statically imported dependency is inlined, so the bundle really
+    // does include node_modules and the assertions below are meaningful.
+    assert.ok(
+      inlined.some((file) => file.includes('openinference-semantic-conventions')),
+      'expected the statically imported semantic-conventions package to be bundled',
+    );
+
     for (const provider of ['openai', 'anthropic', 'langchain', 'bedrock']) {
-      // esbuild labels every inlined module with a "// <path>" header comment.
-      const inlined = new RegExp(`^// .*openinference-instrumentation-${provider}`, 'm');
-      assert.equal(inlined.test(text), false, `${provider} instrumentation was bundled`);
+      assert.ok(
+        !inlined.some((file) => file.includes(`openinference-instrumentation-${provider}`)),
+        `${provider} instrumentation was bundled`,
+      );
     }
-    assert.equal(text.includes('@aws-sdk/client-bedrock-runtime'), false);
+    assert.ok(
+      !inlined.some((file) => file.includes('client-bedrock-runtime')),
+      'the Bedrock client (a peer of an optional instrumentation) was bundled',
+    );
   });
 });
