@@ -1,4 +1,5 @@
 // src/instrumentation.ts
+import { createRequire } from 'node:module';
 import { registerInstrumentations, type Instrumentation } from '@opentelemetry/instrumentation';
 import type { InitializeOptions } from './types';
 import { wireOpenAIAgentsProcessor } from './openai-agents';
@@ -34,10 +35,34 @@ export function __setInstrumentedProvidersForTest(providers: string[]): void {
   for (const p of providers) _instrumentedProviders.add(p);
 }
 
+// One static require per supported package. Keeping the module names literal (rather than
+// passing them through require(pkg)) means bundlers and security scanners can see the full set,
+// while the packages stay optional: each require only runs when its provider is wired.
+// The SDK ships as plain CommonJS, so a consumer's bundler (esbuild, webpack, Rollup) that
+// bundles node_modules reads this file. Anything passed to the `require` identifier gets
+// resolved at build time: with the four module names spelled out that means every
+// instrumentation and its peers (for example @langchain/core) are pulled in, or fail to
+// resolve, even though only the configured provider ever loads. A require obtained from
+// createRequire is opaque to bundlers, so these stay runtime requires, while the names stay
+// literal so static analysis can see the full set of loadable modules.
+const requireOptional = createRequire(__filename);
+
+const OPENINFERENCE_LOADERS: Record<string, () => Record<string, unknown>> = {
+  '@arizeai/openinference-instrumentation-openai': () =>
+    requireOptional('@arizeai/openinference-instrumentation-openai'),
+  '@arizeai/openinference-instrumentation-anthropic': () =>
+    requireOptional('@arizeai/openinference-instrumentation-anthropic'),
+  '@arizeai/openinference-instrumentation-langchain': () =>
+    requireOptional('@arizeai/openinference-instrumentation-langchain'),
+  '@arizeai/openinference-instrumentation-bedrock': () =>
+    requireOptional('@arizeai/openinference-instrumentation-bedrock'),
+};
+
 function loadInstrumentation(pkg: string, exportName: string): InstrumentationCtor | null {
+  const load = OPENINFERENCE_LOADERS[pkg];
+  if (!load) return null;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require(pkg) as Record<string, unknown>;
+    const mod = load();
     const ctor = mod[exportName];
     if (typeof ctor !== 'function') return null;
     return ctor as InstrumentationCtor;
