@@ -13,6 +13,10 @@ import { instrumentPiAgentCore } from '../src/pi-agent-core';
 
 type Listener = (e: unknown) => void;
 
+function attrsOf(span: ReadableSpan): Record<string, unknown> {
+  return span.attributes as Record<string, unknown>;
+}
+
 // Fresh class per call — instrumentPiAgentCore() patches Agent.prototype directly,
 // and WRAPPED is a chain-traversing read (matches pi.ts's own WRAPPED check), so a
 // subclass of an already-wrapped class would inherit WRAPPED=true and no-op instead
@@ -164,6 +168,94 @@ describe('instrumentPiAgentCore', () => {
     await new Agent().prompt('hi');
     const tool = exporter.getFinishedSpans().find((s) => s.name.startsWith('bash'))!;
     assert.equal((tool.attributes as Record<string, unknown>)['output.value'], '[withheld]');
+  });
+
+  it('a captureContent function decides what lands on the root and LLM spans, input included', async () => {
+    const Base = makeFakeAgentClass();
+    // The real Agent exposes its conversation as `state.messages`; the fake keeps a
+    // fixed one so llm_input has something to read.
+    class Agent extends Base {
+      state = {
+        systemPrompt: 'be brief',
+        messages: [
+          { role: 'user', content: 'hi' },
+          { role: 'toolResult', toolCallId: 'tc0', toolName: 'bash', content: [], isError: false },
+        ],
+      };
+    }
+    const seen: string[] = [];
+    instrumentPiAgentCore(
+      { Agent },
+      {
+        captureContent: (kind, value) => {
+          seen.push(kind);
+          switch (kind) {
+            case 'agent_input':
+              return `in:${value.text}`;
+            case 'agent_output':
+              return `out:${value.messages?.length ?? 0}`;
+            case 'llm_input':
+              return `ctx:${value.systemPrompt}:${value.messages?.map((m) => m.role).join(',')}`;
+            case 'llm_output':
+              return `reply:${(value.message as { stopReason?: string } | undefined)?.stopReason}`;
+          }
+        },
+      },
+    );
+    await new Agent().prompt('hi');
+    const spans = exporter.getFinishedSpans();
+    const root = spans.find((s) => s.name === 'Agent.prompt')!;
+    const llm = spans.filter((s) => s.name === 'm1');
+    assert.equal(attrsOf(root)['input.value'], 'in:hi');
+    assert.equal(attrsOf(root)['output.value'], 'out:1');
+    assert.equal(llm.length, 2);
+    assert.equal(attrsOf(llm[0]!)['input.value'], 'ctx:be brief:user,toolResult');
+    assert.equal(attrsOf(llm[0]!)['output.value'], 'reply:toolUse');
+    assert.equal(attrsOf(llm[1]!)['output.value'], 'reply:stop');
+    assert.deepEqual(seen.filter((k) => k === 'llm_input').length, 2, 'asked once per model call');
+  });
+
+  it('a captureContent function returning undefined records nothing, and true never records llm_input', async () => {
+    const Silent = makeFakeAgentClass();
+    instrumentPiAgentCore({ Agent: Silent }, { captureContent: () => undefined });
+    await new Silent().prompt('hi');
+    // Tool spans are governed by captureToolIo, not captureContent, so they keep their I/O.
+    for (const span of exporter.getFinishedSpans().filter((s) => !s.name.startsWith('bash'))) {
+      assert.equal(attrsOf(span)['input.value'], undefined, `${span.name} input`);
+      assert.equal(attrsOf(span)['output.value'], undefined, `${span.name} output`);
+    }
+    exporter.reset();
+
+    const Base = makeFakeAgentClass();
+    class Agent extends Base {
+      state = { systemPrompt: 'sys', messages: [{ role: 'user', content: 'hi' }] };
+    }
+    instrumentPiAgentCore({ Agent }, { captureContent: true });
+    await new Agent().prompt('hi');
+    const spans = exporter.getFinishedSpans();
+    assert.equal(attrsOf(spans.find((s) => s.name === 'Agent.prompt')!)['input.value'], 'hi');
+    const llm = spans.find((s) => s.name === 'm1')!;
+    assert.equal(
+      attrsOf(llm)['input.value'],
+      undefined,
+      'boolean true keeps model inputs off the span',
+    );
+    assert.ok(attrsOf(llm)['output.value'], 'boolean true still records the assistant output');
+  });
+
+  it('a throwing captureContent does not abort the run', async () => {
+    const Agent = makeFakeAgentClass();
+    instrumentPiAgentCore(
+      { Agent },
+      {
+        captureContent: () => {
+          throw new Error('boom');
+        },
+      },
+    );
+    await new Agent().prompt('hi');
+    const root = exporter.getFinishedSpans().find((s) => s.name === 'Agent.prompt')!;
+    assert.equal(root.status.code, SpanStatusCode.OK);
   });
 
   it('a throwing captureToolIo does not abort the run', async () => {

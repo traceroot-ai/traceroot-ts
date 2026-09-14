@@ -25,6 +25,9 @@ import {
   closeToolSpan,
   closeDanglingSpan,
   type AgentEvent,
+  type AgentMessage,
+  type AssistantMessage,
+  type ContentCapture,
 } from './pi';
 import { SDK_VERSION } from './processor';
 
@@ -39,8 +42,13 @@ import { SDK_VERSION } from './processor';
  *   persisted tool-step row) without reaching into OTel internals.
  */
 export interface PiAgentCoreConfig {
-  /** Capture prompt/response text as input.value/output.value on the AGENT and LLM spans. Default true. */
-  captureContent?: boolean;
+  /**
+   * Capture prompt/response text as input.value/output.value on the AGENT and LLM
+   * spans. `true` (default) records them as-is, `false` records none, a function
+   * decides per piece (and is the only form that records a model call's input
+   * messages, read from `agent.state` at message_start). See pi.ts's ContentCapture.
+   */
+  captureContent?: ContentCapture;
   /**
    * Capture tool call args/results as input.value/output.value on TOOL spans.
    * `true`/`false` behaves like pi-coding-agent's captureToolIo. A function receives
@@ -63,6 +71,8 @@ export interface PiAgentCoreConfig {
  */
 export interface PiAgentCoreInstance {
   readonly sessionId?: string;
+  /** pi-agent-core's public AgentState; read at message_start for a captureContent function's llm_input. */
+  readonly state?: { readonly messages?: readonly AgentMessage[]; readonly systemPrompt?: string };
   prompt(text: string, options?: unknown): Promise<void>;
   subscribe(listener: (event: AgentEvent) => void): () => void;
 }
@@ -88,6 +98,7 @@ export interface PiAgentCoreModule {
 const WRAPPED = Symbol.for('traceroot.pi-agent-core.wrapped');
 
 interface RunState {
+  agent: PiAgentCoreInstance;
   root: Span;
   rootCtx: Context;
   llmSpan?: Span;
@@ -127,6 +138,26 @@ function sweepRunState(state: RunState): void {
  * captureToolIo flag then gates whether it's actually serialized); a function
  * transforms it up front, e.g. to redact or replace it with a summary string.
  */
+/**
+ * The messages this model call was given, for a captureContent function's
+ * `llm_input`. pi-agent-core has already appended the (still empty) assistant
+ * message being streamed when message_start fires, so it is dropped from the end.
+ * Any failure reading the state records nothing rather than aborting the run.
+ */
+function llmInputMessages(
+  agent: PiAgentCoreInstance,
+  current: AssistantMessage,
+): readonly AgentMessage[] | undefined {
+  try {
+    const messages = agent.state?.messages;
+    if (!Array.isArray(messages)) return undefined;
+    const last = messages[messages.length - 1];
+    return last === current ? messages.slice(0, -1) : messages;
+  } catch {
+    return undefined;
+  }
+}
+
 function resolvedToolArgs(config: PiAgentCoreConfig, toolName: string, args: unknown): unknown {
   if (typeof config.captureToolIo !== 'function') return args;
   return config.captureToolIo(toolName, args, undefined).args;
@@ -159,7 +190,11 @@ function handlePiAgentCoreEvent(
       closeDanglingSpan(state.llmSpan);
       // Same parenting as pi.ts: nests under the root, keyed off rootCtx (never a
       // bare ROOT_CONTEXT — see the function doc above).
-      state.llmSpan = openLlmSpan(tracer(), state.rootCtx, event.message);
+      state.llmSpan = openLlmSpan(tracer(), state.rootCtx, event.message, {
+        captureContent: config.captureContent,
+        messages: llmInputMessages(state.agent, event.message),
+        systemPrompt: state.agent.state?.systemPrompt,
+      });
       state.llmCtx = trace.setSpan(state.rootCtx, state.llmSpan);
       break;
     }
@@ -292,7 +327,7 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
     });
     root.updateName('Agent.prompt');
     const rootCtx = trace.setSpan(parentCtx, root);
-    const state: RunState = { root, rootCtx, tools: new Map() };
+    const state: RunState = { agent: this, root, rootCtx, tools: new Map() };
     // One RunState per Agent: a second prompt() overlapping the first would
     // otherwise route both runs' events into whichever state was set last, and
     // the first run's settle path would delete the second's state. Close the
