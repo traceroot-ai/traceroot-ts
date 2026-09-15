@@ -371,7 +371,7 @@ describe('TraceRootSpanProcessor exportSpan', () => {
     });
     const [child] = exporter.getFinishedSpans();
     assert.equal(child.name, 'kept-child');
-    assert.equal(child.parentSpanContext?.spanId, parentId);
+    assert.equal(child.parentSpanId, parentId);
   });
 
   it('a throwing predicate exports the span rather than failing the host', () => {
