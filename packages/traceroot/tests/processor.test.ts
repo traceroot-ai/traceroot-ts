@@ -326,3 +326,60 @@ describe('TraceRootSpanProcessor globalAttributes (integration)', () => {
     }
   });
 });
+
+describe('TraceRootSpanProcessor exportSpan', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+
+  function register(exportSpan: (span: { name: string }) => boolean): void {
+    exporter = new InMemorySpanExporter();
+    provider = new NodeTracerProvider();
+    provider.addSpanProcessor(
+      new TraceRootSpanProcessor(new SimpleSpanProcessor(exporter), { exportSpan }),
+    );
+    provider.register();
+  }
+
+  afterEach(async () => {
+    await provider.shutdown();
+    exporter.reset();
+    trace.disable();
+    context.disable();
+    propagation.disable();
+  });
+
+  it('drops the spans the predicate refuses and keeps the rest, children included', () => {
+    register((span) => !span.name.startsWith('Sandbox.'));
+    const tracer = trace.getTracer('test');
+    tracer.startActiveSpan('agent', (root) => {
+      tracer.startActiveSpan('Sandbox.refreshData', (noise) => noise.end());
+      tracer.startActiveSpan('bash', (tool) => tool.end());
+      root.end();
+    });
+    const names = exporter.getFinishedSpans().map((s) => s.name);
+    assert.deepEqual(names, ['bash', 'agent']);
+  });
+
+  it('a kept child of a dropped span still exports, with its parent id intact', () => {
+    register((span) => span.name !== 'dropped-parent');
+    const tracer = trace.getTracer('test');
+    let parentId = '';
+    tracer.startActiveSpan('dropped-parent', (parent) => {
+      parentId = parent.spanContext().spanId;
+      tracer.startActiveSpan('kept-child', (child) => child.end());
+      parent.end();
+    });
+    const [child] = exporter.getFinishedSpans();
+    assert.equal(child.name, 'kept-child');
+    assert.equal(child.parentSpanContext?.spanId, parentId);
+  });
+
+  it('a throwing predicate exports the span rather than failing the host', () => {
+    register(() => {
+      throw new Error('filter bug');
+    });
+    const tracer = trace.getTracer('test');
+    tracer.startActiveSpan('survives', (span) => span.end());
+    assert.equal(exporter.getFinishedSpans().length, 1);
+  });
+});
