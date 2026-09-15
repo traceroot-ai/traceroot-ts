@@ -134,16 +134,76 @@ export interface PiCodingAgentModule {
 
 export const TRACER_NAME = '@traceroot-ai/pi-coding-agent';
 
+/** Which piece of a run's content a `captureContent` function is being asked to record. */
+export type ContentCaptureKind = 'agent_input' | 'agent_output' | 'llm_input' | 'llm_output';
+
+/**
+ * What a `captureContent` function receives. Which fields are set depends on the kind:
+ * `agent_input` carries the prompt `text`; `agent_output` the run's final `messages`
+ * and the last assistant `message`; `llm_input` the `messages` (and `systemPrompt`)
+ * sent to the model for that call, when the host exposes them; `llm_output` the
+ * assistant `message` the model returned.
+ */
+export interface ContentCaptureValue {
+  text?: string;
+  messages?: readonly AgentMessage[];
+  systemPrompt?: string;
+  message?: AgentMessage;
+}
+
+/**
+ * Decides what text lands on a span for one piece of content: return the string to
+ * record, or `undefined` to record nothing. Lets a host redact, cap, or summarise
+ * prompts and completions before they leave the process, the same way a
+ * `captureToolIo` function does for tool I/O.
+ */
+export type ContentCaptureFn = (
+  kind: ContentCaptureKind,
+  value: ContentCaptureValue,
+) => string | undefined;
+
+/**
+ * `true` records the prompt on the AGENT span and the assistant text on the AGENT and
+ * LLM spans as-is (the model's input messages are never recorded under `true`: they
+ * repeat the whole conversation on every call). `false` records none of it. A
+ * function is asked for every kind, `llm_input` included, and is the only way to
+ * record model inputs.
+ */
+export type ContentCapture = boolean | ContentCaptureFn;
+
 export interface PiInstrumentationConfig {
-  /** Capture prompt/response text as input.value/output.value on AGENT and LLM spans. Default true. */
-  captureContent?: boolean;
+  /** Capture prompt/response text as input.value/output.value on AGENT and LLM spans. Default true. See ContentCapture. */
+  captureContent?: ContentCapture;
   /** Capture tool call args/results as input.value/output.value on TOOL spans. Default true. */
   captureToolIo?: boolean;
 }
 
 export interface ResolvedPiInstrumentationConfig {
-  captureContent: boolean;
+  captureContent: ContentCapture;
   captureToolIo: boolean;
+}
+
+/**
+ * The text to record for one piece of content under `capture`: nothing for `false`,
+ * the instrumentation's own rendering for `true`, whatever the function returns
+ * otherwise. `fallback` is only evaluated when `true` asks for it.
+ */
+export function capturedContent(
+  capture: ContentCapture,
+  kind: ContentCaptureKind,
+  value: ContentCaptureValue,
+  fallback: () => string | undefined,
+): string | undefined {
+  if (capture === false) return undefined;
+  if (capture === true) return fallback();
+  // A host's capture function must never abort the run it observes: a throw
+  // records nothing for this piece and is logged, like a throwing captureToolIo.
+  try {
+    return capture(kind, value);
+  } catch (err) {
+    diag.warn(`[traceroot-pi] captureContent threw for ${kind}; recording nothing:`, err);
+    return undefined;
+  }
 }
 
 export function resolveConfig(config?: PiInstrumentationConfig): ResolvedPiInstrumentationConfig {
@@ -315,12 +375,20 @@ function assistantOutputValue(message: AgentMessage | undefined): string | undef
 export function openRootSpan(
   tracer: Pick<Tracer, 'startSpan'>,
   parentCtx: Context,
-  input: { text: string | undefined; sessionId: string | undefined; captureContent: boolean },
+  input: {
+    text: string | undefined;
+    sessionId: string | undefined;
+    captureContent: ContentCapture;
+  },
 ): Span {
   const span = tracer.startSpan('AgentSession.prompt', { kind: SpanKind.INTERNAL }, parentCtx);
   setAttr(span, OI_SPAN_KIND, OI_SPAN_KIND_VALUE.AGENT);
   setAttr(span, OI_TRACE_SESSION_ID, input.sessionId);
-  if (input.captureContent) setAttr(span, OI_INPUT_VALUE, input.text);
+  setAttr(
+    span,
+    OI_INPUT_VALUE,
+    capturedContent(input.captureContent, 'agent_input', { text: input.text }, () => input.text),
+  );
   return span;
 }
 
@@ -328,9 +396,9 @@ export function openRootSpan(
 export function stampRootOutput(
   span: Span,
   finalMessages: AgentMessage[],
-  captureContent: boolean,
+  captureContent: ContentCapture,
 ): void {
-  if (!captureContent) return;
+  if (captureContent === false) return;
   let lastAssistant: AgentMessage | undefined;
   for (let i = finalMessages.length - 1; i >= 0; i -= 1) {
     if (finalMessages[i].role === 'assistant') {
@@ -338,7 +406,16 @@ export function stampRootOutput(
       break;
     }
   }
-  setAttr(span, OI_OUTPUT_VALUE, assistantOutputValue(lastAssistant));
+  setAttr(
+    span,
+    OI_OUTPUT_VALUE,
+    capturedContent(
+      captureContent,
+      'agent_output',
+      { messages: finalMessages, message: lastAssistant },
+      () => assistantOutputValue(lastAssistant),
+    ),
+  );
 }
 
 // Ends the root span exactly once, when the wrapping prompt() call's own returned promise settles.
@@ -361,10 +438,20 @@ export function finalizeRootSpan(
   endSpanSafe(span);
 }
 
+/**
+ * `input`, when the host can supply it, is what this model call was given: the
+ * conversation so far and the system prompt. Only a `captureContent` function
+ * records it (see ContentCapture); the boolean form never does.
+ */
 export function openLlmSpan(
   tracer: Pick<Tracer, 'startSpan'>,
   parentCtx: Context,
   message: AssistantMessage,
+  input?: {
+    captureContent: ContentCapture;
+    messages?: readonly AgentMessage[];
+    systemPrompt?: string;
+  },
 ): Span {
   const span = tracer.startSpan(message.model || 'pi.llm', { kind: SpanKind.CLIENT }, parentCtx);
   setAttr(span, OI_SPAN_KIND, OI_SPAN_KIND_VALUE.LLM);
@@ -373,10 +460,26 @@ export function openLlmSpan(
   // Dual-write the OpenInference llm.* family alongside gen_ai.* for downstream
   // consumers. model_name starts at the request model; closeLlmSpan resolves it.
   setAttr(span, OI_LLM_MODEL_NAME, message.model);
+  if (input) {
+    setAttr(
+      span,
+      OI_INPUT_VALUE,
+      capturedContent(
+        input.captureContent,
+        'llm_input',
+        { messages: input.messages, systemPrompt: input.systemPrompt, message },
+        () => undefined,
+      ),
+    );
+  }
   return span;
 }
 
-export function closeLlmSpan(span: Span, message: AssistantMessage, captureContent: boolean): void {
+export function closeLlmSpan(
+  span: Span,
+  message: AssistantMessage,
+  captureContent: ContentCapture,
+): void {
   span.updateName(message.responseModel || message.model || 'pi.llm');
   setAttr(span, GEN_AI_ATTRIBUTES.RESPONSE_MODEL, message.responseModel || message.model);
   setAttr(span, GEN_AI_ATTRIBUTES.USAGE_INPUT_TOKENS, message.usage?.input);
@@ -392,9 +495,11 @@ export function closeLlmSpan(span: Span, message: AssistantMessage, captureConte
   setAttr(span, OI_LLM_TOKEN_COUNT_TOTAL, message.usage?.totalTokens);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_READ, message.usage?.cacheRead);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_WRITE, message.usage?.cacheWrite);
-  if (captureContent) {
-    setAttr(span, OI_OUTPUT_VALUE, assistantOutputValue(message));
-  }
+  setAttr(
+    span,
+    OI_OUTPUT_VALUE,
+    capturedContent(captureContent, 'llm_output', { message }, () => assistantOutputValue(message)),
+  );
   if (message.stopReason === 'error' || message.stopReason === 'aborted') {
     span.setStatus({
       code: SpanStatusCode.ERROR,
