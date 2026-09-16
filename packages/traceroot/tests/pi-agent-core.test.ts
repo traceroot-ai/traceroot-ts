@@ -142,6 +142,34 @@ describe('instrumentPiAgentCore', () => {
     assert.equal(agent.spanContext().traceId, host.spanContext().traceId);
   });
 
+  it("agentSpan 'unless-nested': under an active span the run's spans hang off the host, no Agent.prompt", async () => {
+    const Agent = makeFakeAgentClass();
+    instrumentPiAgentCore({ Agent }, { agentSpan: 'unless-nested' });
+    const tracer = trace.getTracer('test');
+    await tracer.startActiveSpan('host', async (host) => {
+      await new Agent().prompt('hi');
+      host.end();
+    });
+    const spans = exporter.getFinishedSpans();
+    assert.deepEqual(spans.map((s) => s.name).sort(), ['host', 'bash: ls', 'm1', 'm1'].sort());
+    const host = spans.find((s) => s.name === 'host')!;
+    for (const llm of spans.filter((s) => s.name === 'm1')) {
+      assert.equal(llm.parentSpanId, host.spanContext().spanId);
+    }
+    // The host's span is left as the host set it: no status, no output stamped.
+    assert.equal(host.status.code, 0 /* UNSET */);
+    assert.equal(attrsOf(host)['output.value'], undefined);
+  });
+
+  it("agentSpan 'unless-nested' still opens Agent.prompt as the root when nothing is active", async () => {
+    const Agent = makeFakeAgentClass();
+    instrumentPiAgentCore({ Agent }, { agentSpan: 'unless-nested' });
+    await new Agent().prompt('hi');
+    const root = exporter.getFinishedSpans().find((s) => s.name === 'Agent.prompt')!;
+    assert.ok(root);
+    assert.equal(root.parentSpanId, undefined);
+  });
+
   it('is idempotent', () => {
     const a = instrumentPiAgentCore(sdk);
     const b = instrumentPiAgentCore(sdk);

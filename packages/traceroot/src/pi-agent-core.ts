@@ -61,6 +61,18 @@ export interface PiAgentCoreConfig {
     | ((toolName: string, args: unknown, result: unknown) => { args?: unknown; result?: string });
   /** Fires at tool_execution_start with the tool span's own ids — a side channel, not a substitute for the span itself. */
   onToolSpan?: (info: { toolCallId: string; spanId: string; traceId: string }) => void;
+  /**
+   * Whether each prompt() opens its own AGENT span (`Agent.prompt`).
+   * `'always'` (default): it does, as the root when nothing is active and as a
+   * child of the active span otherwise. `'unless-nested'`: when a recording
+   * span is already active, no AGENT span is opened and the run's LLM and
+   * TOOL spans hang directly off the active span — for a host that opens its
+   * own root around the run and records the prompt and the answer there, so
+   * an `Agent.prompt` layer would only repeat it (or, with captureContent
+   * narrowing it out, sit empty). Without an active span the AGENT span is
+   * still opened: a run must have a root to be a trace at all.
+   */
+  agentSpan?: 'always' | 'unless-nested';
 }
 
 /**
@@ -99,7 +111,8 @@ const WRAPPED = Symbol.for('traceroot.pi-agent-core.wrapped');
 
 interface RunState {
   agent: PiAgentCoreInstance;
-  root: Span;
+  /** The run's own AGENT span; absent when the run nests under the host's span (agentSpan: 'unless-nested'). */
+  root?: Span;
   rootCtx: Context;
   llmSpan?: Span;
   llmCtx?: Context;
@@ -252,7 +265,9 @@ function handlePiAgentCoreEvent(
     }
     case 'agent_end': {
       sweepRunState(state);
-      stampRootOutput(state.root, event.messages, config.captureContent);
+      // Without an own AGENT span the answer belongs to the host's span, which
+      // the host records itself.
+      if (state.root) stampRootOutput(state.root, event.messages, config.captureContent);
       break;
     }
     case 'turn_end': {
@@ -320,13 +335,22 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
     ensureSubscribed(this);
 
     const parentCtx = context.active();
-    const root = openRootSpan(tracer(), parentCtx, {
-      text: typeof text === 'string' ? text : undefined,
-      sessionId: this.sessionId,
-      captureContent: resolved.captureContent,
-    });
-    root.updateName('Agent.prompt');
-    const rootCtx = trace.setSpan(parentCtx, root);
+    // A host that opened its own span around the run, and asked for it, gets
+    // the run's children directly: no AGENT span of ours in between.
+    const activeParent = trace.getSpan(parentCtx);
+    const nested =
+      config.agentSpan === 'unless-nested' &&
+      activeParent !== undefined &&
+      activeParent.isRecording();
+    const root = nested
+      ? undefined
+      : openRootSpan(tracer(), parentCtx, {
+          text: typeof text === 'string' ? text : undefined,
+          sessionId: this.sessionId,
+          captureContent: resolved.captureContent,
+        });
+    root?.updateName('Agent.prompt');
+    const rootCtx = root ? trace.setSpan(parentCtx, root) : parentCtx;
     const state: RunState = { agent: this, root, rootCtx, tools: new Map() };
     // One RunState per Agent: a second prompt() overlapping the first would
     // otherwise route both runs' events into whichever state was set last, and
@@ -336,10 +360,12 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
     if (prior) {
       prior.superseded = true;
       sweepRunState(prior);
-      finalizeRootSpan(prior.root, 0, {
-        code: SpanStatusCode.ERROR,
-        message: 'superseded by an overlapping prompt() on the same Agent',
-      });
+      if (prior.root) {
+        finalizeRootSpan(prior.root, 0, {
+          code: SpanStatusCode.ERROR,
+          message: 'superseded by an overlapping prompt() on the same Agent',
+        });
+      }
     }
     states.set(this, state);
 
@@ -352,8 +378,9 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
       // late must not delete the run that replaced it.
       if (states.get(this) === state) states.delete(this);
       // A superseded run's root was already ended (as ERROR) by the prompt()
-      // that replaced it; ending it twice would only log an OTel warning.
-      if (state.superseded) return;
+      // that replaced it; ending it twice would only log an OTel warning. A
+      // nested run has no root of its own: its outcome is the host's to record.
+      if (state.superseded || !root) return;
       finalizeRootSpan(root, 0, status, error);
     };
 
