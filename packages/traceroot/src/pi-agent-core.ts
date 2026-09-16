@@ -253,11 +253,19 @@ function handlePiAgentCoreEvent(
         // (stringifyToolIo would otherwise quote a plain string like "[withheld]"):
         // set the resolved string verbatim, then let closeToolSpan only apply
         // status/end (captureToolIo: false so it does not also try to serialize).
-        const result = resolvedToolResult(rawConfig, event.toolName, event.result) as
-          | string
-          | undefined;
-        if (result !== undefined) span.setAttribute(OI_OUTPUT_VALUE, result);
-        closeToolSpan(span, undefined, event.isError, false);
+        // The span is closed whatever the transform does: a throwing result
+        // capture used to leave it open forever (deleted from the map above,
+        // so the run-end sweep could not find it either) and the tool span a
+        // host had already been handed the id of never reached the exporter.
+        // A failed capture records no output — never the raw result.
+        try {
+          const result = resolvedToolResult(rawConfig, event.toolName, event.result) as
+            | string
+            | undefined;
+          if (result !== undefined) span.setAttribute(OI_OUTPUT_VALUE, result);
+        } finally {
+          closeToolSpan(span, undefined, event.isError, false);
+        }
       } else {
         closeToolSpan(span, event.result, event.isError, config.captureToolIo);
       }

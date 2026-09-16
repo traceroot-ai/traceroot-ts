@@ -286,6 +286,31 @@ describe('instrumentPiAgentCore', () => {
     assert.equal(root.status.code, SpanStatusCode.OK);
   });
 
+  it('a result capture that throws still closes the tool span, with no output recorded', async () => {
+    const Agent = makeFakeAgentClass();
+    let seen = '';
+    instrumentPiAgentCore(
+      { Agent },
+      {
+        // Start capture (args, result undefined) succeeds; only the end capture throws.
+        captureToolIo: (_toolName, args, result) => {
+          if (result !== undefined) throw new Error('result policy exploded');
+          return { args };
+        },
+        onToolSpan: ({ spanId }) => {
+          seen = spanId;
+        },
+      },
+    );
+    await new Agent().prompt('hi');
+    const spans = exporter.getFinishedSpans();
+    const tool = spans.find((s) => s.name.startsWith('bash'));
+    assert.ok(tool, 'the tool span reached the exporter');
+    assert.equal(tool!.spanContext().spanId, seen, 'it is the span the host was told about');
+    assert.equal(attrsOf(tool!)['output.value'], undefined, 'no output was recorded');
+    assert.equal(spans.filter((s) => s.name === 'Agent.prompt').length, 1);
+  });
+
   it('a throwing captureToolIo does not abort the run', async () => {
     const Agent = makeFakeAgentClass();
     instrumentPiAgentCore(
