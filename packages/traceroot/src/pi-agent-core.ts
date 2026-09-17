@@ -22,11 +22,14 @@ import {
   openLlmSpan,
   closeLlmSpan,
   openToolSpan,
+  recordToolArgs,
   closeToolSpan,
   closeDanglingSpan,
+  applyCaptureAttributes,
   type AgentEvent,
   type AgentMessage,
   type AssistantMessage,
+  type CaptureContext,
   type ContentCapture,
 } from './pi';
 import { SDK_VERSION } from './processor';
@@ -35,8 +38,8 @@ import { SDK_VERSION } from './processor';
  * `instrumentModules.piAgentCore` config. Distinct from {@link PiInstrumentationConfig}
  * (pi-coding-agent) because pi-agent-core's Agent has no session/steer/followUp
  * concept, and adds two capabilities pi-coding-agent doesn't need:
- * - `captureToolIo` may be a function, for callers that want to redact/transform
- *   tool args/results rather than a blanket on/off.
+ * - `captureToolIo` may be a {@link ToolIoCapture}, for callers that want to
+ *   redact/transform tool args/results rather than a blanket on/off.
  * - `onToolSpan` is a side channel (Task 13/16 in the self-trace plan) for a host
  *   that needs the tool span's own span/trace ids (e.g. to stamp them onto a
  *   persisted tool-step row) without reaching into OTel internals.
@@ -51,14 +54,10 @@ export interface PiAgentCoreConfig {
   captureContent?: ContentCapture;
   /**
    * Capture tool call args/results as input.value/output.value on TOOL spans.
-   * `true`/`false` behaves like pi-coding-agent's captureToolIo. A function receives
-   * the raw args (tool_execution_start) or raw result (tool_execution_end, args
-   * undefined) and returns what to record — `result` undefined suppresses just the
-   * output side. Default true.
+   * `true`/`false` behaves like pi-coding-agent's captureToolIo; a
+   * {@link ToolIoCapture} decides per call. Default true.
    */
-  captureToolIo?:
-    | boolean
-    | ((toolName: string, args: unknown, result: unknown) => { args?: unknown; result?: string });
+  captureToolIo?: boolean | ToolIoCapture;
   /** Fires at tool_execution_start with the tool span's own ids — a side channel, not a substitute for the span itself. */
   onToolSpan?: (info: { toolCallId: string; spanId: string; traceId: string }) => void;
   /**
@@ -73,6 +72,27 @@ export interface PiAgentCoreConfig {
    * still opened: a run must have a root to be a trace at all.
    */
   agentSpan?: 'always' | 'unless-nested';
+}
+
+/** What a {@link ToolIoCapture} is told about the call it is capturing. */
+export interface ToolIoCaptureContext extends CaptureContext {
+  /** pi-agent-core's id for this tool call: the same on the args and the result side. */
+  toolCallId: string;
+}
+
+/**
+ * Decides what lands on a TOOL span for one call, one side at a time. `args`
+ * runs at tool_execution_start and returns the value to record as input
+ * (serialised by the instrumentation; `undefined` records nothing); `result`
+ * runs at tool_execution_end and returns the output text verbatim (`undefined`
+ * records nothing). Both see the call's id, so a host can pair the two sides
+ * under one budget, and both may set attributes on the span through the
+ * context. Neither runs for a span that is not recording. A throw records
+ * nothing for that side and never aborts the run.
+ */
+export interface ToolIoCapture {
+  args(toolName: string, args: unknown, ctx: ToolIoCaptureContext): unknown;
+  result(toolName: string, result: unknown, ctx: ToolIoCaptureContext): string | undefined;
 }
 
 /**
@@ -146,12 +166,6 @@ function sweepRunState(state: RunState): void {
 }
 
 /**
- * Resolves a tool's captured args/result for openToolSpan/closeToolSpan: a boolean
- * config passes the raw event value through (openToolSpan/closeToolSpan's own
- * captureToolIo flag then gates whether it's actually serialized); a function
- * transforms it up front, e.g. to redact or replace it with a summary string.
- */
-/**
  * The messages this model call was given, for a captureContent function's
  * `llm_input`. pi-agent-core has already appended the (still empty) assistant
  * message being streamed when message_start fires, so it is dropped from the end.
@@ -171,14 +185,8 @@ function llmInputMessages(
   }
 }
 
-function resolvedToolArgs(config: PiAgentCoreConfig, toolName: string, args: unknown): unknown {
-  if (typeof config.captureToolIo !== 'function') return args;
-  return config.captureToolIo(toolName, args, undefined).args;
-}
-
-function resolvedToolResult(config: PiAgentCoreConfig, toolName: string, result: unknown): unknown {
-  if (typeof config.captureToolIo !== 'function') return result;
-  return config.captureToolIo(toolName, undefined, result).result;
+function toolIoCapture(config: PiAgentCoreConfig): ToolIoCapture | undefined {
+  return typeof config.captureToolIo === 'object' ? config.captureToolIo : undefined;
 }
 
 /**
@@ -226,16 +234,30 @@ function handlePiAgentCoreEvent(
       // handleEvent tool_execution_start), not flatly under the root — this is what
       // makes a pi-agent-core trace's tree shape match a pi-coding-agent one.
       const parentCtx = state.llmCtx ?? state.rootCtx;
-      const args = resolvedToolArgs(rawConfig, event.toolName, event.args);
+      const capture = toolIoCapture(rawConfig);
+      // With a capture the span opens bare (name and input come from what the
+      // capture returns), and the capture only runs for a recording span: a
+      // host with tracing off must not pay for it on every call. A throwing
+      // args capture records nothing (never the raw args) — the span is still
+      // registered, so the result side and the close still find it.
       const span = openToolSpan(
         tracer(),
         parentCtx,
         event.toolCallId,
         event.toolName,
-        args,
-        config.captureToolIo,
+        capture ? undefined : event.args,
+        capture ? false : config.captureToolIo,
       );
       state.tools.set(event.toolCallId, span);
+      if (capture && span.isRecording()) {
+        const ctx: ToolIoCaptureContext = { toolCallId: event.toolCallId, attributes: {} };
+        try {
+          recordToolArgs(span, event.toolName, capture.args(event.toolName, event.args, ctx));
+          applyCaptureAttributes(span, ctx);
+        } catch (err) {
+          diag.warn('[traceroot-pi-agent-core] args capture threw; recording nothing:', err);
+        }
+      }
       const sc = span.spanContext();
       rawConfig.onToolSpan?.({
         toolCallId: event.toolCallId,
@@ -248,21 +270,24 @@ function handlePiAgentCoreEvent(
       const span = state.tools.get(event.toolCallId);
       if (!span) return;
       state.tools.delete(event.toolCallId);
-      if (typeof rawConfig.captureToolIo === 'function') {
-        // A custom transform bypasses closeToolSpan's own JSON serialization
+      const capture = toolIoCapture(rawConfig);
+      if (capture) {
+        // A capture bypasses closeToolSpan's own JSON serialization
         // (stringifyToolIo would otherwise quote a plain string like "[withheld]"):
-        // set the resolved string verbatim, then let closeToolSpan only apply
+        // set the returned string verbatim, then let closeToolSpan only apply
         // status/end (captureToolIo: false so it does not also try to serialize).
-        // The span is closed whatever the transform does: a throwing result
+        // The span is closed whatever the capture does: a throwing result
         // capture used to leave it open forever (deleted from the map above,
         // so the run-end sweep could not find it either) and the tool span a
         // host had already been handed the id of never reached the exporter.
         // A failed capture records no output — never the raw result.
         try {
-          const result = resolvedToolResult(rawConfig, event.toolName, event.result) as
-            | string
-            | undefined;
-          if (result !== undefined) span.setAttribute(OI_OUTPUT_VALUE, result);
+          if (span.isRecording()) {
+            const ctx: ToolIoCaptureContext = { toolCallId: event.toolCallId, attributes: {} };
+            const result = capture.result(event.toolName, event.result, ctx);
+            if (result !== undefined) span.setAttribute(OI_OUTPUT_VALUE, result);
+            applyCaptureAttributes(span, ctx);
+          }
         } finally {
           closeToolSpan(span, undefined, event.isError, false);
         }
@@ -314,8 +339,8 @@ export function instrumentPiAgentCore(sdk: unknown, config: PiAgentCoreConfig = 
 
   const resolved = resolveConfig({
     captureContent: config.captureContent,
-    // A function transform still gates the boolean serialization path "on" — the
-    // transform itself decides what (if anything) gets captured.
+    // A ToolIoCapture still gates the boolean serialization path "on" — the
+    // capture itself decides what (if anything) gets recorded.
     captureToolIo: config.captureToolIo !== false,
   });
 

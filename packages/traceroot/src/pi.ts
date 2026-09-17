@@ -152,14 +152,25 @@ export interface ContentCaptureValue {
 }
 
 /**
+ * Handed to a capture function for the span its value lands on. A capture
+ * function is only ever called for a recording span, so whatever it writes
+ * into `attributes` is set on that span next to the value — the place for a
+ * marker such as "this content was cut", which a query or a viewer can key on.
+ */
+export interface CaptureContext {
+  attributes: Record<string, string | number | boolean>;
+}
+
+/**
  * Decides what text lands on a span for one piece of content: return the string to
  * record, or `undefined` to record nothing. Lets a host redact, cap, or summarise
  * prompts and completions before they leave the process, the same way a
- * `captureToolIo` function does for tool I/O.
+ * `ToolIoCapture` does for tool I/O.
  */
 export type ContentCaptureFn = (
   kind: ContentCaptureKind,
   value: ContentCaptureValue,
+  ctx: CaptureContext,
 ) => string | undefined;
 
 /**
@@ -184,26 +195,44 @@ export interface ResolvedPiInstrumentationConfig {
 }
 
 /**
- * The text to record for one piece of content under `capture`: nothing for `false`,
+ * Records one piece of content on `span` under `capture`: nothing for `false`,
  * the instrumentation's own rendering for `true`, whatever the function returns
- * otherwise. `fallback` is only evaluated when `true` asks for it.
+ * otherwise, plus any attributes the function asked for. `fallback` is only
+ * evaluated when `true` asks for it. Nothing runs for a span that is not
+ * recording (no provider registered, or sampled out): capture is the one
+ * instrumentation cost that scales with the content, and a host with tracing
+ * off must not pay it on every call.
  */
-export function capturedContent(
+export function captureContentOnto(
+  span: Span,
+  key: string,
   capture: ContentCapture,
   kind: ContentCaptureKind,
   value: ContentCaptureValue,
   fallback: () => string | undefined,
-): string | undefined {
-  if (capture === false) return undefined;
-  if (capture === true) return fallback();
+): void {
+  if (capture === false || !span.isRecording()) return;
+  if (capture === true) {
+    setAttr(span, key, fallback());
+    return;
+  }
   // A host's capture function must never abort the run it observes: a throw
-  // records nothing for this piece and is logged, like a throwing captureToolIo.
+  // records nothing for this piece and is logged, like a throwing tool capture.
+  const ctx: CaptureContext = { attributes: {} };
+  let text: string | undefined;
   try {
-    return capture(kind, value);
+    text = capture(kind, value, ctx);
   } catch (err) {
     diag.warn(`[traceroot-pi] captureContent threw for ${kind}; recording nothing:`, err);
-    return undefined;
+    return;
   }
+  setAttr(span, key, text);
+  applyCaptureAttributes(span, ctx);
+}
+
+/** Sets what a capture function wrote into its context's `attributes` on the span. */
+export function applyCaptureAttributes(span: Span, ctx: CaptureContext): void {
+  for (const [key, value] of Object.entries(ctx.attributes)) setAttr(span, key, value);
 }
 
 export function resolveConfig(config?: PiInstrumentationConfig): ResolvedPiInstrumentationConfig {
@@ -384,10 +413,13 @@ export function openRootSpan(
   const span = tracer.startSpan('AgentSession.prompt', { kind: SpanKind.INTERNAL }, parentCtx);
   setAttr(span, OI_SPAN_KIND, OI_SPAN_KIND_VALUE.AGENT);
   setAttr(span, OI_TRACE_SESSION_ID, input.sessionId);
-  setAttr(
+  captureContentOnto(
     span,
     OI_INPUT_VALUE,
-    capturedContent(input.captureContent, 'agent_input', { text: input.text }, () => input.text),
+    input.captureContent,
+    'agent_input',
+    { text: input.text },
+    () => input.text,
   );
   return span;
 }
@@ -406,15 +438,13 @@ export function stampRootOutput(
       break;
     }
   }
-  setAttr(
+  captureContentOnto(
     span,
     OI_OUTPUT_VALUE,
-    capturedContent(
-      captureContent,
-      'agent_output',
-      { messages: finalMessages, message: lastAssistant },
-      () => assistantOutputValue(lastAssistant),
-    ),
+    captureContent,
+    'agent_output',
+    { messages: finalMessages, message: lastAssistant },
+    () => assistantOutputValue(lastAssistant),
   );
 }
 
@@ -461,15 +491,13 @@ export function openLlmSpan(
   // consumers. model_name starts at the request model; closeLlmSpan resolves it.
   setAttr(span, OI_LLM_MODEL_NAME, message.model);
   if (input) {
-    setAttr(
+    captureContentOnto(
       span,
       OI_INPUT_VALUE,
-      capturedContent(
-        input.captureContent,
-        'llm_input',
-        { messages: input.messages, systemPrompt: input.systemPrompt, message },
-        () => undefined,
-      ),
+      input.captureContent,
+      'llm_input',
+      { messages: input.messages, systemPrompt: input.systemPrompt, message },
+      () => undefined,
     );
   }
   return span;
@@ -495,10 +523,8 @@ export function closeLlmSpan(
   setAttr(span, OI_LLM_TOKEN_COUNT_TOTAL, message.usage?.totalTokens);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_READ, message.usage?.cacheRead);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_WRITE, message.usage?.cacheWrite);
-  setAttr(
-    span,
-    OI_OUTPUT_VALUE,
-    capturedContent(captureContent, 'llm_output', { message }, () => assistantOutputValue(message)),
+  captureContentOnto(span, OI_OUTPUT_VALUE, captureContent, 'llm_output', { message }, () =>
+    assistantOutputValue(message),
   );
   if (message.stopReason === 'error' || message.stopReason === 'aborted') {
     span.setStatus({
@@ -564,31 +590,37 @@ export function openToolSpan(
   args: unknown,
   captureToolIo: boolean,
 ): Span {
-  const span = tracer.startSpan(
-    // captureToolIo gates arg-derived content in the NAME too, not just input/output:
-    // a bash command or file path is tool IO and must not leak into the span name when
-    // the caller opted out (e.g. `bash: curl -H "Authorization: Bearer ..."`).
-    captureToolIo ? describeToolCallSpan(toolName, args) : toolName,
-    { kind: SpanKind.INTERNAL },
-    parentCtx,
-  );
+  const span = tracer.startSpan(toolName, { kind: SpanKind.INTERNAL }, parentCtx);
   setAttr(span, OI_SPAN_KIND, OI_SPAN_KIND_VALUE.TOOL);
   // Dual-write OpenInference tool.name alongside gen_ai.tool.name (matches
   // claude-agent-sdk.ts) so dashboards keyed on the OI attribute surface pi tool spans.
   setAttr(span, TOOL_NAME, toolName);
   setAttr(span, GEN_AI_ATTRIBUTES.TOOL_NAME, toolName);
   setAttr(span, GEN_AI_ATTRIBUTES.TOOL_CALL_ID, toolCallId);
-  if (captureToolIo) {
-    try {
-      const serializedArgs = stringifyToolIo(args);
-      if (serializedArgs !== undefined) {
-        setAttr(span, OI_INPUT_VALUE, capJsonWithMarker(serializedArgs));
-      }
-    } catch {
-      // args may contain circular refs or BigInt — skip rather than crash.
-    }
-  }
+  // captureToolIo gates arg-derived content in the NAME too, not just input/output:
+  // a bash command or file path is tool IO and must not leak into the span name when
+  // the caller opted out (e.g. `bash: curl -H "Authorization: Bearer ..."`).
+  if (captureToolIo) recordToolArgs(span, toolName, args);
   return span;
+}
+
+/**
+ * Names the tool span after its call and records the args as its input. Only
+ * for a recording span: serialising tool I/O is the instrumentation's one
+ * content-sized cost, and a span nobody will export (no provider, sampled
+ * out) must not pay it.
+ */
+export function recordToolArgs(span: Span, toolName: string, args: unknown): void {
+  if (!span.isRecording()) return;
+  span.updateName(describeToolCallSpan(toolName, args));
+  try {
+    const serializedArgs = stringifyToolIo(args);
+    if (serializedArgs !== undefined) {
+      setAttr(span, OI_INPUT_VALUE, capJsonWithMarker(serializedArgs));
+    }
+  } catch {
+    // args may contain circular refs or BigInt — skip rather than crash.
+  }
 }
 
 export function closeToolSpan(
@@ -597,7 +629,7 @@ export function closeToolSpan(
   isError: boolean,
   captureToolIo: boolean,
 ): void {
-  if (captureToolIo) {
+  if (captureToolIo && span.isRecording()) {
     try {
       const serializedResult = stringifyToolIo(result);
       if (serializedResult !== undefined) {

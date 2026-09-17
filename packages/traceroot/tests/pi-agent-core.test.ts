@@ -187,15 +187,99 @@ describe('instrumentPiAgentCore', () => {
     assert.match(seen[0]!.spanId, /^[0-9a-f]{16}$/);
   });
 
-  it('applies a captureToolIo function to tool span attributes', async () => {
+  it('applies a ToolIoCapture to tool span attributes, each side told the call id', async () => {
     const Agent = makeFakeAgentClass();
+    const ids: string[] = [];
     instrumentPiAgentCore(
       { Agent },
-      { captureToolIo: (_toolName, args) => ({ args, result: '[withheld]' }) },
+      {
+        captureToolIo: {
+          args: (_toolName, args, ctx) => {
+            ids.push(ctx.toolCallId);
+            return args;
+          },
+          result: (_toolName, _result, ctx) => {
+            ids.push(ctx.toolCallId);
+            ctx.attributes['traceroot.truncated'] = true;
+            return '[withheld]';
+          },
+        },
+      },
     );
     await new Agent().prompt('hi');
     const tool = exporter.getFinishedSpans().find((s) => s.name.startsWith('bash'))!;
-    assert.equal((tool.attributes as Record<string, unknown>)['output.value'], '[withheld]');
+    assert.equal(attrsOf(tool)['input.value'], '{"command":"ls"}');
+    assert.equal(attrsOf(tool)['output.value'], '[withheld]');
+    // A capture can mark the span, e.g. that it cut what it recorded.
+    assert.equal(attrsOf(tool)['traceroot.truncated'], true);
+    assert.deepEqual(ids, ['tc1', 'tc1'], 'both sides see the same call id');
+  });
+
+  it('a ToolIoCapture returning undefined on the args side records no input', async () => {
+    const Agent = makeFakeAgentClass();
+    instrumentPiAgentCore(
+      { Agent },
+      { captureToolIo: { args: () => undefined, result: () => undefined } },
+    );
+    await new Agent().prompt('hi');
+    const tool = exporter.getFinishedSpans().find((s) => s.name.startsWith('bash'))!;
+    assert.equal(attrsOf(tool)['input.value'], undefined);
+    assert.equal(attrsOf(tool)['output.value'], undefined);
+  });
+
+  it('never invokes a capture when no tracer provider is registered', async () => {
+    // Capture is the one instrumentation cost that scales with the content; a
+    // host with tracing off must not pay it on every LLM and tool call.
+    trace.disable();
+    const Base = makeFakeAgentClass();
+    class Agent extends Base {
+      state = { systemPrompt: 'sys', messages: [{ role: 'user', content: 'hi' }] };
+    }
+    let contentCalls = 0;
+    let toolCalls = 0;
+    instrumentPiAgentCore(
+      { Agent },
+      {
+        captureContent: () => {
+          contentCalls += 1;
+          return 'x';
+        },
+        captureToolIo: {
+          args: () => {
+            toolCalls += 1;
+            return {};
+          },
+          result: () => {
+            toolCalls += 1;
+            return 'x';
+          },
+        },
+      },
+    );
+    await new Agent().prompt('hi');
+    assert.equal(contentCalls, 0);
+    assert.equal(toolCalls, 0);
+  });
+
+  it('a captureContent function can mark the span it records on', async () => {
+    const Agent = makeFakeAgentClass();
+    instrumentPiAgentCore(
+      { Agent },
+      {
+        captureContent: (kind, _value, ctx) => {
+          if (kind === 'llm_output') ctx.attributes['traceroot.truncated'] = true;
+          return kind;
+        },
+      },
+    );
+    await new Agent().prompt('hi');
+    const spans = exporter.getFinishedSpans();
+    const llm = spans.find((s) => s.name === 'm1')!;
+    assert.equal(attrsOf(llm)['traceroot.truncated'], true);
+    assert.equal(
+      attrsOf(spans.find((s) => s.name === 'Agent.prompt')!)['traceroot.truncated'],
+      undefined,
+    );
   });
 
   it('a captureContent function decides what lands on the root and LLM spans, input included', async () => {
@@ -292,10 +376,12 @@ describe('instrumentPiAgentCore', () => {
     instrumentPiAgentCore(
       { Agent },
       {
-        // Start capture (args, result undefined) succeeds; only the end capture throws.
-        captureToolIo: (_toolName, args, result) => {
-          if (result !== undefined) throw new Error('result policy exploded');
-          return { args };
+        // The args capture succeeds; only the result capture throws.
+        captureToolIo: {
+          args: (_toolName, args) => args,
+          result: () => {
+            throw new Error('result policy exploded');
+          },
         },
         onToolSpan: ({ spanId }) => {
           seen = spanId;
@@ -316,8 +402,13 @@ describe('instrumentPiAgentCore', () => {
     instrumentPiAgentCore(
       { Agent },
       {
-        captureToolIo: () => {
-          throw new Error('policy exploded');
+        captureToolIo: {
+          args: () => {
+            throw new Error('policy exploded');
+          },
+          result: () => {
+            throw new Error('policy exploded');
+          },
         },
       },
     );
