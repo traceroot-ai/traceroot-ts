@@ -1,4 +1,5 @@
 // src/types.ts
+import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import type { PiInstrumentationConfig } from './pi';
 
 export type SpanType = 'span' | 'agent' | 'tool' | 'llm' | 'evaluation' | 'task' | 'scorer';
@@ -102,9 +103,28 @@ export interface InitializeOptions {
      * pipeline of its own, so there is no apiKey/baseUrl to thread here.
      */
     piCodingAgent?: unknown;
+    /**
+     * @earendil-works/pi-agent-core module ref (`import * as piAgentCore from
+     * '@earendil-works/pi-agent-core'`), passed as `{ Agent }` or the module
+     * namespace itself. Instruments the standalone `Agent` class's `prompt()`/
+     * `subscribe()` — a narrower surface than {@link piCodingAgent}'s AgentSession
+     * (no steer()/followUp()/dispose()). Config (captureContent/captureToolIo/
+     * onToolSpan) is not threaded through this option; call
+     * `instrumentPiAgentCore(mod, config)` directly for that.
+     */
+    piAgentCore?: unknown;
   };
   /** Use SimpleSpanProcessor instead of BatchSpanProcessor. Useful for scripts/tests. */
   disableBatch?: boolean;
+  /**
+   * Decide, per finished span, whether it is exported; return false to drop it.
+   * The span still runs and still parents its children, it just never leaves
+   * the process. Meant for spans a third-party library opens on the global
+   * tracer that carry nothing a reader can use. Receives the finished
+   * `ReadableSpan` (name, attributes, instrumentationScope). A throwing
+   * predicate counts as "export".
+   */
+  exportSpan?: (span: ReadableSpan) => boolean;
   /** OTel diagnostic log level. Defaults to 'error'. */
   logLevel?: 'debug' | 'info' | 'warn' | 'error';
   /**

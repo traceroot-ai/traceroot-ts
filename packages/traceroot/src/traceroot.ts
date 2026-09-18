@@ -301,6 +301,7 @@ export class TraceRoot {
         gitRef,
         globalAttributes: options.globalAttributes,
         dropSpansWithoutProjectId: shouldDropUnattributed(target.internal, options.internalExport),
+        exportSpan: options.exportSpan,
       }),
     );
     _provider.register();

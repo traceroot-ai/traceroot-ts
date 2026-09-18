@@ -1,5 +1,5 @@
 // src/processor.ts
-import { trace as otelTrace, Context, Span } from '@opentelemetry/api';
+import { diag, trace as otelTrace, Context, Span } from '@opentelemetry/api';
 import { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { PROJECT_ID_ATTR, projectIdFromContext } from './project-id';
 
@@ -29,6 +29,15 @@ export interface TraceRootSpanProcessorOptions {
    * to (cross-tenant safety).
    */
   dropSpansWithoutProjectId?: boolean;
+  /**
+   * Decide, per finished span, whether it is exported. Return false to drop
+   * it; the span still ran, still parented its children, it just never leaves
+   * the process. For spans a third-party library opens on the global tracer
+   * that carry nothing a reader can use (a sandbox client's HTTP-call spans,
+   * say). A throwing predicate counts as "export": tracing never breaks the
+   * host over a filter.
+   */
+  exportSpan?: (span: ReadableSpan) => boolean;
 }
 
 /**
@@ -55,6 +64,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
   private readonly _projectIdBySpanId = new Map<string, string>();
 
   private readonly _dropSpansWithoutProjectId: boolean;
+  private readonly _exportSpan?: (span: ReadableSpan) => boolean;
 
   constructor(
     inner: SpanProcessor, // ← WIDENED
@@ -66,6 +76,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     this._gitRef = opts.gitRef;
     this._globalAttributes = opts.globalAttributes;
     this._dropSpansWithoutProjectId = opts.dropSpansWithoutProjectId ?? false;
+    this._exportSpan = opts.exportSpan;
   }
 
   onStart(span: Span, parentContext: Context): void {
@@ -181,6 +192,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
       }
       return;
     }
+    if (this._exportSpan !== undefined && !shouldExport(this._exportSpan, span)) return;
     this.inner.onEnd(span);
   }
 
@@ -190,5 +202,14 @@ export class TraceRootSpanProcessor implements SpanProcessor {
 
   shutdown(): Promise<void> {
     return this.inner.shutdown();
+  }
+}
+
+function shouldExport(predicate: (span: ReadableSpan) => boolean, span: ReadableSpan): boolean {
+  try {
+    return predicate(span) !== false;
+  } catch (err) {
+    diag.warn('[TraceRoot] exportSpan threw; exporting the span', err);
+    return true;
   }
 }

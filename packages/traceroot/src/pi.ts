@@ -134,16 +134,105 @@ export interface PiCodingAgentModule {
 
 export const TRACER_NAME = '@traceroot-ai/pi-coding-agent';
 
+/** Which piece of a run's content a `captureContent` function is being asked to record. */
+export type ContentCaptureKind = 'agent_input' | 'agent_output' | 'llm_input' | 'llm_output';
+
+/**
+ * What a `captureContent` function receives. Which fields are set depends on the kind:
+ * `agent_input` carries the prompt `text`; `agent_output` the run's final `messages`
+ * and the last assistant `message`; `llm_input` the `messages` (and `systemPrompt`)
+ * sent to the model for that call, when the host exposes them; `llm_output` the
+ * assistant `message` the model returned.
+ */
+export interface ContentCaptureValue {
+  text?: string;
+  messages?: readonly AgentMessage[];
+  systemPrompt?: string;
+  message?: AgentMessage;
+}
+
+/**
+ * Handed to a capture function for the span its value lands on. A capture
+ * function is only ever called for a recording span, so whatever it writes
+ * into `attributes` is set on that span next to the value — the place for a
+ * marker such as "this content was cut", which a query or a viewer can key on.
+ */
+export interface CaptureContext {
+  attributes: Record<string, string | number | boolean>;
+}
+
+/**
+ * Decides what text lands on a span for one piece of content: return the string to
+ * record, or `undefined` to record nothing. Lets a host redact, cap, or summarise
+ * prompts and completions before they leave the process, the same way a
+ * `ToolIoCapture` does for tool I/O.
+ */
+export type ContentCaptureFn = (
+  kind: ContentCaptureKind,
+  value: ContentCaptureValue,
+  ctx: CaptureContext,
+) => string | undefined;
+
+/**
+ * `true` records the prompt on the AGENT span and the assistant text on the AGENT and
+ * LLM spans as-is (the model's input messages are never recorded under `true`: they
+ * repeat the whole conversation on every call). `false` records none of it. A
+ * function is asked for every kind, `llm_input` included, and is the only way to
+ * record model inputs.
+ */
+export type ContentCapture = boolean | ContentCaptureFn;
+
 export interface PiInstrumentationConfig {
-  /** Capture prompt/response text as input.value/output.value on AGENT and LLM spans. Default true. */
-  captureContent?: boolean;
+  /** Capture prompt/response text as input.value/output.value on AGENT and LLM spans. Default true. See ContentCapture. */
+  captureContent?: ContentCapture;
   /** Capture tool call args/results as input.value/output.value on TOOL spans. Default true. */
   captureToolIo?: boolean;
 }
 
 export interface ResolvedPiInstrumentationConfig {
-  captureContent: boolean;
+  captureContent: ContentCapture;
   captureToolIo: boolean;
+}
+
+/**
+ * Records one piece of content on `span` under `capture`: nothing for `false`,
+ * the instrumentation's own rendering for `true`, whatever the function returns
+ * otherwise, plus any attributes the function asked for. `fallback` is only
+ * evaluated when `true` asks for it. Nothing runs for a span that is not
+ * recording (no provider registered, or sampled out): capture is the one
+ * instrumentation cost that scales with the content, and a host with tracing
+ * off must not pay it on every call.
+ */
+export function captureContentOnto(
+  span: Span,
+  key: string,
+  capture: ContentCapture,
+  kind: ContentCaptureKind,
+  value: ContentCaptureValue,
+  fallback: () => string | undefined,
+): void {
+  if (capture === false || !span.isRecording()) return;
+  if (capture === true) {
+    setAttr(span, key, fallback());
+    return;
+  }
+  // A host's capture function must never abort the run it observes: a throw
+  // records nothing for this piece and is logged, like a throwing tool capture.
+  const ctx: CaptureContext = { attributes: {} };
+  let text: string | undefined;
+  try {
+    text = capture(kind, value, ctx);
+  } catch (err) {
+    diag.warn(`[traceroot-pi] captureContent threw for ${kind}; recording nothing:`, err);
+    return;
+  }
+  setAttr(span, key, text);
+  applyCaptureAttributes(span, ctx);
+}
+
+/** Sets what a capture function wrote into its context's `attributes` on the span. */
+export function applyCaptureAttributes(span: Span, ctx: CaptureContext): void {
+  for (const [key, value] of Object.entries(ctx.attributes)) setAttr(span, key, value);
 }
 
 export function resolveConfig(config?: PiInstrumentationConfig): ResolvedPiInstrumentationConfig {
@@ -315,12 +404,23 @@ function assistantOutputValue(message: AgentMessage | undefined): string | undef
 export function openRootSpan(
   tracer: Pick<Tracer, 'startSpan'>,
   parentCtx: Context,
-  input: { text: string | undefined; sessionId: string | undefined; captureContent: boolean },
+  input: {
+    text: string | undefined;
+    sessionId: string | undefined;
+    captureContent: ContentCapture;
+  },
 ): Span {
   const span = tracer.startSpan('AgentSession.prompt', { kind: SpanKind.INTERNAL }, parentCtx);
   setAttr(span, OI_SPAN_KIND, OI_SPAN_KIND_VALUE.AGENT);
   setAttr(span, OI_TRACE_SESSION_ID, input.sessionId);
-  if (input.captureContent) setAttr(span, OI_INPUT_VALUE, input.text);
+  captureContentOnto(
+    span,
+    OI_INPUT_VALUE,
+    input.captureContent,
+    'agent_input',
+    { text: input.text },
+    () => input.text,
+  );
   return span;
 }
 
@@ -328,9 +428,9 @@ export function openRootSpan(
 export function stampRootOutput(
   span: Span,
   finalMessages: AgentMessage[],
-  captureContent: boolean,
+  captureContent: ContentCapture,
 ): void {
-  if (!captureContent) return;
+  if (captureContent === false) return;
   let lastAssistant: AgentMessage | undefined;
   for (let i = finalMessages.length - 1; i >= 0; i -= 1) {
     if (finalMessages[i].role === 'assistant') {
@@ -338,7 +438,14 @@ export function stampRootOutput(
       break;
     }
   }
-  setAttr(span, OI_OUTPUT_VALUE, assistantOutputValue(lastAssistant));
+  captureContentOnto(
+    span,
+    OI_OUTPUT_VALUE,
+    captureContent,
+    'agent_output',
+    { messages: finalMessages, message: lastAssistant },
+    () => assistantOutputValue(lastAssistant),
+  );
 }
 
 // Ends the root span exactly once, when the wrapping prompt() call's own returned promise settles.
@@ -361,10 +468,20 @@ export function finalizeRootSpan(
   endSpanSafe(span);
 }
 
+/**
+ * `input`, when the host can supply it, is what this model call was given: the
+ * conversation so far and the system prompt. Only a `captureContent` function
+ * records it (see ContentCapture); the boolean form never does.
+ */
 export function openLlmSpan(
   tracer: Pick<Tracer, 'startSpan'>,
   parentCtx: Context,
   message: AssistantMessage,
+  input?: {
+    captureContent: ContentCapture;
+    messages?: readonly AgentMessage[];
+    systemPrompt?: string;
+  },
 ): Span {
   const span = tracer.startSpan(message.model || 'pi.llm', { kind: SpanKind.CLIENT }, parentCtx);
   setAttr(span, OI_SPAN_KIND, OI_SPAN_KIND_VALUE.LLM);
@@ -373,10 +490,24 @@ export function openLlmSpan(
   // Dual-write the OpenInference llm.* family alongside gen_ai.* for downstream
   // consumers. model_name starts at the request model; closeLlmSpan resolves it.
   setAttr(span, OI_LLM_MODEL_NAME, message.model);
+  if (input) {
+    captureContentOnto(
+      span,
+      OI_INPUT_VALUE,
+      input.captureContent,
+      'llm_input',
+      { messages: input.messages, systemPrompt: input.systemPrompt, message },
+      () => undefined,
+    );
+  }
   return span;
 }
 
-export function closeLlmSpan(span: Span, message: AssistantMessage, captureContent: boolean): void {
+export function closeLlmSpan(
+  span: Span,
+  message: AssistantMessage,
+  captureContent: ContentCapture,
+): void {
   span.updateName(message.responseModel || message.model || 'pi.llm');
   setAttr(span, GEN_AI_ATTRIBUTES.RESPONSE_MODEL, message.responseModel || message.model);
   setAttr(span, GEN_AI_ATTRIBUTES.USAGE_INPUT_TOKENS, message.usage?.input);
@@ -392,9 +523,9 @@ export function closeLlmSpan(span: Span, message: AssistantMessage, captureConte
   setAttr(span, OI_LLM_TOKEN_COUNT_TOTAL, message.usage?.totalTokens);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_READ, message.usage?.cacheRead);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_WRITE, message.usage?.cacheWrite);
-  if (captureContent) {
-    setAttr(span, OI_OUTPUT_VALUE, assistantOutputValue(message));
-  }
+  captureContentOnto(span, OI_OUTPUT_VALUE, captureContent, 'llm_output', { message }, () =>
+    assistantOutputValue(message),
+  );
   if (message.stopReason === 'error' || message.stopReason === 'aborted') {
     span.setStatus({
       code: SpanStatusCode.ERROR,
@@ -459,31 +590,37 @@ export function openToolSpan(
   args: unknown,
   captureToolIo: boolean,
 ): Span {
-  const span = tracer.startSpan(
-    // captureToolIo gates arg-derived content in the NAME too, not just input/output:
-    // a bash command or file path is tool IO and must not leak into the span name when
-    // the caller opted out (e.g. `bash: curl -H "Authorization: Bearer ..."`).
-    captureToolIo ? describeToolCallSpan(toolName, args) : toolName,
-    { kind: SpanKind.INTERNAL },
-    parentCtx,
-  );
+  const span = tracer.startSpan(toolName, { kind: SpanKind.INTERNAL }, parentCtx);
   setAttr(span, OI_SPAN_KIND, OI_SPAN_KIND_VALUE.TOOL);
   // Dual-write OpenInference tool.name alongside gen_ai.tool.name (matches
   // claude-agent-sdk.ts) so dashboards keyed on the OI attribute surface pi tool spans.
   setAttr(span, TOOL_NAME, toolName);
   setAttr(span, GEN_AI_ATTRIBUTES.TOOL_NAME, toolName);
   setAttr(span, GEN_AI_ATTRIBUTES.TOOL_CALL_ID, toolCallId);
-  if (captureToolIo) {
-    try {
-      const serializedArgs = stringifyToolIo(args);
-      if (serializedArgs !== undefined) {
-        setAttr(span, OI_INPUT_VALUE, capJsonWithMarker(serializedArgs));
-      }
-    } catch {
-      // args may contain circular refs or BigInt — skip rather than crash.
-    }
-  }
+  // captureToolIo gates arg-derived content in the NAME too, not just input/output:
+  // a bash command or file path is tool IO and must not leak into the span name when
+  // the caller opted out (e.g. `bash: curl -H "Authorization: Bearer ..."`).
+  if (captureToolIo) recordToolArgs(span, toolName, args);
   return span;
+}
+
+/**
+ * Names the tool span after its call and records the args as its input. Only
+ * for a recording span: serialising tool I/O is the instrumentation's one
+ * content-sized cost, and a span nobody will export (no provider, sampled
+ * out) must not pay it.
+ */
+export function recordToolArgs(span: Span, toolName: string, args: unknown): void {
+  if (!span.isRecording()) return;
+  span.updateName(describeToolCallSpan(toolName, args));
+  try {
+    const serializedArgs = stringifyToolIo(args);
+    if (serializedArgs !== undefined) {
+      setAttr(span, OI_INPUT_VALUE, capJsonWithMarker(serializedArgs));
+    }
+  } catch {
+    // args may contain circular refs or BigInt — skip rather than crash.
+  }
 }
 
 export function closeToolSpan(
@@ -492,7 +629,7 @@ export function closeToolSpan(
   isError: boolean,
   captureToolIo: boolean,
 ): void {
-  if (captureToolIo) {
+  if (captureToolIo && span.isRecording()) {
     try {
       const serializedResult = stringifyToolIo(result);
       if (serializedResult !== undefined) {

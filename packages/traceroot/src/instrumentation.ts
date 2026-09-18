@@ -5,6 +5,7 @@ import type { InitializeOptions } from './types';
 import { wireOpenAIAgentsProcessor } from './openai-agents';
 import { wireClaudeAgentSDKInstrumentation } from './claude-agent-sdk';
 import { wirePiCodingAgentInstrumentation } from './pi';
+import { instrumentPiAgentCore } from './pi-agent-core';
 
 type InstrumentationWithManualPatch = Instrumentation & {
   manuallyInstrument(moduleRef: unknown): void;
@@ -126,6 +127,9 @@ export function wireInstrumentations(
   }
   if (instrumentModules.piCodingAgent) {
     wirePiCodingAgentInstrumentation(instrumentModules.piCodingAgent);
+  }
+  if (instrumentModules.piAgentCore) {
+    instrumentPiAgentCore(instrumentModules.piAgentCore);
   }
 
   if (instrs.length > 0) {
