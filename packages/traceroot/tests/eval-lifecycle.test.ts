@@ -14,6 +14,7 @@ import {
   newRunId,
   newDatasetId,
 } from '../src/eval';
+import { TraceRoot } from '../src/traceroot';
 
 describe('ids', () => {
   it('typed ULID ids, time-sortable-ish and unique', () => {
@@ -80,6 +81,66 @@ describe('push seam', () => {
     assert.equal(ds.datasetVersionId, undefined);
   });
 
+  it('bare push() without credentials rejects (parity with Python)', async () => {
+    // push() publishes to the platform by default; with no credentials it must reject with an
+    // actionable error rather than silently stay local.
+    const orig = TraceRoot.resolveCredentials;
+    (TraceRoot as { resolveCredentials: typeof TraceRoot.resolveCredentials }).resolveCredentials =
+      () => ({ apiKey: '', baseUrl: 'http://localhost' });
+    try {
+      const ds = new Dataset('d');
+      ds.add(1, { id: 'a' });
+      await assert.rejects(() => ds.push(), /publishes to the TraceRoot platform/);
+    } finally {
+      (
+        TraceRoot as { resolveCredentials: typeof TraceRoot.resolveCredentials }
+      ).resolveCredentials = orig;
+    }
+  });
+
+  it('bare push() WITH credentials publishes to the platform', async () => {
+    // The other half of the default: a credentialed bare push() must route to
+    // PlatformDatasetSync and actually write. Without this, a regression restoring the old
+    // local-only default would still pass the rejects-without-credentials test above.
+    const realFetch = globalThis.fetch;
+    const calls: { method: string; url: string }[] = [];
+    process.env['TRACEROOT_API_KEY'] = 'tr-test';
+    process.env['TRACEROOT_HOST_URL'] = 'https://h';
+    globalThis.fetch = (async (url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET';
+      const u = String(url);
+      calls.push({ method, url: u });
+      // The dataset does not exist yet: only a 404 means "new", so no prompt and no
+      // publishedRevision round trip.
+      if (method === 'GET') return new Response('no such dataset', { status: 404 });
+      if (u.endsWith('/versions'))
+        return new Response(JSON.stringify({ dataset_version_id: 'dsv_1', version_number: 1 }), {
+          status: 200,
+        });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      const ds = new Dataset('d');
+      ds.add(1, { id: 'a' });
+      const r = await ds.push();
+      assert.equal(r.status, 'uploaded');
+      assert.equal(r.datasetVersionId, 'dsv_1');
+      assert.equal(ds.datasetVersionId, 'dsv_1'); // the push advanced the pinned version
+      assert.ok(
+        calls.some((c) => c.method === 'POST' && c.url === `https://h/api/v1/public/datasets`),
+        'bare push() must upsert the dataset on the platform',
+      );
+      assert.ok(
+        calls.some((c) => c.method === 'POST' && c.url.endsWith(`/${ds.datasetId}/versions`)),
+        'bare push() must publish a version on the platform',
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env['TRACEROOT_API_KEY'];
+      delete process.env['TRACEROOT_HOST_URL'];
+    }
+  });
+
   it('FakeDatasetSync versions, idempotency, and conflict', async () => {
     const sync = new FakeDatasetSync();
     const ds = new Dataset('d');
@@ -118,7 +179,10 @@ function mockPlatformSync(exists: boolean, publishedRev: string | null = 'rev_di
     return {};
   };
   // Stub the published-revision fetch: `publishedRev` drives changed-vs-unchanged detection.
-  (sync as unknown as { publishedRevision: unknown }).publishedRevision = async () => publishedRev;
+  (sync as unknown as { publishedRevision: unknown }).publishedRevision = async () => [
+    publishedRev,
+    7,
+  ];
   return sync;
 }
 
@@ -140,6 +204,7 @@ describe('existing-dataset confirmation on push (TS)', () => {
       },
     });
     assert.equal(res.datasetVersionId, 'dsv_9'); // reuses the current version
+    assert.equal(res.versionNumber, 7); // and reports THAT version's ordinal, not null
     assert.equal(called, false); // unchanged -> never prompts
     assert.ok(!sync.calls.some((c) => c.endsWith('/versions'))); // no new version published
   });
