@@ -66,6 +66,34 @@ describe('TraceRootSpanProcessor', () => {
     assert.equal(exporter.getFinishedSpans().length, 1);
   });
 
+  describe('auto-instrumentation span-name normalization', () => {
+    it('renames the JS OpenInference "Anthropic Messages" span to "messages.create" (py parity)', async () => {
+      const tracer = trace.getTracer('test');
+      await new Promise<void>((resolve) => {
+        tracer.startActiveSpan('Anthropic Messages', (span) => {
+          span.end();
+          resolve();
+        });
+      });
+      const [span] = exporter.getFinishedSpans();
+      assert.equal(span.name, 'messages.create');
+      // the normalized name also flows into the enriched span path
+      assert.deepEqual(span.attributes['traceroot.span.path'], ['messages.create']);
+    });
+
+    it('leaves ordinary span names untouched', async () => {
+      const tracer = trace.getTracer('test');
+      await new Promise<void>((resolve) => {
+        tracer.startActiveSpan('my-handler', (span) => {
+          span.end();
+          resolve();
+        });
+      });
+      const [span] = exporter.getFinishedSpans();
+      assert.equal(span.name, 'my-handler');
+    });
+  });
+
   describe('span path propagation', () => {
     it('root span gets path containing only its own name', async () => {
       const tracer = trace.getTracer('test');
