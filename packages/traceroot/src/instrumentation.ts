@@ -18,6 +18,7 @@ const OPENINFERENCE_PACKAGES = {
   anthropic: ['@arizeai/openinference-instrumentation-anthropic', 'AnthropicInstrumentation'],
   langchain: ['@arizeai/openinference-instrumentation-langchain', 'LangChainInstrumentation'],
   bedrock: ['@arizeai/openinference-instrumentation-bedrock', 'BedrockInstrumentation'],
+  typeSafe: ['@arizeai/openinference-instrumentation-typesafe', 'TypeSafeInstrumentation'],
 } as const;
 
 // Provider keys (from OPENINFERENCE_PACKAGES) whose OpenInference instrumentation is actually
@@ -41,7 +42,7 @@ export function __setInstrumentedProvidersForTest(providers: string[]): void {
 // while the packages stay optional: each require only runs when its provider is wired.
 // The SDK ships as plain CommonJS, so a consumer's bundler (esbuild, webpack, Rollup) that
 // bundles node_modules reads this file. Anything passed to the `require` identifier gets
-// resolved at build time: with the four module names spelled out that means every
+// resolved at build time: with the module names spelled out that means every
 // instrumentation and its peers (for example @langchain/core) are pulled in, or fail to
 // resolve, even though only the configured provider ever loads. A require obtained from
 // createRequire is opaque to bundlers, so these stay runtime requires, while the names stay
@@ -57,6 +58,8 @@ const OPENINFERENCE_LOADERS: Record<string, () => Record<string, unknown>> = {
     requireOptional('@arizeai/openinference-instrumentation-langchain'),
   '@arizeai/openinference-instrumentation-bedrock': () =>
     requireOptional('@arizeai/openinference-instrumentation-bedrock'),
+  '@arizeai/openinference-instrumentation-typesafe': () =>
+    requireOptional('@arizeai/openinference-instrumentation-typesafe'),
 };
 
 function loadInstrumentation(pkg: string, exportName: string): InstrumentationCtor | null {

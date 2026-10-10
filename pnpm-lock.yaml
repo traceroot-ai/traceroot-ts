@@ -120,6 +120,9 @@ importers:
       '@arizeai/openinference-instrumentation-openai':
         specifier: ^4.0.5
         version: 4.0.5(openai@6.33.0(ws@8.21.3)(zod@4.3.6))
+      '@arizeai/openinference-instrumentation-typesafe':
+        specifier: ^0.1.0
+        version: 0.1.0(@typesafe-ai/sdk@0.6.0)
       '@arizeai/openinference-semantic-conventions':
         specifier: ^2.1.7
         version: 2.1.7
@@ -166,6 +169,9 @@ importers:
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.37
+      '@typesafe-ai/sdk':
+        specifier: 0.6.0
+        version: 0.6.0
       anthropic:
         specifier: ^0.0.0
         version: 0.0.0
@@ -267,6 +273,9 @@ packages:
   '@arizeai/openinference-core@2.0.6':
     resolution: {integrity: sha512-hsMax4Yq9x0S+F6QJYcdzKWiKI5OpIeYqLl5TptS4MUDwyfgwz7pOmmy3wiewEktcxB8NY5S/T32S01naAgLxA==}
 
+  '@arizeai/openinference-core@2.7.0':
+    resolution: {integrity: sha512-Fs87JEW0+h8W7ZrJjRLlwm9zYJhTB5HvQkfygY7S4llgbE+f8oYv3/7cW8pEygfPRIYF8Pec6Fh1vzMELZXxig==}
+
   '@arizeai/openinference-genai@0.1.7':
     resolution: {integrity: sha512-w1sevI+y1tFusyzlLkuI7mdT87IsvO9cBGljxB0cd/tM9/TWV5/A0m9fZd/hys/jgMRRQCU+AW4tGBWcCZ/WCQ==}
     peerDependencies:
@@ -294,8 +303,17 @@ packages:
     peerDependencies:
       openai: '>=6.0.0'
 
+  '@arizeai/openinference-instrumentation-typesafe@0.1.0':
+    resolution: {integrity: sha512-JeuoIi+CztMC0uoW5UABFmo4ERoDrMAC9IDYaK6jJXIBkcz59ZnxV1zvwlW5nLu8fkCVaPoZ8tNvsebYuEonGA==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@typesafe-ai/sdk': '>=0.6.0'
+
   '@arizeai/openinference-semantic-conventions@2.1.7':
     resolution: {integrity: sha512-KyBfwxkSusPvxHBaW/TJ0japEbXCNziW9o6/IRKiPu+gp5TMKIagV2NKvt47rWYa4Jc0Nl+SvAPm+yxkdJqVbg==}
+
+  '@arizeai/openinference-semantic-conventions@2.11.0':
+    resolution: {integrity: sha512-a4eMwqVfEZqYBr+PqGwfApQMbMh63H5fGBBbNi6g7BWcPVNYej8SXYls2uUiIk/zbI/LuiWdsnT0eBrnQC5ggA==}
 
   '@arizeai/openinference-semantic-conventions@2.2.0':
     resolution: {integrity: sha512-jyVeggDSuVFyOXWXqShKsRxHc5RrE7jRN2D0LGMGYDbo4oHeCJCgUezHQITT7t7FPNQxj5O+NcqERhznnDx6UQ==}
@@ -825,6 +843,12 @@ packages:
     peerDependencies:
       '@opentelemetry/api': '>=1.0.0 <1.10.0'
 
+  '@opentelemetry/core@2.11.0':
+    resolution: {integrity: sha512-7YP44XH0tV6+Mb54x2YGf84i7yi+31MBZlE8JwvozkxyTvXbSp10X7cI7YE49ChJ3shMJoBmCJF3+1QFBJctGA==}
+    engines: {node: ^18.19.0 || >=20.6.0}
+    peerDependencies:
+      '@opentelemetry/api': '>=1.0.0 <1.10.0'
+
   '@opentelemetry/exporter-trace-otlp-proto@0.57.2':
     resolution: {integrity: sha512-awDdNRMIwDvUtoRYxRhja5QYH6+McBLtoz1q9BeEsskhZcrGmH/V1fWpGx8n+Rc+542e8pJA6y+aullbIzQmlw==}
     engines: {node: '>=14'}
@@ -1075,6 +1099,10 @@ packages:
 
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+
+  '@typesafe-ai/sdk@0.6.0':
+    resolution: {integrity: sha512-IddX+Q0XM+VagOUZFeP7wZjaO4SHMdvnh2zEBdrZZnXedWI3BNK1lKhMx3ayrkFWvVLbVcUHJy6AVZlY+e6Jaw==}
+    engines: {node: '>=20'}
 
   '@typescript-eslint/eslint-plugin@8.58.0':
     resolution: {integrity: sha512-RLkVSiNuUP1C2ROIWfqX+YcUfLaSnxGE/8M+Y57lopVwg9VTYYfhuz15Yf1IzCKgZj6/rIbYTmJCUSqr76r0Wg==}
@@ -2693,6 +2721,12 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/core': 1.30.1(@opentelemetry/api@1.9.1)
 
+  '@arizeai/openinference-core@2.7.0':
+    dependencies:
+      '@arizeai/openinference-semantic-conventions': 2.11.0
+      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/core': 2.11.0(@opentelemetry/api@1.9.1)
+
   '@arizeai/openinference-genai@0.1.7(@opentelemetry/api@1.9.1)(@opentelemetry/semantic-conventions@1.40.0)':
     dependencies:
       '@arizeai/openinference-semantic-conventions': 2.2.0
@@ -2752,7 +2786,21 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@arizeai/openinference-instrumentation-typesafe@0.1.0(@typesafe-ai/sdk@0.6.0)':
+    dependencies:
+      '@arizeai/openinference-core': 2.7.0
+      '@arizeai/openinference-semantic-conventions': 2.11.0
+      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/core': 2.11.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/instrumentation': 0.46.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/semantic-conventions': 1.40.0
+      '@typesafe-ai/sdk': 0.6.0
+    transitivePeerDependencies:
+      - supports-color
+
   '@arizeai/openinference-semantic-conventions@2.1.7': {}
+
+  '@arizeai/openinference-semantic-conventions@2.11.0': {}
 
   '@arizeai/openinference-semantic-conventions@2.2.0': {}
 
@@ -3458,6 +3506,11 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/semantic-conventions': 1.28.0
 
+  '@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1)':
+    dependencies:
+      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/semantic-conventions': 1.40.0
+
   '@opentelemetry/exporter-trace-otlp-proto@0.57.2(@opentelemetry/api@1.9.1)':
     dependencies:
       '@opentelemetry/api': 1.9.1
@@ -3678,6 +3731,8 @@ snapshots:
   '@types/ws@8.18.1':
     dependencies:
       '@types/node': 20.19.37
+
+  '@typesafe-ai/sdk@0.6.0': {}
 
   '@typescript-eslint/eslint-plugin@8.58.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)':
     dependencies:

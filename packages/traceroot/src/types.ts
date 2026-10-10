@@ -85,6 +85,11 @@ export interface InitializeOptions {
     claudeAgentSDK?: unknown;
     bedrock?: unknown;
     /**
+     * @typesafe-ai/sdk module ref. Pass `import * as typeSafe from '@typesafe-ai/sdk'`.
+     * Model aliases such as `jev-latest` are recorded as the model the API resolved.
+     */
+    typeSafe?: unknown;
+    /**
      * @openai/agents module ref. Pass `import * as agents from '@openai/agents'`.
      *
      * Replaces the SDK's default OpenAI tracing processor with TraceRoot's —

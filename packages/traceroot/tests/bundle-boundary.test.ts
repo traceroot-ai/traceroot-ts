@@ -6,7 +6,8 @@ import { build } from 'esbuild';
 // The SDK is published unbundled. When a consumer bundles their app with node_modules
 // included, the optional OpenInference instrumentations must stay runtime requires: the
 // bundler must neither inline them nor chase their peers (@langchain/core, the Bedrock
-// client), because a consumer who uses one provider does not have the others' peers.
+// client, the TypeSafe SDK), because a consumer who uses one provider does not have the
+// others' peers.
 describe('consumer bundling boundary', () => {
   it('leaves the optional instrumentations out of a consumer bundle', async () => {
     const result = await build({
@@ -28,7 +29,7 @@ describe('consumer bundling boundary', () => {
       'expected the statically imported semantic-conventions package to be bundled',
     );
 
-    for (const provider of ['openai', 'anthropic', 'langchain', 'bedrock']) {
+    for (const provider of ['openai', 'anthropic', 'langchain', 'bedrock', 'typesafe']) {
       assert.ok(
         !inlined.some((file) => file.includes(`openinference-instrumentation-${provider}`)),
         `${provider} instrumentation was bundled`,
@@ -37,6 +38,10 @@ describe('consumer bundling boundary', () => {
     assert.ok(
       !inlined.some((file) => file.includes('client-bedrock-runtime')),
       'the Bedrock client (a peer of an optional instrumentation) was bundled',
+    );
+    assert.ok(
+      !inlined.some((file) => file.includes('@typesafe-ai/sdk')),
+      'the TypeSafe SDK (a peer of an optional instrumentation) was bundled',
     );
   });
 });
