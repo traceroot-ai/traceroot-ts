@@ -171,7 +171,8 @@ export interface DatasetSnapshot {
  * the SAME id and the platform converges their runs instead of forking a new dataset each
  * run. Pass an explicit `key` to keep identity stable across a display-name rename.
  * `datasetVersionId` is set only when this mirrors a pushed/pulled remote version; changed
- * content under the same key becomes a new VERSION.
+ * content under the same key becomes a new VERSION. `versionNumber` is that version's ordinal,
+ * carried alongside the id when the platform reports it (a locally-authored dataset has neither).
  */
 export class Dataset {
   name: string;
@@ -180,6 +181,7 @@ export class Dataset {
   readonly key!: string;
   datasetId: string;
   datasetVersionId?: string;
+  versionNumber?: number;
   baseVersionId: string | null = null;
   private readonly casesById = new Map<string, EvalCase>();
 
@@ -335,6 +337,7 @@ export class Dataset {
     description: string | null;
     baseVersionId: string | null;
     datasetVersionId: string | null;
+    versionNumber: number | null;
     cases: EvalCase[];
   } {
     return {
@@ -349,6 +352,7 @@ export class Dataset {
       // fromJSON reads this back, so dropping it here loses the remote binding — and evaluate()'s
       // auto-provision guard then re-pushes an already-synced dataset.
       datasetVersionId: this.datasetVersionId ?? null,
+      versionNumber: this.versionNumber ?? null,
       cases: [...this.casesById.values()], // incl. archived
     };
   }
@@ -360,12 +364,14 @@ export class Dataset {
     datasetId?: string;
     baseVersionId?: string | null;
     datasetVersionId?: string | null;
+    versionNumber?: number | null;
     cases?: EvalCase[];
   }): Dataset {
     const ds = new Dataset(d.name, d.description ?? null, { key: d.key ?? undefined });
     if (d.datasetId) ds.datasetId = d.datasetId;
     ds.baseVersionId = d.baseVersionId ?? null;
     ds.datasetVersionId = d.datasetVersionId ?? undefined;
+    ds.versionNumber = d.versionNumber ?? undefined;
     // Anonymous cases (no id) each get a content id — otherwise every one keys on `undefined`
     // and all but the last silently collapse. Mirrors upsert().
     for (const c of d.cases ?? []) {
@@ -386,6 +392,7 @@ export class Dataset {
         description: this.description,
         baseVersionId: this.baseVersionId,
         datasetVersionId: this.datasetVersionId ?? null,
+        versionNumber: this.versionNumber ?? null,
         schema: 1,
       };
       // Serialize through the canonical form (not raw JSON.stringify) so a Date/Map/Set survives
@@ -416,6 +423,7 @@ export class Dataset {
         description: header.description,
         baseVersionId: header.baseVersionId,
         datasetVersionId: header.datasetVersionId,
+        versionNumber: header.versionNumber,
         cases: records.slice(1).map((r) => {
           const { type: _t, ...rest } = r;
           return rest as EvalCase;
@@ -427,25 +435,52 @@ export class Dataset {
 
   /**
    * Explicitly publish this dataset as ONE immutable server version. Local mutations never
-   * create versions; this is the deliberate publish boundary. `transport` defaults to a
-   * no-op LocalDatasetSync (local-only). `baseVersionId` (defaults to the pinned version)
-   * drives optimistic concurrency; a stale base rejects with DatasetConflictError.
-   * `onExisting` overrides the double-check before adding a version to an already-existing
-   * dataset (default: the transport's own, an interactive prompt).
+   * create versions; this is the deliberate publish boundary. `transport` defaults to the
+   * platform transport (PlatformDatasetSync), so `push()` publishes to TraceRoot — the same
+   * cloud-by-default behaviour as `evaluate()`. When no credentials are configured it throws a
+   * clear error rather than silently staying local; for a deliberate offline push pass
+   * `new LocalDatasetSync()`. `baseVersionId` (defaults to the pinned version) drives optimistic
+   * concurrency; a stale base rejects with DatasetConflictError. `onExisting` overrides the
+   * double-check before adding a version to an already-existing dataset (default: the
+   * transport's own, an interactive prompt).
    */
   async push(
     transport?: import('./dataset_sync').DatasetSyncTransport,
     baseVersionId?: string | null,
     opts?: { onExisting?: import('./dataset_sync').OnExisting },
   ): Promise<import('./dataset_sync').PushResult> {
-    const { LocalDatasetSync } = await import('./dataset_sync');
-    const sync = transport ?? new LocalDatasetSync();
+    let sync: import('./dataset_sync').DatasetSyncTransport;
+    if (transport != null) {
+      sync = transport;
+    } else {
+      // Resolve the credentials HERE and pass them explicitly, rather than constructing the
+      // transport bare and recognising its missing-key failure by its message text. Only a
+      // genuinely absent key becomes the actionable error below; every other constructor
+      // failure propagates untouched, and no cross-module string stays load-bearing. Mirrors
+      // Python's `Dataset.push`.
+      const [{ PlatformDatasetSync }, { TraceRoot }] = await Promise.all([
+        import('./dataset_sync'),
+        import('../traceroot'),
+      ]);
+      const { apiKey, baseUrl } = TraceRoot.resolveCredentials();
+      if (!apiKey) {
+        throw new Error(
+          'Dataset.push() publishes to the TraceRoot platform, but no credentials are configured. ' +
+            'Call initialize({ apiKey, baseUrl }) first (or set TRACEROOT_API_KEY), or pass an ' +
+            'explicit transport (new LocalDatasetSync() keeps it local).',
+        );
+      }
+      sync = new PlatformDatasetSync({ apiKey, baseUrl });
+    }
     const snapshot = this.snapshot();
     const base = baseVersionId !== undefined ? baseVersionId : this.baseVersionId;
     const result = await sync.pushDataset(snapshot, base, opts);
     if (result.status === 'uploaded' && result.datasetVersionId != null) {
       this.datasetVersionId = result.datasetVersionId;
       this.baseVersionId = result.datasetVersionId;
+      // Set alongside the id, never left behind: a transport that does not report the ordinal
+      // must clear it, not leave the PREVIOUS version's number pinned to the new id.
+      this.versionNumber = result.versionNumber ?? undefined;
     }
     return result;
   }
