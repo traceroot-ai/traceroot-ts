@@ -1,7 +1,13 @@
 // src/context.ts
 import { trace } from '@opentelemetry/api';
 import { SESSION_ID, USER_ID } from '@arizeai/openinference-semantic-conventions';
-import { LLM_PROMPT, SPAN_METADATA, SPAN_TAGS, TRACE_METADATA } from './constants';
+import {
+  LLM_PROMPT,
+  OI_LLM_COST_TOTAL,
+  SPAN_METADATA,
+  SPAN_TAGS,
+  TRACE_METADATA,
+} from './constants';
 import { wrapSpan, type Span } from './spans';
 import { applyUsage, applyModel, applyIO } from './attributes';
 import type { TokenUsage } from './types';
@@ -25,6 +31,8 @@ export function updateCurrentSpan(attrs: {
   modelParameters?: Record<string, unknown>;
   /** Token usage (e.g. { input: 100, output: 50 }). */
   usage?: TokenUsage;
+  /** Total cost of this LLM call in USD; replaces TraceRoot's computed price for this span. */
+  cost?: number;
   /** Prompt / messages sent to the LLM. */
   prompt?: unknown;
   /** Arbitrary span attributes for keys the typed fields don't cover. */
@@ -48,6 +56,7 @@ export function updateCurrentSpan(attrs: {
     applyModel(span, attrs.model, attrs.modelParameters);
   }
   if (attrs.usage !== undefined) applyUsage(span, attrs.usage);
+  if (attrs.cost !== undefined) span.setAttribute(OI_LLM_COST_TOTAL, attrs.cost);
   if (attrs.prompt !== undefined) {
     try {
       span.setAttribute(LLM_PROMPT, JSON.stringify(attrs.prompt));

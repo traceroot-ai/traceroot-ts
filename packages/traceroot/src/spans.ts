@@ -9,7 +9,7 @@ import {
 } from '@opentelemetry/api';
 import { isTracingSuppressed } from '@opentelemetry/core';
 import { applyCommonAttributes, applyModel, applyUsage, applyIO, trySerialize } from './attributes';
-import { SPAN_METADATA } from './constants';
+import { OI_LLM_COST_TOTAL, SPAN_METADATA } from './constants';
 import { StartSpanOptions, SpanUpdate } from './types';
 import { TraceRoot } from './traceroot';
 import {
@@ -56,6 +56,7 @@ class TracerootSpan implements Span {
       applyModel(this.otelSpan, attrs.model, attrs.modelParameters);
     }
     if (attrs.usage !== undefined) applyUsage(this.otelSpan, attrs.usage);
+    if (attrs.cost !== undefined) this.otelSpan.setAttribute(OI_LLM_COST_TOTAL, attrs.cost);
     if (attrs.attributes !== undefined) this.otelSpan.setAttributes(attrs.attributes);
     return this;
   }

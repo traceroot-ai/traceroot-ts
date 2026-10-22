@@ -29,6 +29,7 @@ export const OI_LLM_TOKEN_COUNT_CACHE_WRITE = 'llm.token_count.prompt_details.ca
 // SDK already emits this key (and Python emits the identical string), so anything reporting
 // anthropic usage must use it rather than the cache_write spelling above.
 export const OI_LLM_TOKEN_COUNT_CACHE_CREATION = 'llm.token_count.prompt_details.cache_creation';
+export const OI_LLM_COST_TOTAL = 'llm.cost.total';
 export const LLM_MODEL = 'traceroot.llm.model';
 export const LLM_MODEL_PARAMETERS = 'traceroot.llm.model_parameters';
 export const LLM_USAGE = 'traceroot.llm.usage';
