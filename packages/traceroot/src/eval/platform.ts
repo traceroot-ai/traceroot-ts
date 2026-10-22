@@ -37,6 +37,13 @@ function clamp(text: string | null, limit: number): string | null {
   return text.slice(0, limit - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
 }
 
+/** clamp() each string field of `fields` named in `limits` to its limit, in place. */
+function clampFields(fields: Record<string, unknown>, limits: Record<string, number>): void {
+  for (const [key, limit] of Object.entries(limits)) {
+    if (typeof fields[key] === 'string') fields[key] = clamp(fields[key] as string, limit);
+  }
+}
+
 /** Bound a free-form metadata object by its SERIALIZED size (the contract's rule). Over-cap
  *  metadata collapses to an explicit truncation marker rather than 400ing. */
 function clampMetadata(value: unknown, limit: number): unknown {
@@ -607,22 +614,35 @@ export class PlatformTransport implements EvalTransport {
     const body: Record<string, unknown> = {
       test_case_id: item.caseId,
       trace_id: item.traceId,
-      input: clamp(asText(item.input), PAYLOAD_TEXT_MAX) ?? '',
-      expected_output: clamp(asText(item.expected), PAYLOAD_TEXT_MAX),
-      candidate_output: clamp(asText(item.output), PAYLOAD_TEXT_MAX),
+      input: asText(item.input),
+      expected_output: asText(item.expected),
+      candidate_output: asText(item.output),
       status,
-      task_error: clamp(item.error, TASK_ERROR_MAX),
+      task_error: item.error,
       duration_ms: durationMs(item.durationMs),
-      scores: this.scoresPayload(item).map((score) => ({
-        ...score,
-        ...redactText(score, ['explanation', 'error', 'string_value']),
-      })),
+      scores: this.scoresPayload(item).map((score) => {
+        const sent = { ...score, ...redactText(score, ['explanation', 'error', 'string_value']) };
+        clampFields(sent, {
+          explanation: EXPLANATION_MAX,
+          error: SCORE_ERROR_MAX,
+          string_value: STRING_VALUE_MAX,
+        });
+        return sent;
+      }),
     };
+    // Redact the full text, THEN clamp: redact never sees a cut value (PII straddling the cut
+    // would slip through), and whatever redact returns still has to fit the contract limits.
     Object.assign(
       body,
       redactText(body, ['input', 'expected_output', 'candidate_output', 'task_error']),
     );
     body.input ??= ''; // the one required string on the wire: a dropped input is sent empty
+    clampFields(body, {
+      input: PAYLOAD_TEXT_MAX,
+      expected_output: PAYLOAD_TEXT_MAX,
+      candidate_output: PAYLOAD_TEXT_MAX,
+      task_error: TASK_ERROR_MAX,
+    });
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/results`, body);
     // Record this case's contribution only AFTER the upsert persisted, keyed by id so a retry or
     // repeated upload replaces (not adds to) the completion aggregate.
@@ -724,15 +744,14 @@ export class PlatformTransport implements EvalTransport {
         // fabricated empty score that poisons the aggregate mean) while Python writes a bare NaN
         // token the backend's JSON.parse rejects (400ing the whole run). Both SDKs report it as
         // what it is: the scorer failed to produce a value.
-        entry.error = clamp(nonFiniteError(s.name, s.value), SCORE_ERROR_MAX);
+        entry.error = nonFiniteError(s.name, s.value);
         payload.push(entry);
         continue;
       }
       if (typeof s.value === 'boolean') entry.bool_value = s.value;
       else if (typeof s.value === 'number') entry.numeric_value = s.value;
-      else entry.string_value = clamp(String(s.value), STRING_VALUE_MAX);
-      if (s.comment !== undefined && s.comment !== null)
-        entry.explanation = clamp(s.comment, EXPLANATION_MAX);
+      else entry.string_value = String(s.value);
+      if (s.comment !== undefined && s.comment !== null) entry.explanation = s.comment;
       const passed = this.scorePassed(s, item.scores.length === 1);
       if (passed !== null) entry.passed = passed;
       payload.push(entry);
@@ -743,7 +762,7 @@ export class PlatformTransport implements EvalTransport {
       payload.push({
         scorer_name: name,
         scorer_version: this.declaredVersion(name),
-        error: clamp(msg, SCORE_ERROR_MAX),
+        error: msg,
       });
     }
     return payload;

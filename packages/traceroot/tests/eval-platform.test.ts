@@ -14,7 +14,7 @@ import {
   EvalRunResult,
 } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
-import { PlatformTransport } from '../src/eval/platform';
+import { EXPLANATION_MAX, PlatformTransport } from '../src/eval/platform';
 import { TraceRoot } from '../src/traceroot';
 
 const echo = (x: unknown) => x;
@@ -604,6 +604,29 @@ describe('reporting (cloud-only)', () => {
       const res = calls.find((c) => c.url.endsWith('/results'))!.body;
       assert.equal(res.input, '');
       assert.equal(res.candidate_output, null);
+    });
+
+    it('redacts the full text before clamping it to the contract limits', async () => {
+      // The email straddles the explanation cut: clamped first, redact would see only `a@b.c`.
+      mockBackend({});
+      TraceRoot.initialize({
+        redact: (attrs) =>
+          Object.fromEntries(
+            Object.entries(attrs).map(([k, v]) => [
+              k,
+              typeof v === 'string' ? v.replaceAll('a@b.com', '[email]') : v,
+            ]),
+          ),
+      });
+      const comment = 'x'.repeat(EXPLANATION_MAX - 20) + 'a@b.com' + 'y'.repeat(20);
+      const t = new PlatformTransport('ds_1', {});
+      await t.recordItemResult(await t.createRun('r', 'd', null), {
+        ...item,
+        scores: [{ name: 'acc', value: 0.5, comment }],
+      });
+      const explanation = calls.find((c) => c.url.endsWith('/results'))!.body.scores[0].explanation;
+      assert.ok(!explanation.includes('a@b.c'));
+      assert.ok(explanation.length <= EXPLANATION_MAX);
     });
 
     it('a throwing redact blanks the text fields and keeps scores, ids and status', async () => {
