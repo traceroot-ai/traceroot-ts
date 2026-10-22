@@ -2,11 +2,14 @@
 import { diag, trace as otelTrace, Attributes, Context, Span } from '@opentelemetry/api';
 import { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import {
+  LLM_MODEL_PARAMETERS,
   LLM_PROMPT,
   OI_LLM_MODEL_NAME,
+  OI_SPAN_KIND,
   OI_TRACE_SESSION_ID,
   OI_TRACE_USER_ID,
   SPAN_METADATA,
+  SpanAttributes,
   TRACE_METADATA,
 } from './constants';
 import { PROJECT_ID_ATTR, projectIdFromContext } from './project-id';
@@ -21,10 +24,18 @@ export const SDK_VERSION = version;
 let _hasWarnedUnattributedDrop = false;
 
 // The traceroot.* keys that carry recorded content, so redact sees them.
-const REDACTABLE_KEYS = new Set([SPAN_METADATA, TRACE_METADATA, LLM_PROMPT]);
+/** @internal — exported for the key-classification guard test. */
+export const REDACTABLE_KEYS = new Set([
+  SPAN_METADATA,
+  TRACE_METADATA,
+  LLM_PROMPT,
+  LLM_MODEL_PARAMETERS,
+  SpanAttributes.EVAL_ERROR,
+  SpanAttributes.EVAL_SCORE_COMMENT,
+]);
 const METADATA_KEYS = new Set([SPAN_METADATA, TRACE_METADATA]);
-// Non-traceroot keys ingest reads for user, session, model and token usage (mirrors
-// backend/worker/otel_transform.py), held back so redact cannot drop attribution or cost.
+// Non-traceroot keys ingest reads for user, session, model, token usage, span kind and error
+// grouping (mirrors backend/worker/otel_transform.py), held back so redact cannot drop them.
 const HELD_BACK_KEYS = new Set([
   OI_TRACE_USER_ID,
   'session.user_id',
@@ -35,6 +46,11 @@ const HELD_BACK_KEYS = new Set([
   'decision.model_name',
   'embedding.model_name',
   'ai.model.id',
+  OI_SPAN_KIND,
+  'gen_ai.operation.name',
+  'ai.operationId',
+  'operation.name',
+  'exception.type',
 ]);
 const HELD_BACK_PREFIXES = [
   'llm.token_count.',
@@ -75,10 +91,12 @@ export interface TraceRootSpanProcessorOptions {
    * attributes, event attributes and status message sent to TraceRoot are rewritten (span name and resource are not); other exporters still see the
    * original span. Also runs on event attributes and the status message.
    * TraceRoot's bookkeeping keys (its own `traceroot.*` keys plus user,
-   * session, model and token usage) are not passed in; recorded input, output,
-   * metadata and prompt are. A function that throws or returns a non-object
+   * session, model, token usage and span kind) are not passed in; recorded
+   * input, output, metadata and prompt are. A function that throws or returns a non-object
    * (e.g. null or an array) fails closed: span and trace metadata are dropped,
-   * and every other value except numbers and booleans is replaced.
+   * and every other value except numbers and booleans is replaced. Eval results
+   * uploaded to TraceRoot are redacted too; datasets and scorer definitions are
+   * not.
    */
   redact?: Redact;
 }
@@ -264,7 +282,8 @@ function isBookkeeping(key: string): boolean {
   return HELD_BACK_KEYS.has(key) || HELD_BACK_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
-function redactAttributes(redact: Redact, attributes: Attributes): Attributes {
+/** @internal — the fail-closed rewrite, shared with eval result uploads. */
+export function redactAttributes(redact: Redact, attributes: Attributes): Attributes {
   const ours: Attributes = {};
   const theirs: Attributes = {};
   for (const [key, value] of Object.entries(attributes)) {

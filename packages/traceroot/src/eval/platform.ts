@@ -2,6 +2,7 @@
 // traceroot-py/traceroot/eval/platform.py). Same endpoints and wire payloads as the
 // Python SDK, since the backend contract is shared.
 
+import { redactAttributes } from '../processor';
 import { TraceRoot } from '../traceroot';
 import { contentRevision, Dataset } from './types';
 import { newRunId, stableDatasetId } from './ids';
@@ -136,6 +137,36 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function asText(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   return typeof value === 'string' ? value : (JSON.stringify(value) ?? null);
+}
+
+/** The configured redact applied to the string fields `keys` of `fields`, returned as overrides.
+ *  Only those text fields go in, as one flat object: ids, status and scores are never handed to
+ *  redact, so a failing one (which blanks every string) cannot break routing. A field redact
+ *  drops or turns into a non-string is sent as null. */
+function redactText(fields: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  const redact = TraceRoot._redact;
+  const text = Object.fromEntries(
+    keys.filter((k) => typeof fields[k] === 'string').map((k) => [k, fields[k] as string]),
+  );
+  if (redact === undefined) return {};
+  const redacted = redactAttributes(redact, text);
+  return Object.fromEntries(
+    Object.keys(text).map((k) => [k, typeof redacted[k] === 'string' ? redacted[k] : null]),
+  );
+}
+
+/** Run metadata goes to redact as JSON text; whatever no longer parses to an object is withheld. */
+function redactMetadata(metadata: Record<string, unknown>): Record<string, unknown> | null {
+  if (TraceRoot._redact === undefined) return metadata;
+  try {
+    const { metadata: text } = redactText({ metadata: JSON.stringify(metadata) }, ['metadata']);
+    const parsed: unknown = JSON.parse(text as string);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** True for a NaN/Infinity score value (booleans and strings never are). */
@@ -549,8 +580,9 @@ export class PlatformTransport implements EvalTransport {
     // absent-or-null rules rather than sending an empty object. Clamped like every other capped
     // field: metadata is whatever the caller put there (a whole prompt, a config dump), and over
     // the cap the REGISTRATION 400s — the run then never starts at all.
-    if (metadata && Object.keys(metadata).length > 0)
-      body.metadata = clampMetadata(metadata, METADATA_MAX);
+    const sentMetadata =
+      metadata && Object.keys(metadata).length > 0 ? redactMetadata(metadata) : null;
+    if (sentMetadata) body.metadata = clampMetadata(sentMetadata, METADATA_MAX);
     const resp = await this.requestWithRetry('POST', '/api/v1/public/evaluation-runs', body);
     this.runId = resp.evaluation_run_id;
     // Optional, absent on older/self-hosted backends. Prefer the absolute run_url (resolved
@@ -572,7 +604,7 @@ export class PlatformTransport implements EvalTransport {
     // scoresPayload), so it errors the case exactly like a thrown scorer would.
     const nonFinite = item.scores.filter((s) => isNonFinite(s.value)).length;
     const status = nonFinite > 0 ? 'errored' : caseStatus(item);
-    await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/results`, {
+    const body: Record<string, unknown> = {
       test_case_id: item.caseId,
       trace_id: item.traceId,
       input: clamp(asText(item.input), PAYLOAD_TEXT_MAX) ?? '',
@@ -581,8 +613,17 @@ export class PlatformTransport implements EvalTransport {
       status,
       task_error: clamp(item.error, TASK_ERROR_MAX),
       duration_ms: durationMs(item.durationMs),
-      scores: this.scoresPayload(item),
-    });
+      scores: this.scoresPayload(item).map((score) => ({
+        ...score,
+        ...redactText(score, ['explanation', 'error', 'string_value']),
+      })),
+    };
+    Object.assign(
+      body,
+      redactText(body, ['input', 'expected_output', 'candidate_output', 'task_error']),
+    );
+    body.input ??= '';
+    await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/results`, body);
     // Record this case's contribution only AFTER the upsert persisted, keyed by id so a retry or
     // repeated upload replaces (not adds to) the completion aggregate.
     this.contrib.set(item.caseId, {

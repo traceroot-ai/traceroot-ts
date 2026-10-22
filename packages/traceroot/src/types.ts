@@ -135,11 +135,12 @@ export interface InitializeOptions {
    * personal data never reaches TraceRoot; return the attributes to keep.
    * Other exporters still see the original span. Also runs on event
    * attributes and the status message. TraceRoot's bookkeeping keys (its own
-   * `traceroot.*` keys plus user, session, model and token usage) are not
-   * passed in; recorded input, output, metadata and prompt are. A function
-   * that throws or returns a non-object (e.g. null or an array) fails closed:
-   * span and trace metadata are dropped, and every other value except numbers
-   * and booleans becomes '[redaction failed]'.
+   * `traceroot.*` keys plus user, session, model, token usage and span kind)
+   * are not passed in; recorded input, output, metadata and prompt are. A
+   * function that throws or returns a non-object (e.g. null or an array) fails
+   * closed: span and trace metadata are dropped, and every other value except
+   * numbers and booleans becomes '[redaction failed]'. Eval results uploaded
+   * to TraceRoot are redacted too; datasets and scorer definitions are not.
    */
   redact?: Redact;
   /** OTel diagnostic log level. Defaults to 'error'. */

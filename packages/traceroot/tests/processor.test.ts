@@ -8,7 +8,9 @@ import {
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { context, propagation, trace, Attributes, TraceFlags } from '@opentelemetry/api';
-import { TraceRootSpanProcessor, SDK_VERSION } from '../src/processor';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { TraceRootSpanProcessor, SDK_VERSION, REDACTABLE_KEYS } from '../src/processor';
 
 describe('TraceRootSpanProcessor', () => {
   let exporter: InMemorySpanExporter;
@@ -503,5 +505,110 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(span.attributes['traceroot.span.metadata'], undefined);
     assert.equal(span.attributes['traceroot.trace.metadata'], undefined);
     assert.equal(span.attributes['llm.tokens'], 42);
+  });
+
+  it('passes eval error, score comment and model parameters to redact', () => {
+    register((attrs) =>
+      Object.fromEntries(
+        Object.entries(attrs).map(([k, v]) => [
+          k,
+          typeof v === 'string' ? v.replace('a@b.com', '[email]') : v,
+        ]),
+      ),
+    );
+    trace.getTracer('test').startActiveSpan('eval', (span) => {
+      span.setAttributes({
+        'traceroot.eval.error': 'failed for a@b.com',
+        'traceroot.eval.score_comment': 'a@b.com looked fine',
+        'traceroot.llm.model_parameters': '{"user":"a@b.com"}',
+      });
+      span.end();
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.ok(!JSON.stringify(span.attributes).includes('a@b.com'));
+  });
+
+  for (const [name, redact] of [
+    ['returns {}', () => ({})],
+    [
+      'throws',
+      () => {
+        throw new Error('redact bug');
+      },
+    ],
+  ] as const) {
+    it(`keeps span kind and exception.type when redact ${name}`, () => {
+      register(redact);
+      trace.getTracer('test').startActiveSpan('kind', (span) => {
+        span.setAttributes({ 'openinference.span.kind': 'LLM', 'gen_ai.operation.name': 'chat' });
+        span.recordException(new TypeError('bad input from a@b.com'));
+        span.end();
+      });
+      const [span] = exporter.getFinishedSpans();
+      assert.equal(span.attributes['openinference.span.kind'], 'LLM');
+      assert.equal(span.attributes['gen_ai.operation.name'], 'chat');
+      assert.equal(span.events[0].attributes?.['exception.type'], 'TypeError');
+      assert.ok(!JSON.stringify(span.events).includes('a@b.com'));
+    });
+  }
+
+  it('classifies every traceroot.* key the SDK writes as content or bookkeeping', () => {
+    // A new key must be added here (held back from redact) or to REDACTABLE_KEYS (passed in).
+    const bookkeeping = new Set([
+      'traceroot.claude_agent_sdk.wrapped',
+      'traceroot.environment',
+      'traceroot.eval.candidate_version',
+      'traceroot.eval.case_id',
+      'traceroot.eval.contract_version',
+      'traceroot.eval.dataset_id',
+      'traceroot.eval.dataset_name',
+      'traceroot.eval.dataset_version_id',
+      'traceroot.eval.environment',
+      'traceroot.eval.has_expected',
+      'traceroot.eval.local_run_id',
+      'traceroot.eval.name',
+      'traceroot.eval.run_id',
+      'traceroot.eval.run_name',
+      'traceroot.eval.score_target_span_id',
+      'traceroot.eval.score_value',
+      'traceroot.eval.scorer_name',
+      'traceroot.eval.source_span_id',
+      'traceroot.eval.source_trace_id',
+      'traceroot.eval.task_name',
+      'traceroot.git.ref',
+      'traceroot.git.repo',
+      'traceroot.git.source_file',
+      'traceroot.git.source_function',
+      'traceroot.git.source_line',
+      'traceroot.llm.model',
+      'traceroot.llm.usage',
+      'traceroot.pi.force_closed',
+      'traceroot.pi.force_closed_reason',
+      'traceroot.pi.retry_count',
+      'traceroot.pi.wrapped',
+      'traceroot.project_id',
+      'traceroot.redacted',
+      'traceroot.sdk.name',
+      'traceroot.sdk.version',
+      'traceroot.source',
+      'traceroot.span.ids_path',
+      'traceroot.span.path',
+      'traceroot.span.tags',
+      'traceroot.span.type',
+      'traceroot.trace.tags',
+    ]);
+    const src = join(__dirname, '..', 'src');
+    const written = readdirSync(src, { recursive: true, encoding: 'utf8' })
+      .filter((file) => file.endsWith('.ts'))
+      .flatMap((file) =>
+        [
+          ...readFileSync(join(src, file), 'utf8').matchAll(
+            /(?<!Symbol\.for\()['"`](traceroot\.[\w.]*\w)['"`]/g,
+          ),
+        ].map((m) => m[1]),
+      );
+    for (const key of new Set(written)) {
+      assert.ok(REDACTABLE_KEYS.has(key) !== bookkeeping.has(key), `classify ${key}`);
+    }
   });
 });

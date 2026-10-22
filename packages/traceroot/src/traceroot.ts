@@ -13,7 +13,7 @@ import {
   OpenInferenceBatchSpanProcessor,
   OpenInferenceSimpleSpanProcessor,
 } from '@arizeai/openinference-vercel';
-import { InitializeOptions } from './types';
+import { InitializeOptions, Redact } from './types';
 import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor, _resetProcessorState } from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
@@ -36,6 +36,8 @@ let _provider: NodeTracerProvider | undefined;
 // Resolved on initialize() so the offline-eval module can reach the same credentials
 // (parity with the Python client that eval's _resolve_credentials reads).
 let _apiKey: string | undefined;
+// The configured redact, so eval result uploads are rewritten the same way spans are.
+let _redact: Redact | undefined;
 // Left undefined until initialize() so an offline-eval call made before init still honors the
 // TRACEROOT_HOST_URL env fallback (a hard default here would silently route to the default host).
 let _baseUrl: string | undefined;
@@ -126,6 +128,11 @@ export class TraceRoot {
     return _gitRef;
   }
 
+  /** @internal The redact passed to initialize(), applied to eval result uploads. */
+  static get _redact(): Redact | undefined {
+    return _redact;
+  }
+
   /**
    * Resolve eval credentials with the same precedence the client uses: an explicit
    * argument wins, else the value resolved at initialize(), else the env var, else the
@@ -159,6 +166,8 @@ export class TraceRoot {
 
   static initialize(options: InitializeOptions = {}): void {
     const enabled = options.enabled ?? process.env['TRACEROOT_ENABLED'] !== 'false';
+    // Kept even with tracing disabled: eval uploads can still run on ambient credentials.
+    if (!_isInitialized) _redact = options.redact;
     if (!enabled) {
       return;
     }
@@ -394,6 +403,7 @@ export class TraceRoot {
    *  guarantee a local run never uploads on ambient credentials. */
   static _clearCredentials(): void {
     _apiKey = undefined;
+    _redact = undefined;
     // undefined (not the hard default) so a later resolveCredentials() still honors the
     // TRACEROOT_HOST_URL env fallback — matching the module-load invariant above.
     _baseUrl = undefined;
@@ -404,6 +414,7 @@ export class TraceRoot {
 /** @internal */
 export function _resetForTesting(): void {
   _isInitialized = false;
+  _redact = undefined;
   _tracingActive = false;
   _provider = undefined;
   _exportTarget = undefined;
