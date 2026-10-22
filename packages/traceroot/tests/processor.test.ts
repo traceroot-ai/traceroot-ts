@@ -432,6 +432,21 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(original.attributes['traceroot.redacted'], undefined);
   });
 
+  it('a redact that mutates an array in place leaves the original span unchanged', () => {
+    register((attrs) => {
+      (attrs['user.tags'] as string[])[0] = '[tag]';
+      return attrs;
+    });
+    const sibling = new InMemorySpanExporter();
+    provider.addSpanProcessor(new SimpleSpanProcessor(sibling));
+    trace.getTracer('test').startActiveSpan('tags', (span) => {
+      span.setAttribute('user.tags', ['vip']);
+      span.end();
+    });
+    assert.deepEqual(exporter.getFinishedSpans()[0].attributes['user.tags'], ['[tag]']);
+    assert.deepEqual(sibling.getFinishedSpans()[0].attributes['user.tags'], ['vip']);
+  });
+
   it('keeps traceroot.* keys even when redact returns nothing', () => {
     register(() => ({}));
     trace.getTracer('test').startActiveSpan('ours', (span) => {

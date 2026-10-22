@@ -72,12 +72,13 @@ export interface TraceRootSpanProcessorOptions {
   exportSpan?: (span: ReadableSpan) => boolean;
   /**
    * Rewrite a finished span's attributes before export to TraceRoot, so
-   * personal data never leaves the process. Also runs on event attributes and
-   * the status message. TraceRoot's bookkeeping keys (its own `traceroot.*`
-   * keys plus user, session, model and token usage) are not passed in;
-   * recorded input, output, metadata and prompt are. A throwing function fails
-   * closed: span and trace metadata are dropped, and every other value except
-   * numbers and booleans is replaced.
+   * personal data never reaches TraceRoot; other exporters still see the
+   * original span. Also runs on event attributes and the status message.
+   * TraceRoot's bookkeeping keys (its own `traceroot.*` keys plus user,
+   * session, model and token usage) are not passed in; recorded input, output,
+   * metadata and prompt are. A function that throws or returns a non-object
+   * (e.g. null or an array) fails closed: span and trace metadata are dropped,
+   * and every other value except numbers and booleans is replaced.
    */
   redact?: Redact;
 }
@@ -267,7 +268,8 @@ function redactAttributes(redact: Redact, attributes: Attributes): Attributes {
   const ours: Attributes = {};
   const theirs: Attributes = {};
   for (const [key, value] of Object.entries(attributes)) {
-    (isBookkeeping(key) ? ours : theirs)[key] = value;
+    // Copy arrays so a redact that mutates one in place leaves the original span intact.
+    (isBookkeeping(key) ? ours : theirs)[key] = Array.isArray(value) ? value.slice() : value;
   }
   let redacted: unknown;
   try {
