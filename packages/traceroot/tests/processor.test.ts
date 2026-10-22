@@ -552,6 +552,36 @@ describe('TraceRootSpanProcessor redact', () => {
     });
   }
 
+  it('passes a string score value to redact', () => {
+    register((attrs) =>
+      Object.fromEntries(
+        Object.entries(attrs).map(([k, v]) => [
+          k,
+          typeof v === 'string' ? v.replace('a@b.com', '[email]') : v,
+        ]),
+      ),
+    );
+    trace.getTracer('test').startActiveSpan('score', (span) => {
+      span.setAttribute('traceroot.eval.score_value', 'reply to a@b.com');
+      span.end();
+    });
+    assert.equal(
+      exporter.getFinishedSpans()[0].attributes['traceroot.eval.score_value'],
+      'reply to [email]',
+    );
+  });
+
+  it('a numeric score value survives a throwing redact', () => {
+    register(() => {
+      throw new Error('redact bug');
+    });
+    trace.getTracer('test').startActiveSpan('score', (span) => {
+      span.setAttribute('traceroot.eval.score_value', 0.75);
+      span.end();
+    });
+    assert.equal(exporter.getFinishedSpans()[0].attributes['traceroot.eval.score_value'], 0.75);
+  });
+
   it('classifies every traceroot.* key the SDK writes as content or bookkeeping', () => {
     // A new key must be added here (held back from redact) or to REDACTABLE_KEYS (passed in).
     const bookkeeping = new Set([
@@ -570,7 +600,6 @@ describe('TraceRootSpanProcessor redact', () => {
       'traceroot.eval.run_id',
       'traceroot.eval.run_name',
       'traceroot.eval.score_target_span_id',
-      'traceroot.eval.score_value',
       'traceroot.eval.scorer_name',
       'traceroot.eval.source_span_id',
       'traceroot.eval.source_trace_id',

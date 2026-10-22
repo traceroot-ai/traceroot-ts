@@ -32,6 +32,7 @@ export const REDACTABLE_KEYS = new Set([
   LLM_MODEL_PARAMETERS,
   SpanAttributes.EVAL_ERROR,
   SpanAttributes.EVAL_SCORE_COMMENT,
+  SpanAttributes.EVAL_SCORE_VALUE,
 ]);
 const METADATA_KEYS = new Set([SPAN_METADATA, TRACE_METADATA]);
 // Non-traceroot keys ingest reads for user, session, model, token usage, span kind and error
