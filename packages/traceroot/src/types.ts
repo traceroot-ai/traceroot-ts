@@ -1,6 +1,10 @@
 // src/types.ts
+import type { Attributes } from '@opentelemetry/api';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import type { PiInstrumentationConfig } from './pi';
+
+/** Rewrites span attributes before export; see `InitializeOptions.redact`. */
+export type Redact = (attributes: Attributes) => Attributes;
 
 export type SpanType = 'span' | 'agent' | 'tool' | 'llm' | 'evaluation' | 'task' | 'scorer';
 
@@ -126,6 +130,17 @@ export interface InitializeOptions {
    * predicate counts as "export".
    */
   exportSpan?: (span: ReadableSpan) => boolean;
+  /**
+   * Rewrite a finished span's attributes before export to TraceRoot, so
+   * personal data never leaves the process; return the attributes to keep.
+   * Also runs on event attributes and the status message. TraceRoot's
+   * bookkeeping keys (its own `traceroot.*` keys plus user, session, model and
+   * token usage) are not passed in; recorded input, output, metadata and
+   * prompt are. A throwing function fails closed: span and trace metadata
+   * are dropped, and every other value except numbers and booleans becomes
+   * '[redaction failed]'.
+   */
+  redact?: Redact;
   /** OTel diagnostic log level. Defaults to 'error'. */
   logLevel?: 'debug' | 'info' | 'warn' | 'error';
   /**

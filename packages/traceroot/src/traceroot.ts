@@ -302,6 +302,7 @@ export class TraceRoot {
         globalAttributes: options.globalAttributes,
         dropSpansWithoutProjectId: shouldDropUnattributed(target.internal, options.internalExport),
         exportSpan: options.exportSpan,
+        redact: options.redact,
       }),
     );
     _provider.register();

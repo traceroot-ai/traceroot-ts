@@ -18,6 +18,7 @@ export type {
   ObserveOptions,
   InitializeOptions,
   PiCodingAgentInstrumentation,
+  Redact,
 } from './types';
 export type { UsingAttributesOptions } from './usingAttributes';
 export { OpenAIAgentsProcessor } from './openai-agents';

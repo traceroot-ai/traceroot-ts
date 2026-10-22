@@ -7,7 +7,7 @@ import {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
-import { context, propagation, trace, TraceFlags } from '@opentelemetry/api';
+import { context, propagation, trace, Attributes, TraceFlags } from '@opentelemetry/api';
 import { TraceRootSpanProcessor, SDK_VERSION } from '../src/processor';
 
 describe('TraceRootSpanProcessor', () => {
@@ -381,5 +381,112 @@ describe('TraceRootSpanProcessor exportSpan', () => {
     const tracer = trace.getTracer('test');
     tracer.startActiveSpan('survives', (span) => span.end());
     assert.equal(exporter.getFinishedSpans().length, 1);
+  });
+});
+
+describe('TraceRootSpanProcessor redact', () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+
+  function register(redact?: (attributes: Attributes) => Attributes): void {
+    exporter = new InMemorySpanExporter();
+    provider = new NodeTracerProvider();
+    provider.addSpanProcessor(
+      new TraceRootSpanProcessor(new SimpleSpanProcessor(exporter), { redact }),
+    );
+    provider.register();
+  }
+
+  afterEach(async () => {
+    await provider.shutdown();
+    exporter.reset();
+    trace.disable();
+    context.disable();
+    propagation.disable();
+  });
+
+  it('exports the span unchanged when redact is not set', () => {
+    register();
+    trace.getTracer('test').startActiveSpan('plain', (span) => {
+      span.setAttribute('user.email', 'a@b.com');
+      span.end();
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['user.email'], 'a@b.com');
+    assert.equal(span.attributes['traceroot.redacted'], undefined);
+  });
+
+  it('exports the redacted attributes and leaves the original span untouched', () => {
+    register((attrs) => ({ ...attrs, 'user.email': '[email]' }));
+    const sibling = new InMemorySpanExporter();
+    provider.addSpanProcessor(new SimpleSpanProcessor(sibling));
+    trace.getTracer('test').startActiveSpan('pii', (span) => {
+      span.setAttribute('user.email', 'a@b.com');
+      span.end();
+    });
+    const [exported] = exporter.getFinishedSpans();
+    assert.equal(exported.attributes['user.email'], '[email]');
+    assert.equal(exported.attributes['traceroot.redacted'], true);
+    const [original] = sibling.getFinishedSpans();
+    assert.equal(original.attributes['user.email'], 'a@b.com');
+    assert.equal(original.attributes['traceroot.redacted'], undefined);
+  });
+
+  it('keeps traceroot.* keys even when redact returns nothing', () => {
+    register(() => ({}));
+    trace.getTracer('test').startActiveSpan('ours', (span) => {
+      span.setAttribute('user.email', 'a@b.com');
+      span.end();
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['user.email'], undefined);
+    assert.equal(span.attributes['traceroot.sdk.name'], 'traceroot-ts');
+  });
+
+  it('holds back the user, session, model and token keys ingest reads', () => {
+    register(() => ({}));
+    trace.getTracer('test').startActiveSpan('attributed', (span) => {
+      span.setAttributes({
+        'user.id': 'u1',
+        'session.id': 's1',
+        'llm.model_name': 'gpt-4o',
+        'llm.token_count.prompt': 12,
+      });
+      span.end();
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['user.id'], 'u1');
+    assert.equal(span.attributes['session.id'], 's1');
+    assert.equal(span.attributes['llm.model_name'], 'gpt-4o');
+    assert.equal(span.attributes['llm.token_count.prompt'], 12);
+  });
+
+  it('redacts recorded content keys and holds back the bookkeeping ones', () => {
+    register(() => ({}));
+    trace.getTracer('test').startActiveSpan('content', (span) => {
+      span.setAttribute('traceroot.span.metadata', '{"email":"a@b.com"}');
+      span.end();
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['traceroot.span.metadata'], undefined);
+    assert.deepEqual(span.attributes['traceroot.span.path'], ['content']);
+  });
+
+  it('a throwing redact blanks every value except numbers and booleans', () => {
+    register(() => {
+      throw new Error('redact bug');
+    });
+    trace.getTracer('test').startActiveSpan('fails-closed', (span) => {
+      span.setAttributes({ 'user.email': 'a@b.com', 'user.tags': ['vip'], 'llm.tokens': 42 });
+      span.setAttribute('traceroot.span.metadata', '{"email":"a@b.com"}');
+      span.setAttribute('traceroot.trace.metadata', '{"email":"a@b.com"}');
+      span.end();
+    });
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['user.email'], '[redaction failed]');
+    assert.equal(span.attributes['user.tags'], '[redaction failed]');
+    assert.equal(span.attributes['traceroot.span.metadata'], undefined);
+    assert.equal(span.attributes['traceroot.trace.metadata'], undefined);
+    assert.equal(span.attributes['llm.tokens'], 42);
   });
 });
