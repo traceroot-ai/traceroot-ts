@@ -88,16 +88,15 @@ export interface TraceRootSpanProcessorOptions {
    */
   exportSpan?: (span: ReadableSpan) => boolean;
   /**
-   * Rewrite a finished span's attributes before export to TraceRoot, so
-   * attributes, event attributes and status message sent to TraceRoot are rewritten (span name and resource are not); other exporters still see the
-   * original span. Also runs on event attributes and the status message.
-   * TraceRoot's bookkeeping keys (its own `traceroot.*` keys plus user,
-   * session, model, token usage and span kind) are not passed in; recorded
-   * input, output, metadata and prompt are. A function that throws or returns a non-object
-   * (e.g. null or an array) fails closed: span and trace metadata are dropped,
-   * and every other value except numbers and booleans is replaced. Eval results
-   * uploaded to TraceRoot are redacted too; datasets and scorer definitions are
-   * not.
+   * Rewrite a finished span's attributes, event attributes and status message
+   * before export to TraceRoot; the span name and resource are not passed in,
+   * and other exporters still see the original span. TraceRoot's bookkeeping
+   * keys (its own `traceroot.*` keys plus user, session, model, token usage and
+   * span kind) are not passed in either; recorded input, output, metadata and
+   * prompt are. A function that throws or returns a non-object (e.g. null or an
+   * array) fails closed: span and trace metadata are dropped, and every other
+   * value except numbers and booleans is replaced. Eval results uploaded to
+   * TraceRoot are redacted too; datasets and scorer definitions are not.
    */
   redact?: Redact;
 }
