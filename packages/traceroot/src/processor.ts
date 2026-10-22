@@ -72,7 +72,7 @@ export interface TraceRootSpanProcessorOptions {
   exportSpan?: (span: ReadableSpan) => boolean;
   /**
    * Rewrite a finished span's attributes before export to TraceRoot, so
-   * personal data never reaches TraceRoot; other exporters still see the
+   * attributes, event attributes and status message sent to TraceRoot are rewritten (span name and resource are not); other exporters still see the
    * original span. Also runs on event attributes and the status message.
    * TraceRoot's bookkeeping keys (its own `traceroot.*` keys plus user,
    * session, model and token usage) are not passed in; recorded input, output,
