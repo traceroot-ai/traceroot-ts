@@ -596,6 +596,16 @@ describe('reporting (cloud-only)', () => {
       assert.deepEqual(posted[0].metadata, { owner: '[email]' });
     });
 
+    it('a redact that drops the input still sends the required input as an empty string', async () => {
+      mockBackend({});
+      TraceRoot.initialize({ redact: () => ({}) });
+      const t = new PlatformTransport('ds_1', {});
+      await t.recordItemResult(await t.createRun('r', 'd', null), item);
+      const res = calls.find((c) => c.url.endsWith('/results'))!.body;
+      assert.equal(res.input, '');
+      assert.equal(res.candidate_output, null);
+    });
+
     it('a throwing redact blanks the text fields and keeps scores, ids and status', async () => {
       mockBackend({});
       TraceRoot.initialize({

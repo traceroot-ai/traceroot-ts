@@ -622,7 +622,7 @@ export class PlatformTransport implements EvalTransport {
       body,
       redactText(body, ['input', 'expected_output', 'candidate_output', 'task_error']),
     );
-    body.input ??= '';
+    body.input ??= ''; // the one required string on the wire: a dropped input is sent empty
     await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/results`, body);
     // Record this case's contribution only AFTER the upsert persisted, keyed by id so a retry or
     // repeated upload replaces (not adds to) the completion aggregate.
