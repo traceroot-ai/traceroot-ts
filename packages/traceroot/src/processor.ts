@@ -1,7 +1,19 @@
 // src/processor.ts
-import { diag, trace as otelTrace, Context, Span } from '@opentelemetry/api';
+import { diag, trace as otelTrace, Attributes, Context, Span } from '@opentelemetry/api';
 import { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import {
+  LLM_MODEL_PARAMETERS,
+  LLM_PROMPT,
+  OI_LLM_MODEL_NAME,
+  OI_SPAN_KIND,
+  OI_TRACE_SESSION_ID,
+  OI_TRACE_USER_ID,
+  SPAN_METADATA,
+  SpanAttributes,
+  TRACE_METADATA,
+} from './constants';
 import { PROJECT_ID_ATTR, projectIdFromContext } from './project-id';
+import type { Redact } from './types';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json') as { version: string };
@@ -10,6 +22,43 @@ export const SDK_NAME = 'traceroot-ts';
 export const SDK_VERSION = version;
 
 let _hasWarnedUnattributedDrop = false;
+
+// The traceroot.* keys that carry recorded content, so redact sees them.
+/** @internal — exported for the key-classification guard test. */
+export const REDACTABLE_KEYS = new Set([
+  SPAN_METADATA,
+  TRACE_METADATA,
+  LLM_PROMPT,
+  LLM_MODEL_PARAMETERS,
+  SpanAttributes.EVAL_ERROR,
+  SpanAttributes.EVAL_SCORE_COMMENT,
+  SpanAttributes.EVAL_SCORE_VALUE,
+]);
+const METADATA_KEYS = new Set([SPAN_METADATA, TRACE_METADATA]);
+// Non-traceroot keys ingest reads for user, session, model, token usage, span kind and error
+// grouping (mirrors backend/worker/otel_transform.py), held back so redact cannot drop them.
+const HELD_BACK_KEYS = new Set([
+  OI_TRACE_USER_ID,
+  'session.user_id',
+  OI_TRACE_SESSION_ID,
+  OI_LLM_MODEL_NAME,
+  'gen_ai.request.model',
+  'gen_ai.system',
+  'decision.model_name',
+  'embedding.model_name',
+  'ai.model.id',
+  OI_SPAN_KIND,
+  'gen_ai.operation.name',
+  'ai.operationId',
+  'operation.name',
+  'exception.type',
+]);
+const HELD_BACK_PREFIXES = [
+  'llm.token_count.',
+  'gen_ai.usage.',
+  'decision.token_count.',
+  'ai.usage.',
+];
 
 /** @internal — reset warn-once state between tests. */
 export function _resetProcessorState(): void {
@@ -38,6 +87,18 @@ export interface TraceRootSpanProcessorOptions {
    * host over a filter.
    */
   exportSpan?: (span: ReadableSpan) => boolean;
+  /**
+   * Rewrite a finished span's attributes, event attributes and status message
+   * before export to TraceRoot; the span name and resource are not passed in,
+   * and other exporters still see the original span. TraceRoot's bookkeeping
+   * keys (its own `traceroot.*` keys plus user, session, model, token usage and
+   * span kind) are not passed in either; recorded input, output, metadata and
+   * prompt are. A function that throws or returns a non-object (e.g. null or an
+   * array) fails closed: span and trace metadata are dropped, and every other
+   * value except numbers and booleans is replaced. Eval results uploaded to
+   * TraceRoot are redacted too; datasets and scorer definitions are not.
+   */
+  redact?: Redact;
 }
 
 /**
@@ -65,6 +126,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
 
   private readonly _dropSpansWithoutProjectId: boolean;
   private readonly _exportSpan?: (span: ReadableSpan) => boolean;
+  private readonly _redact?: Redact;
 
   constructor(
     inner: SpanProcessor, // ← WIDENED
@@ -77,6 +139,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     this._globalAttributes = opts.globalAttributes;
     this._dropSpansWithoutProjectId = opts.dropSpansWithoutProjectId ?? false;
     this._exportSpan = opts.exportSpan;
+    this._redact = opts.redact;
   }
 
   onStart(span: Span, parentContext: Context): void {
@@ -193,7 +256,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
       return;
     }
     if (this._exportSpan !== undefined && !shouldExport(this._exportSpan, span)) return;
-    this.inner.onEnd(span);
+    this.inner.onEnd(this._redact !== undefined ? redactedCopy(this._redact, span) : span);
   }
 
   forceFlush(): Promise<void> {
@@ -212,4 +275,67 @@ function shouldExport(predicate: (span: ReadableSpan) => boolean, span: Readable
     diag.warn('[TraceRoot] exportSpan threw; exporting the span', err);
     return true;
   }
+}
+
+function isBookkeeping(key: string): boolean {
+  if (key.startsWith('traceroot.')) return !REDACTABLE_KEYS.has(key);
+  return HELD_BACK_KEYS.has(key) || HELD_BACK_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+/** @internal — the fail-closed rewrite, shared with eval result uploads. */
+export function redactAttributes(redact: Redact, attributes: Attributes): Attributes {
+  const ours: Attributes = {};
+  const theirs: Attributes = {};
+  for (const [key, value] of Object.entries(attributes)) {
+    // Copy arrays so a redact that mutates one in place leaves the original span intact.
+    (isBookkeeping(key) ? ours : theirs)[key] = Array.isArray(value) ? value.slice() : value;
+  }
+  let redacted: unknown;
+  try {
+    redacted = redact(theirs);
+  } catch (err) {
+    // Name only the error type: its message may quote the data being redacted.
+    diag.warn(
+      `[TraceRoot] redact threw ${err instanceof Error ? err.name : typeof err}; blanking attribute values`,
+    );
+    return blanked(theirs, ours);
+  }
+  if (typeof redacted !== 'object' || redacted === null || Array.isArray(redacted)) {
+    diag.warn('[TraceRoot] redact returned a non-object; blanking attribute values');
+    return blanked(theirs, ours);
+  }
+  return { ...redacted, ...ours };
+}
+
+// Metadata is dropped rather than blanked: ingest expects a JSON object there.
+function blanked(theirs: Attributes, ours: Attributes): Attributes {
+  const kept = Object.entries(theirs)
+    .filter(([key]) => !METADATA_KEYS.has(key))
+    .map(([key, value]) => [
+      key,
+      typeof value === 'number' || typeof value === 'boolean' ? value : '[redaction failed]',
+    ]);
+  return { ...Object.fromEntries(kept), ...ours };
+}
+
+function redactedCopy(redact: Redact, span: ReadableSpan): ReadableSpan {
+  const { message } = span.status;
+  const { 'otel.status_description': redactedMessage, ...attributes } = redactAttributes(
+    redact,
+    message ? { ...span.attributes, 'otel.status_description': message } : span.attributes,
+  );
+  // Object.create, not a spread: a spread loses spanContext() and the prototype getters.
+  // Only TraceRoot's exporter receives this copy; other processors keep the original span.
+  return Object.assign(Object.create(span), {
+    attributes: { ...attributes, 'traceroot.redacted': true },
+    events: span.events.map((event) =>
+      event.attributes
+        ? { ...event, attributes: redactAttributes(redact, event.attributes) }
+        : event,
+    ),
+    status: {
+      ...span.status,
+      message: typeof redactedMessage === 'string' ? redactedMessage : undefined,
+    },
+  }) as ReadableSpan;
 }

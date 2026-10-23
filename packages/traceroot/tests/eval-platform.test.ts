@@ -14,7 +14,8 @@ import {
   EvalRunResult,
 } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
-import { PlatformTransport } from '../src/eval/platform';
+import { EXPLANATION_MAX, PlatformTransport } from '../src/eval/platform';
+import { TraceRoot } from '../src/traceroot';
 
 const echo = (x: unknown) => x;
 const exact = (ctx: ScorerContext) => (ctx.output === ctx.expected ? 1 : 0);
@@ -560,6 +561,96 @@ describe('reporting (cloud-only)', () => {
     assert.equal(res.body.candidate_output, null);
     assert.equal(res.body.expected_output, null);
     assert.equal(res.body.status, 'not_scored');
+  });
+
+  describe('redact', () => {
+    const item = {
+      caseId: 'c1',
+      input: 'from a@b.com',
+      output: 'reply to a@b.com',
+      expected: 'a@b.com',
+      scores: [{ name: 'acc', value: 0.5, comment: 'a@b.com was polite' }],
+      scorerErrors: {},
+      error: 'failed for a@b.com',
+      traceId: 't',
+    };
+
+    afterEach(() => TraceRoot._clearCredentials());
+
+    it('uploads result and run metadata text through the configured redact', async () => {
+      mockBackend({});
+      TraceRoot.initialize({
+        redact: (attrs) =>
+          Object.fromEntries(
+            Object.entries(attrs).map(([k, v]) => [
+              k,
+              typeof v === 'string' ? v.replaceAll('a@b.com', '[email]') : v,
+            ]),
+          ),
+      });
+      const t = new PlatformTransport('ds_1', {});
+      const run = await t.createRun('r', 'd', { owner: 'a@b.com' });
+      await t.recordItemResult(run, item);
+      const posted = calls.filter((c) => c.method === 'POST').map((c) => c.body);
+      assert.ok(!JSON.stringify(posted).includes('a@b.com'));
+      assert.deepEqual(posted[0].metadata, { owner: '[email]' });
+    });
+
+    it('a redact that drops the input still sends the required input as an empty string', async () => {
+      mockBackend({});
+      TraceRoot.initialize({ redact: () => ({}) });
+      const t = new PlatformTransport('ds_1', {});
+      await t.recordItemResult(await t.createRun('r', 'd', null), item);
+      const res = calls.find((c) => c.url.endsWith('/results'))!.body;
+      assert.equal(res.input, '');
+      assert.equal(res.candidate_output, null);
+    });
+
+    it('redacts the full text before clamping it to the contract limits', async () => {
+      // The email straddles the explanation cut: clamped first, redact would see only `a@b.c`.
+      mockBackend({});
+      TraceRoot.initialize({
+        redact: (attrs) =>
+          Object.fromEntries(
+            Object.entries(attrs).map(([k, v]) => [
+              k,
+              typeof v === 'string' ? v.replaceAll('a@b.com', '[email]') : v,
+            ]),
+          ),
+      });
+      const comment = 'x'.repeat(EXPLANATION_MAX - 20) + 'a@b.com' + 'y'.repeat(20);
+      const t = new PlatformTransport('ds_1', {});
+      await t.recordItemResult(await t.createRun('r', 'd', null), {
+        ...item,
+        scores: [{ name: 'acc', value: 0.5, comment }],
+      });
+      const explanation = calls.find((c) => c.url.endsWith('/results'))!.body.scores[0].explanation;
+      assert.ok(!explanation.includes('a@b.c'));
+      assert.ok(explanation.length <= EXPLANATION_MAX);
+    });
+
+    it('a throwing redact blanks the text fields and keeps scores, ids and status', async () => {
+      mockBackend({});
+      TraceRoot.initialize({
+        redact: () => {
+          throw new Error('redact bug');
+        },
+      });
+      const t = new PlatformTransport('ds_1', {});
+      const run = await t.createRun('r', 'd', { owner: 'a@b.com' });
+      await t.recordItemResult(run, item);
+      const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
+      assert.equal('metadata' in reg.body, false);
+      const res = calls.find((c) => c.url.endsWith('/results'))!.body;
+      assert.equal(res.input, '[redaction failed]');
+      assert.equal(res.candidate_output, '[redaction failed]');
+      assert.equal(res.task_error, '[redaction failed]');
+      assert.equal(res.scores[0].explanation, '[redaction failed]');
+      assert.equal(res.scores[0].numeric_value, 0.5);
+      assert.equal(res.test_case_id, 'c1');
+      assert.equal(res.trace_id, 't');
+      assert.equal(res.status, 'errored');
+    });
   });
 
   it('lower_is_better is inclusive at the threshold', async () => {

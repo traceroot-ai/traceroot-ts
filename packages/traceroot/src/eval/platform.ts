@@ -2,6 +2,7 @@
 // traceroot-py/traceroot/eval/platform.py). Same endpoints and wire payloads as the
 // Python SDK, since the backend contract is shared.
 
+import { redactAttributes } from '../processor';
 import { TraceRoot } from '../traceroot';
 import { contentRevision, Dataset } from './types';
 import { newRunId, stableDatasetId } from './ids';
@@ -34,6 +35,13 @@ export const METADATA_MAX = 64_000;
 function clamp(text: string | null, limit: number): string | null {
   if (text === null || text.length <= limit) return text;
   return text.slice(0, limit - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+}
+
+/** clamp() each string field of `fields` named in `limits` to its limit, in place. */
+function clampFields(fields: Record<string, unknown>, limits: Record<string, number>): void {
+  for (const [key, limit] of Object.entries(limits)) {
+    if (typeof fields[key] === 'string') fields[key] = clamp(fields[key] as string, limit);
+  }
 }
 
 /** Bound a free-form metadata object by its SERIALIZED size (the contract's rule). Over-cap
@@ -136,6 +144,36 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function asText(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   return typeof value === 'string' ? value : (JSON.stringify(value) ?? null);
+}
+
+/** The configured redact applied to the string fields `keys` of `fields`, returned as overrides.
+ *  Only those text fields go in, as one flat object: ids, status and scores are never handed to
+ *  redact, so a failing one (which blanks every string) cannot break routing. A field redact
+ *  drops or turns into a non-string is sent as null. */
+function redactText(fields: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  const redact = TraceRoot._redact;
+  const text = Object.fromEntries(
+    keys.filter((k) => typeof fields[k] === 'string').map((k) => [k, fields[k] as string]),
+  );
+  if (redact === undefined) return {};
+  const redacted = redactAttributes(redact, text);
+  return Object.fromEntries(
+    Object.keys(text).map((k) => [k, typeof redacted[k] === 'string' ? redacted[k] : null]),
+  );
+}
+
+/** Run metadata goes to redact as JSON text; whatever no longer parses to an object is withheld. */
+function redactMetadata(metadata: Record<string, unknown>): Record<string, unknown> | null {
+  if (TraceRoot._redact === undefined) return metadata;
+  try {
+    const { metadata: text } = redactText({ metadata: JSON.stringify(metadata) }, ['metadata']);
+    const parsed: unknown = JSON.parse(text as string);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** True for a NaN/Infinity score value (booleans and strings never are). */
@@ -549,8 +587,9 @@ export class PlatformTransport implements EvalTransport {
     // absent-or-null rules rather than sending an empty object. Clamped like every other capped
     // field: metadata is whatever the caller put there (a whole prompt, a config dump), and over
     // the cap the REGISTRATION 400s — the run then never starts at all.
-    if (metadata && Object.keys(metadata).length > 0)
-      body.metadata = clampMetadata(metadata, METADATA_MAX);
+    const sentMetadata =
+      metadata && Object.keys(metadata).length > 0 ? redactMetadata(metadata) : null;
+    if (sentMetadata) body.metadata = clampMetadata(sentMetadata, METADATA_MAX);
     const resp = await this.requestWithRetry('POST', '/api/v1/public/evaluation-runs', body);
     this.runId = resp.evaluation_run_id;
     // Optional, absent on older/self-hosted backends. Prefer the absolute run_url (resolved
@@ -572,17 +611,39 @@ export class PlatformTransport implements EvalTransport {
     // scoresPayload), so it errors the case exactly like a thrown scorer would.
     const nonFinite = item.scores.filter((s) => isNonFinite(s.value)).length;
     const status = nonFinite > 0 ? 'errored' : caseStatus(item);
-    await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/results`, {
+    const body: Record<string, unknown> = {
       test_case_id: item.caseId,
       trace_id: item.traceId,
-      input: clamp(asText(item.input), PAYLOAD_TEXT_MAX) ?? '',
-      expected_output: clamp(asText(item.expected), PAYLOAD_TEXT_MAX),
-      candidate_output: clamp(asText(item.output), PAYLOAD_TEXT_MAX),
+      input: asText(item.input),
+      expected_output: asText(item.expected),
+      candidate_output: asText(item.output),
       status,
-      task_error: clamp(item.error, TASK_ERROR_MAX),
+      task_error: item.error,
       duration_ms: durationMs(item.durationMs),
-      scores: this.scoresPayload(item),
+      scores: this.scoresPayload(item).map((score) => {
+        const sent = { ...score, ...redactText(score, ['explanation', 'error', 'string_value']) };
+        clampFields(sent, {
+          explanation: EXPLANATION_MAX,
+          error: SCORE_ERROR_MAX,
+          string_value: STRING_VALUE_MAX,
+        });
+        return sent;
+      }),
+    };
+    // Redact the full text, THEN clamp: redact never sees a cut value (PII straddling the cut
+    // would slip through), and whatever redact returns still has to fit the contract limits.
+    Object.assign(
+      body,
+      redactText(body, ['input', 'expected_output', 'candidate_output', 'task_error']),
+    );
+    body.input ??= ''; // the one required string on the wire: a dropped input is sent empty
+    clampFields(body, {
+      input: PAYLOAD_TEXT_MAX,
+      expected_output: PAYLOAD_TEXT_MAX,
+      candidate_output: PAYLOAD_TEXT_MAX,
+      task_error: TASK_ERROR_MAX,
     });
+    await this.request('POST', `/api/v1/public/evaluation-runs/${this.runId}/results`, body);
     // Record this case's contribution only AFTER the upsert persisted, keyed by id so a retry or
     // repeated upload replaces (not adds to) the completion aggregate.
     this.contrib.set(item.caseId, {
@@ -683,15 +744,14 @@ export class PlatformTransport implements EvalTransport {
         // fabricated empty score that poisons the aggregate mean) while Python writes a bare NaN
         // token the backend's JSON.parse rejects (400ing the whole run). Both SDKs report it as
         // what it is: the scorer failed to produce a value.
-        entry.error = clamp(nonFiniteError(s.name, s.value), SCORE_ERROR_MAX);
+        entry.error = nonFiniteError(s.name, s.value);
         payload.push(entry);
         continue;
       }
       if (typeof s.value === 'boolean') entry.bool_value = s.value;
       else if (typeof s.value === 'number') entry.numeric_value = s.value;
-      else entry.string_value = clamp(String(s.value), STRING_VALUE_MAX);
-      if (s.comment !== undefined && s.comment !== null)
-        entry.explanation = clamp(s.comment, EXPLANATION_MAX);
+      else entry.string_value = String(s.value);
+      if (s.comment !== undefined && s.comment !== null) entry.explanation = s.comment;
       const passed = this.scorePassed(s, item.scores.length === 1);
       if (passed !== null) entry.passed = passed;
       payload.push(entry);
@@ -702,7 +762,7 @@ export class PlatformTransport implements EvalTransport {
       payload.push({
         scorer_name: name,
         scorer_version: this.declaredVersion(name),
-        error: clamp(msg, SCORE_ERROR_MAX),
+        error: msg,
       });
     }
     return payload;
