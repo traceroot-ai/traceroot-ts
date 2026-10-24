@@ -46,6 +46,59 @@ let _baseUrl: string | undefined;
 let _gitRepo: string | undefined;
 let _gitRef: string | undefined;
 let _exportTarget: ExportTarget | undefined;
+// Process listeners installed by initialize(), kept so shutdown() can remove them —
+// otherwise each initialize()/shutdown() cycle would leave another one behind.
+let _processListeners: Array<[string, (...args: unknown[]) => void]> = [];
+
+const FLUSH_SIGNALS: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
+
+/**
+ * Flush on beforeExit (natural exit) and, unless disabled, on SIGTERM/SIGINT — Node
+ * never fires beforeExit for signal termination, so without these a container stop or
+ * Ctrl+C drops whatever the batch processor still holds.
+ */
+function installExitHooks(flushOnSignal: boolean, flushTimeoutMs: number): void {
+  // `once`: the flush itself schedules work, so an `on` listener would re-fire forever.
+  const onBeforeExit = (): void => {
+    void _provider?.forceFlush();
+  };
+  _processListeners.push(['beforeExit', onBeforeExit]);
+  process.once('beforeExit', onBeforeExit);
+
+  if (!flushOnSignal) return;
+  for (const signal of FLUSH_SIGNALS) {
+    const onSignal = (): void => {
+      // Read before removing ours: another listener means the app owns this signal
+      // (graceful shutdown, custom exit code), so flush alongside it and never exit.
+      const appHandlesSignal = process.listenerCount(signal) > 1;
+      removeExitHooks();
+      const flushed = (_provider?.forceFlush() ?? Promise.resolve()).catch(() => {});
+      if (appHandlesSignal) return;
+      // Bound the wait so a dead ingest endpoint cannot hang the shutdown.
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, flushTimeoutMs);
+      });
+      void Promise.race([flushed, timeout]).then(() => {
+        clearTimeout(timer);
+        // Our listener is gone, so this takes Node's default action for the signal.
+        process.kill(process.pid, signal);
+      });
+    };
+    _processListeners.push([signal, onSignal]);
+    // Prepended so it runs before the app's handlers: a `once` app handler ahead of it
+    // would already have removed itself, hiding it from the listener count above, and
+    // starting the flush first gives it the most time before an app-initiated exit.
+    process.prependListener(signal, onSignal);
+  }
+}
+
+function removeExitHooks(): void {
+  for (const [event, listener] of _processListeners) {
+    process.removeListener(event, listener);
+  }
+  _processListeners = [];
+}
 
 export interface ExportTarget {
   url: string;
@@ -361,9 +414,7 @@ export class TraceRoot {
     _exportTarget = target;
     _setInternalMode(target.internal);
     _isInitialized = true;
-    process.once('beforeExit', () => {
-      void _provider?.forceFlush();
-    });
+    installExitHooks(options.flushOnSignal ?? true, timeoutSec * 1000);
   }
 
   /**
@@ -378,6 +429,7 @@ export class TraceRoot {
   }
 
   static async shutdown(): Promise<void> {
+    removeExitHooks();
     try {
       await _provider?.shutdown();
     } finally {
@@ -413,6 +465,7 @@ export class TraceRoot {
 
 /** @internal */
 export function _resetForTesting(): void {
+  removeExitHooks();
   _isInitialized = false;
   _redact = undefined;
   _tracingActive = false;
