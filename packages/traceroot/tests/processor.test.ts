@@ -468,6 +468,7 @@ describe('TraceRootSpanProcessor redact', () => {
         'session.id': 's1',
         'llm.model_name': 'gpt-4o',
         'llm.token_count.prompt': 12,
+        'llm.cost.total': 0.01,
       });
       span.end();
     });
@@ -476,6 +477,7 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(span.attributes['session.id'], 's1');
     assert.equal(span.attributes['llm.model_name'], 'gpt-4o');
     assert.equal(span.attributes['llm.token_count.prompt'], 12);
+    assert.equal(span.attributes['llm.cost.total'], 0.01);
   });
 
   it('redacts recorded content keys and holds back the bookkeeping ones', () => {
