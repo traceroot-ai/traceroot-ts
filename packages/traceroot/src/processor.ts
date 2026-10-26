@@ -4,6 +4,7 @@ import { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import {
   LLM_MODEL_PARAMETERS,
   LLM_PROMPT,
+  OI_LLM_COST_TOTAL,
   OI_LLM_MODEL_NAME,
   OI_SPAN_KIND,
   OI_TRACE_SESSION_ID,
@@ -35,7 +36,7 @@ export const REDACTABLE_KEYS = new Set([
   SpanAttributes.EVAL_SCORE_VALUE,
 ]);
 const METADATA_KEYS = new Set([SPAN_METADATA, TRACE_METADATA]);
-// Non-traceroot keys ingest reads for user, session, model, token usage, span kind and error
+// Non-traceroot keys ingest reads for user, session, model, token usage, cost, span kind and error
 // grouping (mirrors backend/worker/otel_transform.py), held back so redact cannot drop them.
 const HELD_BACK_KEYS = new Set([
   OI_TRACE_USER_ID,
@@ -47,6 +48,7 @@ const HELD_BACK_KEYS = new Set([
   'decision.model_name',
   'embedding.model_name',
   'ai.model.id',
+  OI_LLM_COST_TOTAL,
   OI_SPAN_KIND,
   'gen_ai.operation.name',
   'ai.operationId',
