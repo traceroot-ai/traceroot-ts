@@ -252,6 +252,8 @@ export interface SpanUpdate {
   model?: string;
   modelParameters?: Record<string, unknown>;
   usage?: TokenUsage;
+  /** Total cost of this LLM call in USD; replaces TraceRoot's computed price for this span. */
+  cost?: number;
   /**
    * Arbitrary span attributes for keys the typed fields above don't cover
    * (e.g. `gen_ai.*` semconv keys, domain-specific tags). Set through to the

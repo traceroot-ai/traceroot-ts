@@ -89,6 +89,14 @@ describe('startSpan()', () => {
     assert.equal(s.attributes['llm.token_count.prompt'], 42);
   });
 
+  it('update({cost}) sets the OpenInference total cost key', () => {
+    const span = startSpan({ name: 'llm', type: 'llm', model: 'claude-sonnet-4-5' });
+    span.update({ cost: 0.0123 });
+    span.end();
+    const [s] = exporter.getFinishedSpans();
+    assert.equal(s.attributes['llm.cost.total'], 0.0123);
+  });
+
   it('child via span.startSpan() is parented to the handle', () => {
     const parent = startSpan({ name: 'parent', type: 'agent' });
     const child = parent.startSpan({ name: 'child', type: 'tool' });
