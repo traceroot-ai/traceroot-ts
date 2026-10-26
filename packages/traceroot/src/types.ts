@@ -122,6 +122,16 @@ export interface InitializeOptions {
   /** Use SimpleSpanProcessor instead of BatchSpanProcessor. Useful for scripts/tests. */
   disableBatch?: boolean;
   /**
+   * Flush buffered spans when the process receives SIGTERM or SIGINT (container stop,
+   * Ctrl+C), where Node never fires `beforeExit`. Defaults to true. When the app has
+   * its own handler for the signal, the SDK only flushes and leaves exiting to it;
+   * otherwise it flushes, then re-raises the signal so the process exits as it would
+   * have without the SDK. The flush is asynchronous, so an app handler that exits
+   * should `await TraceRoot.flush()` first — a synchronous `process.exit()` cuts the
+   * export short. Set false to manage shutdown yourself via `TraceRoot.shutdown()`.
+   */
+  flushOnSignal?: boolean;
+  /**
    * Decide, per finished span, whether it is exported; return false to drop it.
    * The span still runs and still parents its children, it just never leaves
    * the process. Meant for spans a third-party library opens on the global
