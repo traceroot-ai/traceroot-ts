@@ -683,6 +683,22 @@ describe('reporting (cloud-only)', () => {
       assert.equal(res.scores[0].numeric_value, 0.5);
       assert.equal(res.test_case_id, 'c1');
     });
+
+    it('a redact that never settles delays an item upload by one deadline', async (t) => {
+      mockBackend({});
+      TraceRoot.initialize({ redact: () => new Promise(() => {}) });
+      const tr = new PlatformTransport('ds_1', {});
+      const run = await tr.createRun('r', 'd');
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      let uploaded = false;
+      void tr.recordItemResult(run, item).then(() => (uploaded = true));
+      await new Promise((resolve) => setImmediate(resolve));
+      t.mock.timers.tick(REDACT_TIMEOUT_MS);
+      for (let i = 0; i < 10 && !uploaded; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      assert.equal(uploaded, true);
+    });
   });
 
   it('lower_is_better is inclusive at the threshold', async () => {

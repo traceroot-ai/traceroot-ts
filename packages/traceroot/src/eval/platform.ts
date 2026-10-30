@@ -648,7 +648,10 @@ export class PlatformTransport implements EvalTransport {
       status,
       task_error: item.error,
       duration_ms: durationMs(item.durationMs),
-      scores: await Promise.all(
+    };
+    // One round for scores and body, so a stalled redact costs one deadline per item, not two.
+    const [scores, text] = await Promise.all([
+      Promise.all(
         this.scoresPayload(item).map(async (score) => {
           const sent = {
             ...score,
@@ -662,13 +665,11 @@ export class PlatformTransport implements EvalTransport {
           return sent;
         }),
       ),
-    };
-    // Redact the full text, THEN clamp: redact never sees a cut value (PII straddling the cut
-    // would slip through), and whatever redact returns still has to fit the contract limits.
-    Object.assign(
-      body,
-      await redactText(body, ['input', 'expected_output', 'candidate_output', 'task_error']),
-    );
+      // Redact the full text, THEN clamp: redact never sees a cut value (PII straddling the cut
+      // would slip through), and whatever redact returns still has to fit the contract limits.
+      redactText(body, ['input', 'expected_output', 'candidate_output', 'task_error']),
+    ]);
+    Object.assign(body, { scores }, text);
     body.input ??= ''; // the one required string on the wire: a dropped input is sent empty
     clampFields(body, {
       input: PAYLOAD_TEXT_MAX,
