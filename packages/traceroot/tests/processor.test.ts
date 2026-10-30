@@ -1001,11 +1001,15 @@ describe('TraceRoot.flush with an async redact', () => {
     const rejections: unknown[] = [];
     const onRejection = (reason: unknown) => rejections.push(reason);
     process.on('unhandledRejection', onRejection);
+    const before = process.listeners('beforeExit');
     try {
       TraceRoot.initialize({ apiKey: 'test-key', baseUrl: 'http://127.0.0.1:9' });
       const provider = (trace.getTracerProvider() as ProxyTracerProvider).getDelegate();
       (provider as NodeTracerProvider).forceFlush = () => Promise.reject(new Error('flush failed'));
-      process.emit('beforeExit', 0);
+      // Call only the SDK's hook: emitting beforeExit also tells node:test the loop has drained.
+      const exitHook = process.listeners('beforeExit').find((l) => !before.includes(l))!;
+      process.off('beforeExit', exitHook);
+      exitHook(0);
       await new Promise((resolve) => setImmediate(resolve));
       assert.deepEqual(rejections, []);
     } finally {
