@@ -647,6 +647,22 @@ describe('TraceRootSpanProcessor redact', () => {
     ['returns null', () => null],
     ['returns an array', () => []],
     ['resolves to null', async () => null],
+    [
+      'returns an object with a throwing getter',
+      () => ({
+        get x() {
+          throw new Error('boom');
+        },
+      }),
+    ],
+    [
+      'resolves to an object with a throwing getter',
+      async () => ({
+        get x() {
+          throw new Error('boom');
+        },
+      }),
+    ],
   ] as [string, unknown][]) {
     it(`a redact that ${name} blanks values`, async () => {
       register(redact as Redact);

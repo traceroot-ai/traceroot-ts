@@ -363,15 +363,15 @@ export function redactAttributes(
     }
     return { ...redacted, ...ours };
   };
-  let redacted: unknown;
+  // checked() is guarded too: copying the result can throw (e.g. a throwing getter).
   try {
-    redacted = redact(theirs);
+    const redacted: unknown = redact(theirs);
+    return typeof (redacted as PromiseLike<unknown> | null)?.then === 'function'
+      ? Promise.resolve(redacted).then(checked).catch(threw)
+      : checked(redacted);
   } catch (err) {
     return threw(err);
   }
-  return typeof (redacted as PromiseLike<unknown> | null)?.then === 'function'
-    ? Promise.resolve(redacted).then(checked, threw)
-    : checked(redacted);
 }
 
 // Stands in for a redact that missed the deadline; redactAttributes still holds back bookkeeping.
