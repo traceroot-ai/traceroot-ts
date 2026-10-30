@@ -232,11 +232,11 @@ export class TraceRoot {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       compression: 'gzip' as any,
     });
-    _redactingExporter =
+    const redactingExporter =
       options.redact !== undefined
         ? new RedactingSpanExporter(otlpExporter, options.redact)
         : undefined;
-    const exporter = _redactingExporter ?? otlpExporter;
+    const exporter = redactingExporter ?? otlpExporter;
 
     const environment = options.environment ?? process.env['TRACEROOT_ENVIRONMENT'];
 
@@ -316,6 +316,7 @@ export class TraceRoot {
     _provider = new NodeTracerProvider(
       target.internal ? { idGenerator: new ContextIdGenerator() } : {},
     );
+    _redactingExporter = redactingExporter;
     _provider.addSpanProcessor(
       new TraceRootSpanProcessor(innerProcessor, {
         environment,
@@ -375,7 +376,7 @@ export class TraceRoot {
     _setInternalMode(target.internal);
     _isInitialized = true;
     process.once('beforeExit', () => {
-      void TraceRoot.flush();
+      void TraceRoot.flush().catch(() => {});
     });
   }
 
@@ -387,8 +388,11 @@ export class TraceRoot {
    * the OTel global error handler instead, and flush() resolves.
    */
   static async flush(): Promise<void> {
-    await _provider?.forceFlush();
-    await _redactingExporter?.forceFlush();
+    try {
+      await _provider?.forceFlush();
+    } finally {
+      await _redactingExporter?.forceFlush();
+    }
   }
 
   static async shutdown(): Promise<void> {

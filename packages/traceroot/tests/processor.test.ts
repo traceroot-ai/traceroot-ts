@@ -15,6 +15,7 @@ import {
   trace,
   Attributes,
   DiagLogLevel,
+  ProxyTracerProvider,
   SpanStatusCode,
   TraceFlags,
 } from '@opentelemetry/api';
@@ -934,6 +935,82 @@ describe('TraceRoot.flush with an async redact', () => {
       await TraceRoot.shutdown().catch(() => {});
       if (flushAt === undefined) delete process.env['TRACEROOT_FLUSH_AT'];
       else process.env['TRACEROOT_FLUSH_AT'] = flushAt;
+    }
+  });
+
+  it('waits for a batch still being redacted when the provider flush rejects', async () => {
+    const flushAt = process.env['TRACEROOT_FLUSH_AT'];
+    process.env['TRACEROOT_FLUSH_AT'] = '1';
+    let settled = false;
+    try {
+      TraceRoot.initialize({
+        apiKey: 'test-key',
+        baseUrl: 'http://127.0.0.1:9',
+        redact: async (attrs) => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          settled = true;
+          return attrs;
+        },
+      });
+      trace.getTracer('test').startActiveSpan('batched', (span) => span.end());
+      const provider = (trace.getTracerProvider() as ProxyTracerProvider).getDelegate();
+      (provider as NodeTracerProvider).forceFlush = () => Promise.reject(new Error('flush failed'));
+      await TraceRoot.flush().catch(() => {});
+      assert.equal(settled, true);
+    } finally {
+      await TraceRoot.shutdown().catch(() => {});
+      if (flushAt === undefined) delete process.env['TRACEROOT_FLUSH_AT'];
+      else process.env['TRACEROOT_FLUSH_AT'] = flushAt;
+    }
+  });
+
+  it('a failed re-initialize leaves flush() on the exporter still in use', async () => {
+    const flushAt = process.env['TRACEROOT_FLUSH_AT'];
+    process.env['TRACEROOT_FLUSH_AT'] = '1';
+    let settled = false;
+    try {
+      TraceRoot.initialize({
+        apiKey: 'test-key',
+        baseUrl: 'http://127.0.0.1:9',
+        redact: async (attrs) => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          settled = true;
+          return attrs;
+        },
+      });
+      trace.getTracer('test').startActiveSpan('batched', (span) => span.end());
+      TraceRoot._clearCredentials();
+      assert.throws(
+        () =>
+          TraceRoot.initialize({
+            redact: async (attrs) => attrs,
+            internalExport: { path: '/otlp', projectId: '' },
+          }),
+        TypeError,
+      );
+      await TraceRoot.flush().catch(() => {});
+      assert.equal(settled, true);
+    } finally {
+      await TraceRoot.shutdown().catch(() => {});
+      if (flushAt === undefined) delete process.env['TRACEROOT_FLUSH_AT'];
+      else process.env['TRACEROOT_FLUSH_AT'] = flushAt;
+    }
+  });
+
+  it('a flush that rejects at exit is not left unhandled', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    try {
+      TraceRoot.initialize({ apiKey: 'test-key', baseUrl: 'http://127.0.0.1:9' });
+      const provider = (trace.getTracerProvider() as ProxyTracerProvider).getDelegate();
+      (provider as NodeTracerProvider).forceFlush = () => Promise.reject(new Error('flush failed'));
+      process.emit('beforeExit', 0);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(rejections, []);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+      await TraceRoot.shutdown().catch(() => {});
     }
   });
 });
