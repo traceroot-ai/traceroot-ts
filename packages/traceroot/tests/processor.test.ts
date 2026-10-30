@@ -26,6 +26,7 @@ import {
   TraceRootSpanProcessor,
   SDK_VERSION,
   REDACTABLE_KEYS,
+  within,
 } from '../src/processor';
 import type { Redact } from '../src/types';
 
@@ -795,6 +796,13 @@ describe('TraceRootSpanProcessor redact', () => {
       sent.getFinishedSpans().map((span) => span.attributes['speed']),
       ['[redaction failed]', 'fast', '[redaction failed]'],
     );
+  });
+
+  it('the redact deadline keeps the process alive while redact is pending', async (t) => {
+    const spy = t.mock.method(globalThis, 'setTimeout');
+    const pending = within(new Promise<string>(() => {}), 20, () => 'blanked');
+    assert.equal(spy.mock.calls[0].result.hasRef(), true);
+    assert.equal(await pending, 'blanked');
   });
 
   it('classifies every traceroot.* key the SDK writes as content or bookkeeping', () => {

@@ -319,7 +319,6 @@ export function within<T>(value: T | Promise<T>, ms: number, fallback: () => T):
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<T>((resolve) => {
     timer = setTimeout(() => resolve(fallback()), ms);
-    timer.unref();
   });
   return Promise.race([value, timeout]).finally(() => clearTimeout(timer));
 }
