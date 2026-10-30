@@ -8,6 +8,8 @@ export const GITHUB_SHA = 'GITHUB_SHA';
 export const DEFAULT_FLUSH_INTERVAL_SEC = 5; // seconds → BatchSpanProcessor scheduledDelayMillis (×1000)
 export const DEFAULT_FLUSH_AT = 100; // BatchSpanProcessor maxExportBatchSize
 export const DEFAULT_TIMEOUT_SEC = 30; // seconds → BatchSpanProcessor exportTimeoutMillis (×1000)
+// Redact deadline for span export and eval uploads; must stay below the batch export timeout (TRACEROOT_TIMEOUT can lower that).
+export const REDACT_TIMEOUT_MS = 5_000;
 
 // Span-level
 export const OI_SPAN_KIND = 'openinference.span.kind';

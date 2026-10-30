@@ -1,6 +1,7 @@
 // src/processor.ts
 import { diag, trace as otelTrace, Attributes, Context, Span } from '@opentelemetry/api';
-import { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { ExportResult, ExportResultCode } from '@opentelemetry/core';
+import { ReadableSpan, SpanExporter, SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import {
   LLM_MODEL_PARAMETERS,
   LLM_PROMPT,
@@ -9,6 +10,7 @@ import {
   OI_SPAN_KIND,
   OI_TRACE_SESSION_ID,
   OI_TRACE_USER_ID,
+  REDACT_TIMEOUT_MS,
   SPAN_METADATA,
   SpanAttributes,
   TRACE_METADATA,
@@ -62,6 +64,9 @@ const HELD_BACK_PREFIXES = [
   'ai.usage.',
 ];
 
+// Marks a span whose redact lost the race against the batch deadline.
+const LATE = Symbol('late');
+
 /** @internal — reset warn-once state between tests. */
 export function _resetProcessorState(): void {
   _hasWarnedUnattributedDrop = false;
@@ -89,18 +94,6 @@ export interface TraceRootSpanProcessorOptions {
    * host over a filter.
    */
   exportSpan?: (span: ReadableSpan) => boolean;
-  /**
-   * Rewrite a finished span's attributes, event attributes and status message
-   * before export to TraceRoot; the span name and resource are not passed in,
-   * and other exporters still see the original span. TraceRoot's bookkeeping
-   * keys (its own `traceroot.*` keys plus user, session, model, token usage and
-   * span kind) are not passed in either; recorded input, output, metadata and
-   * prompt are. A function that throws or returns a non-object (e.g. null or an
-   * array) fails closed: span and trace metadata are dropped, and every other
-   * value except numbers and booleans is replaced. Eval results uploaded to
-   * TraceRoot are redacted too; datasets and scorer definitions are not.
-   */
-  redact?: Redact;
 }
 
 /**
@@ -128,7 +121,6 @@ export class TraceRootSpanProcessor implements SpanProcessor {
 
   private readonly _dropSpansWithoutProjectId: boolean;
   private readonly _exportSpan?: (span: ReadableSpan) => boolean;
-  private readonly _redact?: Redact;
 
   constructor(
     inner: SpanProcessor, // ← WIDENED
@@ -141,7 +133,6 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     this._globalAttributes = opts.globalAttributes;
     this._dropSpansWithoutProjectId = opts.dropSpansWithoutProjectId ?? false;
     this._exportSpan = opts.exportSpan;
-    this._redact = opts.redact;
   }
 
   onStart(span: Span, parentContext: Context): void {
@@ -258,7 +249,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
       return;
     }
     if (this._exportSpan !== undefined && !shouldExport(this._exportSpan, span)) return;
-    this.inner.onEnd(this._redact !== undefined ? redactedCopy(this._redact, span) : span);
+    this.inner.onEnd(span);
   }
 
   forceFlush(): Promise<void> {
@@ -267,6 +258,71 @@ export class TraceRootSpanProcessor implements SpanProcessor {
 
   shutdown(): Promise<void> {
     return this.inner.shutdown();
+  }
+}
+
+/**
+ * Rewrites each span with `redact` as its batch is exported, so the inner processor has already
+ * seen every span of the trace in its original order.
+ */
+export class RedactingSpanExporter implements SpanExporter {
+  private readonly pending = new Set<Promise<void>>();
+
+  constructor(
+    private readonly inner: SpanExporter,
+    private readonly redact: Redact,
+  ) {}
+
+  export(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
+    const exported: Promise<void> = this.redactBatch(spans)
+      .then((redacted) => {
+        let reported = false;
+        try {
+          this.inner.export(redacted, (result) => {
+            reported = true;
+            resultCallback(result);
+          });
+        } catch (error) {
+          // Not if inner already reported: a callback that throws is still called only once.
+          if (!reported) resultCallback({ code: ExportResultCode.FAILED, error: error as Error });
+        }
+      })
+      .finally(() => this.pending.delete(exported));
+    this.pending.add(exported);
+  }
+
+  // One deadline for the whole batch; spans whose redact misses it are sent blanked.
+  private async redactBatch(spans: ReadableSpan[]): Promise<ReadableSpan[]> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<typeof LATE>((resolve) => {
+      timer = setTimeout(() => resolve(LATE), REDACT_TIMEOUT_MS);
+    });
+    try {
+      const copies = await Promise.all(
+        spans.map((span) => Promise.race([redactedCopy(this.redact, span), deadline])),
+      );
+      const late = copies.filter((copy) => copy === LATE).length;
+      if (late > 0) {
+        diag.warn(
+          `[TraceRoot] redact did not settle within ${REDACT_TIMEOUT_MS}ms for ${late} of ${spans.length} spans; blanking their attribute values`,
+        );
+      }
+      return await Promise.all(
+        copies.map((copy, i) => (copy === LATE ? redactedCopy(blankAll, spans[i]) : copy)),
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async forceFlush(): Promise<void> {
+    await Promise.all(this.pending);
+    await this.inner.forceFlush?.();
+  }
+
+  async shutdown(): Promise<void> {
+    await Promise.all(this.pending);
+    await this.inner.shutdown();
   }
 }
 
@@ -284,17 +340,25 @@ function isBookkeeping(key: string): boolean {
   return HELD_BACK_KEYS.has(key) || HELD_BACK_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
-/** @internal — the fail-closed rewrite, shared with eval result uploads. */
-export function redactAttributes(redact: Redact, attributes: Attributes): Attributes {
+/** @internal — the fail-closed rewrite, shared with eval result uploads. Never rejects. */
+export async function redactAttributes(
+  redact: Redact,
+  attributes: Attributes,
+): Promise<Attributes> {
   const ours: Attributes = {};
   const theirs: Attributes = {};
   for (const [key, value] of Object.entries(attributes)) {
     // Copy arrays so a redact that mutates one in place leaves the original span intact.
     (isBookkeeping(key) ? ours : theirs)[key] = Array.isArray(value) ? value.slice() : value;
   }
-  let redacted: unknown;
   try {
-    redacted = redact(theirs);
+    const redacted: unknown = await redact(theirs);
+    if (typeof redacted !== 'object' || redacted === null || Array.isArray(redacted)) {
+      diag.warn('[TraceRoot] redact returned a non-object; blanking attribute values');
+      return blanked(theirs, ours);
+    }
+    // Spread inside the try: copying the result can throw (e.g. a throwing getter).
+    return { ...redacted, ...ours };
   } catch (err) {
     // Name only the error type: its message may quote the data being redacted.
     diag.warn(
@@ -302,12 +366,10 @@ export function redactAttributes(redact: Redact, attributes: Attributes): Attrib
     );
     return blanked(theirs, ours);
   }
-  if (typeof redacted !== 'object' || redacted === null || Array.isArray(redacted)) {
-    diag.warn('[TraceRoot] redact returned a non-object; blanking attribute values');
-    return blanked(theirs, ours);
-  }
-  return { ...redacted, ...ours };
 }
+
+// Stands in for a redact that missed the deadline; redactAttributes still holds back bookkeeping.
+const blankAll: Redact = (attributes) => blanked(attributes, {});
 
 // Metadata is dropped rather than blanked: ingest expects a JSON object there.
 function blanked(theirs: Attributes, ours: Attributes): Attributes {
@@ -320,20 +382,24 @@ function blanked(theirs: Attributes, ours: Attributes): Attributes {
   return { ...Object.fromEntries(kept), ...ours };
 }
 
-function redactedCopy(redact: Redact, span: ReadableSpan): ReadableSpan {
+async function redactedCopy(redact: Redact, span: ReadableSpan): Promise<ReadableSpan> {
   const { message } = span.status;
-  const { 'otel.status_description': redactedMessage, ...attributes } = redactAttributes(
-    redact,
-    message ? { ...span.attributes, 'otel.status_description': message } : span.attributes,
-  );
+  const [{ 'otel.status_description': redactedMessage, ...rest }, redactedEvents] =
+    await Promise.all([
+      redactAttributes(
+        redact,
+        message ? { ...span.attributes, 'otel.status_description': message } : span.attributes,
+      ),
+      Promise.all(
+        span.events.map((event) => event.attributes && redactAttributes(redact, event.attributes)),
+      ),
+    ]);
   // Object.create, not a spread: a spread loses spanContext() and the prototype getters.
   // Only TraceRoot's exporter receives this copy; other processors keep the original span.
   return Object.assign(Object.create(span), {
-    attributes: { ...attributes, 'traceroot.redacted': true },
-    events: span.events.map((event) =>
-      event.attributes
-        ? { ...event, attributes: redactAttributes(redact, event.attributes) }
-        : event,
+    attributes: { ...rest, 'traceroot.redacted': true },
+    events: span.events.map((event, i) =>
+      event.attributes ? { ...event, attributes: redactedEvents[i] } : event,
     ),
     status: {
       ...span.status,

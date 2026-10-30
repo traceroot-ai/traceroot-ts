@@ -4,7 +4,7 @@ import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import type { PiInstrumentationConfig } from './pi';
 
 /** Rewrites span attributes before export; see `InitializeOptions.redact`. */
-export type Redact = (attributes: Attributes) => Attributes;
+export type Redact = (attributes: Attributes) => Attributes | Promise<Attributes>;
 
 export type SpanType = 'span' | 'agent' | 'tool' | 'llm' | 'evaluation' | 'task' | 'scorer';
 
@@ -134,12 +134,18 @@ export interface InitializeOptions {
    * Rewrite a finished span's attributes before export to TraceRoot, so
    * personal data never reaches TraceRoot; return the attributes to keep.
    * Other exporters still see the original span. Also runs on event
-   * attributes and the status message. TraceRoot's bookkeeping keys (its own
-   * `traceroot.*` keys plus user, session, model, token usage and span kind)
-   * are not passed in; recorded input, output, metadata and prompt are. A
-   * function that throws or returns a non-object (e.g. null or an array) fails
-   * closed: span and trace metadata are dropped, and every other value except
-   * numbers and booleans becomes '[redaction failed]'. Eval results uploaded
+   * attributes and the status message. It receives the attributes as they
+   * will be exported, including keys derived from the Vercel AI SDK ones.
+   * TraceRoot's bookkeeping keys (its own `traceroot.*` keys plus user,
+   * session, model, token usage and span kind) are not passed in; recorded
+   * input, output, metadata, prompt, model parameters and eval error, score
+   * value and score comment are. A function that throws or returns
+   * a non-object (e.g. null or an array) fails closed: span and trace metadata
+   * are dropped, and every other value except numbers and booleans becomes
+   * '[redaction failed]'. It may be async (e.g. to call a detection service)
+   * and runs when spans are exported; a promise that rejects or does not
+   * settle within 5 seconds fails closed the same way. A call that misses the
+   * deadline is not cancelled; its late answer is ignored. Eval results uploaded
    * to TraceRoot are redacted too; datasets and scorer definitions are not.
    */
   redact?: Redact;

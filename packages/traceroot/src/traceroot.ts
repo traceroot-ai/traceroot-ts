@@ -14,7 +14,13 @@ import {
   OpenInferenceSimpleSpanProcessor,
 } from '@arizeai/openinference-vercel';
 import { InitializeOptions, Redact } from './types';
-import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor, _resetProcessorState } from './processor';
+import {
+  RedactingSpanExporter,
+  SDK_NAME,
+  SDK_VERSION,
+  TraceRootSpanProcessor,
+  _resetProcessorState,
+} from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
@@ -33,6 +39,8 @@ const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 let _isInitialized = false;
 let _tracingActive = false;
 let _provider: NodeTracerProvider | undefined;
+// Flushed after the provider: the batch processor's flush does not wait for an export in flight.
+let _redactingExporter: RedactingSpanExporter | undefined;
 // Resolved on initialize() so the offline-eval module can reach the same credentials
 // (parity with the Python client that eval's _resolve_credentials reads).
 let _apiKey: string | undefined;
@@ -218,12 +226,17 @@ export class TraceRoot {
     };
     const target = resolveExportTarget(baseUrl, apiKey, sdkHeaders, options.internalExport);
 
-    const exporter = new OTLPTraceExporter({
+    const otlpExporter = new OTLPTraceExporter({
       url: target.url,
       headers: target.headers,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       compression: 'gzip' as any,
     });
+    const redactingExporter =
+      options.redact !== undefined
+        ? new RedactingSpanExporter(otlpExporter, options.redact)
+        : undefined;
+    const exporter = redactingExporter ?? otlpExporter;
 
     const environment = options.environment ?? process.env['TRACEROOT_ENVIRONMENT'];
 
@@ -303,6 +316,7 @@ export class TraceRoot {
     _provider = new NodeTracerProvider(
       target.internal ? { idGenerator: new ContextIdGenerator() } : {},
     );
+    _redactingExporter = redactingExporter;
     _provider.addSpanProcessor(
       new TraceRootSpanProcessor(innerProcessor, {
         environment,
@@ -311,7 +325,6 @@ export class TraceRoot {
         globalAttributes: options.globalAttributes,
         dropSpansWithoutProjectId: shouldDropUnattributed(target.internal, options.internalExport),
         exportSpan: options.exportSpan,
-        redact: options.redact,
       }),
     );
     _provider.register();
@@ -351,6 +364,7 @@ export class TraceRoot {
       propagation.disable();
       void _provider.shutdown().catch(() => {});
       _provider = undefined;
+      _redactingExporter = undefined;
       _tracingActive = false;
       throw err;
     }
@@ -362,7 +376,7 @@ export class TraceRoot {
     _setInternalMode(target.internal);
     _isInitialized = true;
     process.once('beforeExit', () => {
-      void _provider?.forceFlush();
+      void TraceRoot.flush().catch(() => {});
     });
   }
 
@@ -374,7 +388,11 @@ export class TraceRoot {
    * the OTel global error handler instead, and flush() resolves.
    */
   static async flush(): Promise<void> {
-    await _provider?.forceFlush();
+    try {
+      await _provider?.forceFlush();
+    } finally {
+      await _redactingExporter?.forceFlush();
+    }
   }
 
   static async shutdown(): Promise<void> {
@@ -386,6 +404,7 @@ export class TraceRoot {
       _isInitialized = false;
       _tracingActive = false;
       _provider = undefined;
+      _redactingExporter = undefined;
       _exportTarget = undefined;
       _setInternalMode(false);
       _resetObserveState();
@@ -417,6 +436,7 @@ export function _resetForTesting(): void {
   _redact = undefined;
   _tracingActive = false;
   _provider = undefined;
+  _redactingExporter = undefined;
   _exportTarget = undefined;
   _setInternalMode(false);
   _resetTraceIdState();

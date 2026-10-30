@@ -15,6 +15,7 @@ import {
 } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 import { EXPLANATION_MAX, PlatformTransport } from '../src/eval/platform';
+import { REDACT_TIMEOUT_MS } from '../src/constants';
 import { TraceRoot } from '../src/traceroot';
 
 const echo = (x: unknown) => x;
@@ -650,6 +651,53 @@ describe('reporting (cloud-only)', () => {
       assert.equal(res.test_case_id, 'c1');
       assert.equal(res.trace_id, 't');
       assert.equal(res.status, 'errored');
+    });
+
+    it('a redact that never settles withholds the text fields', async (t) => {
+      mockBackend({});
+      TraceRoot.initialize({ redact: () => new Promise(() => {}) });
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      // Advance past each redact deadline until the upload finishes.
+      const settle = async <T>(work: Promise<T>): Promise<T> => {
+        let settled = false;
+        void work.finally(() => (settled = true)).catch(() => {});
+        while (!settled) {
+          await new Promise((resolve) => setImmediate(resolve));
+          t.mock.timers.tick(REDACT_TIMEOUT_MS);
+        }
+        return work;
+      };
+      const tr = new PlatformTransport('ds_1', {});
+      const run = await settle(tr.createRun('r', 'd', { owner: 'a@b.com' }));
+      await settle(tr.recordItemResult(run, item));
+      const posted = calls.filter((c) => c.method === 'POST').map((c) => c.body);
+      assert.ok(!JSON.stringify(posted).includes('a@b.com'));
+      const reg = calls.find((c) => c.url.endsWith('/evaluation-runs'))!;
+      assert.equal('metadata' in reg.body, false);
+      const res = calls.find((c) => c.url.endsWith('/results'))!.body;
+      assert.equal(res.input, '');
+      assert.equal(res.candidate_output, null);
+      assert.equal(res.expected_output, null);
+      assert.equal(res.task_error, null);
+      assert.equal(res.scores[0].explanation, null);
+      assert.equal(res.scores[0].numeric_value, 0.5);
+      assert.equal(res.test_case_id, 'c1');
+    });
+
+    it('a redact that never settles delays an item upload by one deadline', async (t) => {
+      mockBackend({});
+      TraceRoot.initialize({ redact: () => new Promise(() => {}) });
+      const tr = new PlatformTransport('ds_1', {});
+      const run = await tr.createRun('r', 'd');
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      let uploaded = false;
+      void tr.recordItemResult(run, item).then(() => (uploaded = true));
+      await new Promise((resolve) => setImmediate(resolve));
+      t.mock.timers.tick(REDACT_TIMEOUT_MS);
+      for (let i = 0; i < 10 && !uploaded; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      assert.equal(uploaded, true);
     });
   });
 

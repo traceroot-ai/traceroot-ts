@@ -7,10 +7,29 @@ import {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
-import { context, propagation, trace, Attributes, TraceFlags } from '@opentelemetry/api';
+import { ExportResult, ExportResultCode } from '@opentelemetry/core';
+import {
+  context,
+  diag,
+  propagation,
+  trace,
+  Attributes,
+  DiagLogLevel,
+  ProxyTracerProvider,
+  SpanStatusCode,
+  TraceFlags,
+} from '@opentelemetry/api';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { TraceRootSpanProcessor, SDK_VERSION, REDACTABLE_KEYS } from '../src/processor';
+import { REDACT_TIMEOUT_MS } from '../src/constants';
+import {
+  RedactingSpanExporter,
+  TraceRootSpanProcessor,
+  SDK_VERSION,
+  REDACTABLE_KEYS,
+} from '../src/processor';
+import { TraceRoot } from '../src/traceroot';
+import type { Redact } from '../src/types';
 
 describe('TraceRootSpanProcessor', () => {
   let exporter: InMemorySpanExporter;
@@ -390,11 +409,13 @@ describe('TraceRootSpanProcessor redact', () => {
   let exporter: InMemorySpanExporter;
   let provider: NodeTracerProvider;
 
-  function register(redact?: (attributes: Attributes) => Attributes): void {
+  function register(redact?: Redact): void {
     exporter = new InMemorySpanExporter();
     provider = new NodeTracerProvider();
+    // Wired the way initialize() does: redact wraps TraceRoot's exporter.
+    const traceRootExporter = redact ? new RedactingSpanExporter(exporter, redact) : exporter;
     provider.addSpanProcessor(
-      new TraceRootSpanProcessor(new SimpleSpanProcessor(exporter), { redact }),
+      new TraceRootSpanProcessor(new SimpleSpanProcessor(traceRootExporter)),
     );
     provider.register();
   }
@@ -418,7 +439,7 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(span.attributes['traceroot.redacted'], undefined);
   });
 
-  it('exports the redacted attributes and leaves the original span untouched', () => {
+  it('exports the redacted attributes and leaves the original span untouched', async () => {
     register((attrs) => ({ ...attrs, 'user.email': '[email]' }));
     const sibling = new InMemorySpanExporter();
     provider.addSpanProcessor(new SimpleSpanProcessor(sibling));
@@ -426,6 +447,7 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('user.email', 'a@b.com');
       span.end();
     });
+    await provider.forceFlush();
     const [exported] = exporter.getFinishedSpans();
     assert.equal(exported.attributes['user.email'], '[email]');
     assert.equal(exported.attributes['traceroot.redacted'], true);
@@ -434,7 +456,7 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(original.attributes['traceroot.redacted'], undefined);
   });
 
-  it('a redact that mutates an array in place leaves the original span unchanged', () => {
+  it('a redact that mutates an array in place leaves the original span unchanged', async () => {
     register((attrs) => {
       (attrs['user.tags'] as string[])[0] = '[tag]';
       return attrs;
@@ -445,22 +467,24 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('user.tags', ['vip']);
       span.end();
     });
+    await provider.forceFlush();
     assert.deepEqual(exporter.getFinishedSpans()[0].attributes['user.tags'], ['[tag]']);
     assert.deepEqual(sibling.getFinishedSpans()[0].attributes['user.tags'], ['vip']);
   });
 
-  it('keeps traceroot.* keys even when redact returns nothing', () => {
+  it('keeps traceroot.* keys even when redact returns nothing', async () => {
     register(() => ({}));
     trace.getTracer('test').startActiveSpan('ours', (span) => {
       span.setAttribute('user.email', 'a@b.com');
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['user.email'], undefined);
     assert.equal(span.attributes['traceroot.sdk.name'], 'traceroot-ts');
   });
 
-  it('holds back the user, session, model and token keys ingest reads', () => {
+  it('holds back the user, session, model and token keys ingest reads', async () => {
     register(() => ({}));
     trace.getTracer('test').startActiveSpan('attributed', (span) => {
       span.setAttributes({
@@ -472,6 +496,7 @@ describe('TraceRootSpanProcessor redact', () => {
       });
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['user.id'], 'u1');
     assert.equal(span.attributes['session.id'], 's1');
@@ -480,18 +505,19 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(span.attributes['llm.cost.total'], 0.01);
   });
 
-  it('redacts recorded content keys and holds back the bookkeeping ones', () => {
+  it('redacts recorded content keys and holds back the bookkeeping ones', async () => {
     register(() => ({}));
     trace.getTracer('test').startActiveSpan('content', (span) => {
       span.setAttribute('traceroot.span.metadata', '{"email":"a@b.com"}');
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['traceroot.span.metadata'], undefined);
     assert.deepEqual(span.attributes['traceroot.span.path'], ['content']);
   });
 
-  it('a throwing redact blanks every value except numbers and booleans', () => {
+  it('a throwing redact blanks every value except numbers and booleans', async () => {
     register(() => {
       throw new Error('redact bug');
     });
@@ -501,6 +527,7 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('traceroot.trace.metadata', '{"email":"a@b.com"}');
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['user.email'], '[redaction failed]');
     assert.equal(span.attributes['user.tags'], '[redaction failed]');
@@ -509,7 +536,7 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(span.attributes['llm.tokens'], 42);
   });
 
-  it('passes eval error, score comment and model parameters to redact', () => {
+  it('passes eval error, score comment and model parameters to redact', async () => {
     register((attrs) =>
       Object.fromEntries(
         Object.entries(attrs).map(([k, v]) => [
@@ -526,6 +553,7 @@ describe('TraceRootSpanProcessor redact', () => {
       });
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.ok(!JSON.stringify(span.attributes).includes('a@b.com'));
   });
@@ -539,13 +567,14 @@ describe('TraceRootSpanProcessor redact', () => {
       },
     ],
   ] as const) {
-    it(`keeps span kind and exception.type when redact ${name}`, () => {
+    it(`keeps span kind and exception.type when redact ${name}`, async () => {
       register(redact);
       trace.getTracer('test').startActiveSpan('kind', (span) => {
         span.setAttributes({ 'openinference.span.kind': 'LLM', 'gen_ai.operation.name': 'chat' });
         span.recordException(new TypeError('bad input from a@b.com'));
         span.end();
       });
+      await provider.forceFlush();
       const [span] = exporter.getFinishedSpans();
       assert.equal(span.attributes['openinference.span.kind'], 'LLM');
       assert.equal(span.attributes['gen_ai.operation.name'], 'chat');
@@ -554,7 +583,7 @@ describe('TraceRootSpanProcessor redact', () => {
     });
   }
 
-  it('passes a string score value to redact', () => {
+  it('passes a string score value to redact', async () => {
     register((attrs) =>
       Object.fromEntries(
         Object.entries(attrs).map(([k, v]) => [
@@ -567,13 +596,14 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('traceroot.eval.score_value', 'reply to a@b.com');
       span.end();
     });
+    await provider.forceFlush();
     assert.equal(
       exporter.getFinishedSpans()[0].attributes['traceroot.eval.score_value'],
       'reply to [email]',
     );
   });
 
-  it('a numeric score value survives a throwing redact', () => {
+  it('a numeric score value survives a throwing redact', async () => {
     register(() => {
       throw new Error('redact bug');
     });
@@ -581,7 +611,246 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('traceroot.eval.score_value', 0.75);
       span.end();
     });
+    await provider.forceFlush();
     assert.equal(exporter.getFinishedSpans()[0].attributes['traceroot.eval.score_value'], 0.75);
+  });
+
+  it('an async redact runs after the span ends and forceFlush waits for it', async () => {
+    register(async (attrs) => {
+      await new Promise((resolve) => setImmediate(resolve));
+      return { ...attrs, 'user.email': '[email]' };
+    });
+    trace.getTracer('test').startActiveSpan('async', (span) => {
+      span.setAttribute('user.email', 'a@b.com');
+      span.end();
+    });
+    assert.equal(exporter.getFinishedSpans().length, 0);
+    await provider.forceFlush();
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['user.email'], '[email]');
+    assert.equal(span.attributes['traceroot.redacted'], true);
+  });
+
+  it('a rejecting async redact blanks values and does not crash', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    try {
+      register(async () => {
+        throw new Error('redact bug for a@b.com');
+      });
+      trace.getTracer('test').startActiveSpan('rejects', (span) => {
+        span.setAttributes({ 'user.email': 'a@b.com', 'llm.tokens': 42 });
+        span.end();
+      });
+      await provider.forceFlush();
+      await new Promise((resolve) => setImmediate(resolve));
+      const [span] = exporter.getFinishedSpans();
+      assert.equal(span.attributes['user.email'], '[redaction failed]');
+      assert.equal(span.attributes['llm.tokens'], 42);
+      assert.ok(!JSON.stringify(span.attributes).includes('a@b.com'));
+      assert.deepEqual(rejections, []);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  for (const [name, redact] of [
+    ['returns null', () => null],
+    ['returns an array', () => []],
+    ['resolves to null', async () => null],
+    [
+      'returns an object with a throwing getter',
+      () => ({
+        get x() {
+          throw new Error('boom');
+        },
+      }),
+    ],
+    [
+      'resolves to an object with a throwing getter',
+      async () => ({
+        get x() {
+          throw new Error('boom');
+        },
+      }),
+    ],
+  ] as [string, unknown][]) {
+    it(`a redact that ${name} blanks values`, async () => {
+      register(redact as Redact);
+      trace.getTracer('test').startActiveSpan('non-object', (span) => {
+        span.setAttribute('user.email', 'a@b.com');
+        span.end();
+      });
+      await provider.forceFlush();
+      const [span] = exporter.getFinishedSpans();
+      assert.equal(span.attributes['user.email'], '[redaction failed]');
+      assert.ok(!JSON.stringify(span.attributes).includes('a@b.com'));
+    });
+  }
+
+  it('shutdown waits for a pending async redact before the exporter shuts down', async () => {
+    register(async (attrs) => attrs);
+    const calls: string[] = [];
+    const exportTo = exporter.export.bind(exporter);
+    const shutdown = exporter.shutdown.bind(exporter);
+    exporter.export = (spans, done) => {
+      calls.push(...spans.map((span) => `export ${span.name}`));
+      exportTo(spans, done);
+    };
+    exporter.shutdown = () => {
+      calls.push('shutdown');
+      return shutdown();
+    };
+    trace.getTracer('test').startActiveSpan('pending', (span) => span.end());
+    await provider.shutdown();
+    assert.deepEqual(calls, ['export pending', 'shutdown']);
+  });
+
+  it('an inner export that throws after an async redact reports a failed export', async () => {
+    register();
+    trace.getTracer('test').startActiveSpan('unserializable', (span) => span.end());
+    const failing = new InMemorySpanExporter();
+    const error = new Error('cannot serialize');
+    failing.export = () => {
+      throw error;
+    };
+    const redacting = new RedactingSpanExporter(failing, async (attrs) => attrs);
+    const results: ExportResult[] = [];
+    redacting.export(exporter.getFinishedSpans(), (result) => results.push(result));
+    await redacting.forceFlush();
+    assert.deepEqual(results, [{ code: ExportResultCode.FAILED, error }]);
+  });
+
+  it('an inner export that throws after a sync redact reports a failed export', async () => {
+    register();
+    trace.getTracer('test').startActiveSpan('unserializable', (span) => span.end());
+    const failing = new InMemorySpanExporter();
+    const error = new Error('cannot serialize');
+    failing.export = () => {
+      throw error;
+    };
+    const redacting = new RedactingSpanExporter(failing, (attrs) => attrs);
+    const results: ExportResult[] = [];
+    redacting.export(exporter.getFinishedSpans(), (result) => results.push(result));
+    await redacting.forceFlush();
+    assert.deepEqual(results, [{ code: ExportResultCode.FAILED, error }]);
+  });
+
+  it('calls a throwing export callback exactly once', async () => {
+    register();
+    trace.getTracer('test').startActiveSpan('reported', (span) => span.end());
+    const answering = new InMemorySpanExporter();
+    answering.export = (_spans, done) => done({ code: ExportResultCode.SUCCESS });
+    const redacting = new RedactingSpanExporter(answering, async (attrs) => attrs);
+    let calls = 0;
+    redacting.export(exporter.getFinishedSpans(), () => {
+      calls += 1;
+      throw new Error('callback bug');
+    });
+    await redacting.forceFlush();
+    assert.equal(calls, 1);
+  });
+
+  it('an async redact covers event attributes and the status message', async () => {
+    register(async (attrs) =>
+      Object.fromEntries(
+        Object.entries(attrs).map(([k, v]) => [
+          k,
+          typeof v === 'string' ? v.replaceAll('a@b.com', '[email]') : v,
+        ]),
+      ),
+    );
+    trace.getTracer('test').startActiveSpan('event', (span) => {
+      span.addEvent('note', { 'note.text': 'mail a@b.com' });
+      span.setStatus({ code: SpanStatusCode.ERROR, message: 'failed for a@b.com' });
+      span.end();
+    });
+    await provider.forceFlush();
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.events[0].attributes?.['note.text'], 'mail [email]');
+    assert.equal(span.status.message, 'failed for [email]');
+    assert.ok(!JSON.stringify([span.attributes, span.events, span.status]).includes('a@b.com'));
+  });
+
+  it('a redact still pending at the deadline is blanked; its late answer is ignored', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let answer: (attributes: Attributes) => void = () => {};
+    register(() => new Promise((resolve) => (answer = resolve)));
+    trace.getTracer('test').startActiveSpan('slow', (span) => {
+      span.setAttributes({ 'user.email': 'a@b.com', 'llm.tokens': 42 });
+      span.end();
+    });
+    t.mock.timers.tick(REDACT_TIMEOUT_MS - 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(exporter.getFinishedSpans().length, 0);
+    t.mock.timers.tick(1);
+    await provider.forceFlush();
+    answer({ 'user.email': 'a@b.com' });
+    await provider.forceFlush();
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 1);
+    assert.equal(spans[0].attributes['user.email'], '[redaction failed]');
+    assert.equal(spans[0].attributes['llm.tokens'], 42);
+    assert.equal(spans[0].attributes['traceroot.redacted'], true);
+    assert.ok(!JSON.stringify(spans[0].attributes).includes('a@b.com'));
+  });
+
+  it('warns once per batch with the count of spans that missed the deadline', async (t) => {
+    register();
+    const tracer = trace.getTracer('test');
+    for (const speed of ['slow', 'fast', 'slow']) {
+      tracer.startActiveSpan(speed, (span) => {
+        span.setAttribute('speed', speed);
+        span.end();
+      });
+    }
+    const sent = new InMemorySpanExporter();
+    const redacting = new RedactingSpanExporter(sent, (attrs) =>
+      attrs['speed'] === 'slow' ? new Promise(() => {}) : Promise.resolve(attrs),
+    );
+    const warnings: string[] = [];
+    const ignore = () => {};
+    diag.setLogger(
+      {
+        warn: (message) => warnings.push(message),
+        error: ignore,
+        info: ignore,
+        debug: ignore,
+        verbose: ignore,
+      },
+      DiagLogLevel.WARN,
+    );
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      redacting.export(exporter.getFinishedSpans(), () => {});
+      await new Promise((resolve) => setImmediate(resolve)); // let the fast span settle
+      t.mock.timers.tick(REDACT_TIMEOUT_MS);
+      await redacting.forceFlush();
+    } finally {
+      diag.disable();
+    }
+    assert.deepEqual(warnings, [
+      `[TraceRoot] redact did not settle within ${REDACT_TIMEOUT_MS}ms for 2 of 3 spans; blanking their attribute values`,
+    ]);
+    assert.deepEqual(
+      sent.getFinishedSpans().map((span) => span.attributes['speed']),
+      ['[redaction failed]', 'fast', '[redaction failed]'],
+    );
+  });
+
+  it("the redact deadline timer is ref'd", (t) => {
+    register();
+    trace.getTracer('test').startActiveSpan('pending', (span) => span.end());
+    const spy = t.mock.method(globalThis, 'setTimeout');
+    new RedactingSpanExporter(exporter, () => new Promise(() => {})).export(
+      exporter.getFinishedSpans(),
+      () => {},
+    );
+    const deadline = spy.mock.calls.find((call) => call.arguments[1] === REDACT_TIMEOUT_MS)!.result;
+    clearTimeout(deadline);
+    // A pending redact keeps the process alive until its deadline.
+    assert.equal(deadline.hasRef(), true);
   });
 
   it('classifies every traceroot.* key the SDK writes as content or bookkeeping', () => {
@@ -640,6 +909,112 @@ describe('TraceRootSpanProcessor redact', () => {
       );
     for (const key of new Set(written)) {
       assert.ok(REDACTABLE_KEYS.has(key) !== bookkeeping.has(key), `classify ${key}`);
+    }
+  });
+});
+
+describe('TraceRoot.flush with an async redact', () => {
+  it('waits for a batch still being redacted', async () => {
+    const flushAt = process.env['TRACEROOT_FLUSH_AT'];
+    process.env['TRACEROOT_FLUSH_AT'] = '1'; // one ended span starts the export
+    let settled = false;
+    try {
+      TraceRoot.initialize({
+        apiKey: 'test-key',
+        baseUrl: 'http://127.0.0.1:9',
+        redact: async (attrs) => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          settled = true;
+          return attrs;
+        },
+      });
+      trace.getTracer('test').startActiveSpan('batched', (span) => span.end());
+      await TraceRoot.flush().catch(() => {}); // the export itself fails: nothing listens on :9
+      assert.equal(settled, true);
+    } finally {
+      await TraceRoot.shutdown().catch(() => {});
+      if (flushAt === undefined) delete process.env['TRACEROOT_FLUSH_AT'];
+      else process.env['TRACEROOT_FLUSH_AT'] = flushAt;
+    }
+  });
+
+  it('waits for a batch still being redacted when the provider flush rejects', async () => {
+    const flushAt = process.env['TRACEROOT_FLUSH_AT'];
+    process.env['TRACEROOT_FLUSH_AT'] = '1';
+    let settled = false;
+    try {
+      TraceRoot.initialize({
+        apiKey: 'test-key',
+        baseUrl: 'http://127.0.0.1:9',
+        redact: async (attrs) => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          settled = true;
+          return attrs;
+        },
+      });
+      trace.getTracer('test').startActiveSpan('batched', (span) => span.end());
+      const provider = (trace.getTracerProvider() as ProxyTracerProvider).getDelegate();
+      (provider as NodeTracerProvider).forceFlush = () => Promise.reject(new Error('flush failed'));
+      await TraceRoot.flush().catch(() => {});
+      assert.equal(settled, true);
+    } finally {
+      await TraceRoot.shutdown().catch(() => {});
+      if (flushAt === undefined) delete process.env['TRACEROOT_FLUSH_AT'];
+      else process.env['TRACEROOT_FLUSH_AT'] = flushAt;
+    }
+  });
+
+  it('a failed re-initialize leaves flush() on the exporter still in use', async () => {
+    const flushAt = process.env['TRACEROOT_FLUSH_AT'];
+    process.env['TRACEROOT_FLUSH_AT'] = '1';
+    let settled = false;
+    try {
+      TraceRoot.initialize({
+        apiKey: 'test-key',
+        baseUrl: 'http://127.0.0.1:9',
+        redact: async (attrs) => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          settled = true;
+          return attrs;
+        },
+      });
+      trace.getTracer('test').startActiveSpan('batched', (span) => span.end());
+      TraceRoot._clearCredentials();
+      assert.throws(
+        () =>
+          TraceRoot.initialize({
+            redact: async (attrs) => attrs,
+            internalExport: { path: '/otlp', projectId: '' },
+          }),
+        TypeError,
+      );
+      await TraceRoot.flush().catch(() => {});
+      assert.equal(settled, true);
+    } finally {
+      await TraceRoot.shutdown().catch(() => {});
+      if (flushAt === undefined) delete process.env['TRACEROOT_FLUSH_AT'];
+      else process.env['TRACEROOT_FLUSH_AT'] = flushAt;
+    }
+  });
+
+  it('a flush that rejects at exit is not left unhandled', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    const before = process.listeners('beforeExit');
+    try {
+      TraceRoot.initialize({ apiKey: 'test-key', baseUrl: 'http://127.0.0.1:9' });
+      const provider = (trace.getTracerProvider() as ProxyTracerProvider).getDelegate();
+      (provider as NodeTracerProvider).forceFlush = () => Promise.reject(new Error('flush failed'));
+      // Call only the SDK's hook: emitting beforeExit also tells node:test the loop has drained.
+      const exitHook = process.listeners('beforeExit').find((l) => !before.includes(l))!;
+      process.off('beforeExit', exitHook);
+      exitHook(0);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(rejections, []);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+      await TraceRoot.shutdown().catch(() => {});
     }
   });
 });
