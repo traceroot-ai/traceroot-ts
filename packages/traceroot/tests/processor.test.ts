@@ -26,7 +26,6 @@ import {
   TraceRootSpanProcessor,
   SDK_VERSION,
   REDACTABLE_KEYS,
-  within,
 } from '../src/processor';
 import { TraceRoot } from '../src/traceroot';
 import type { Redact } from '../src/types';
@@ -439,7 +438,7 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(span.attributes['traceroot.redacted'], undefined);
   });
 
-  it('exports the redacted attributes and leaves the original span untouched', () => {
+  it('exports the redacted attributes and leaves the original span untouched', async () => {
     register((attrs) => ({ ...attrs, 'user.email': '[email]' }));
     const sibling = new InMemorySpanExporter();
     provider.addSpanProcessor(new SimpleSpanProcessor(sibling));
@@ -447,6 +446,7 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('user.email', 'a@b.com');
       span.end();
     });
+    await provider.forceFlush();
     const [exported] = exporter.getFinishedSpans();
     assert.equal(exported.attributes['user.email'], '[email]');
     assert.equal(exported.attributes['traceroot.redacted'], true);
@@ -455,7 +455,7 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(original.attributes['traceroot.redacted'], undefined);
   });
 
-  it('a redact that mutates an array in place leaves the original span unchanged', () => {
+  it('a redact that mutates an array in place leaves the original span unchanged', async () => {
     register((attrs) => {
       (attrs['user.tags'] as string[])[0] = '[tag]';
       return attrs;
@@ -466,22 +466,24 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('user.tags', ['vip']);
       span.end();
     });
+    await provider.forceFlush();
     assert.deepEqual(exporter.getFinishedSpans()[0].attributes['user.tags'], ['[tag]']);
     assert.deepEqual(sibling.getFinishedSpans()[0].attributes['user.tags'], ['vip']);
   });
 
-  it('keeps traceroot.* keys even when redact returns nothing', () => {
+  it('keeps traceroot.* keys even when redact returns nothing', async () => {
     register(() => ({}));
     trace.getTracer('test').startActiveSpan('ours', (span) => {
       span.setAttribute('user.email', 'a@b.com');
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['user.email'], undefined);
     assert.equal(span.attributes['traceroot.sdk.name'], 'traceroot-ts');
   });
 
-  it('holds back the user, session, model and token keys ingest reads', () => {
+  it('holds back the user, session, model and token keys ingest reads', async () => {
     register(() => ({}));
     trace.getTracer('test').startActiveSpan('attributed', (span) => {
       span.setAttributes({
@@ -493,6 +495,7 @@ describe('TraceRootSpanProcessor redact', () => {
       });
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['user.id'], 'u1');
     assert.equal(span.attributes['session.id'], 's1');
@@ -501,18 +504,19 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(span.attributes['llm.cost.total'], 0.01);
   });
 
-  it('redacts recorded content keys and holds back the bookkeeping ones', () => {
+  it('redacts recorded content keys and holds back the bookkeeping ones', async () => {
     register(() => ({}));
     trace.getTracer('test').startActiveSpan('content', (span) => {
       span.setAttribute('traceroot.span.metadata', '{"email":"a@b.com"}');
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['traceroot.span.metadata'], undefined);
     assert.deepEqual(span.attributes['traceroot.span.path'], ['content']);
   });
 
-  it('a throwing redact blanks every value except numbers and booleans', () => {
+  it('a throwing redact blanks every value except numbers and booleans', async () => {
     register(() => {
       throw new Error('redact bug');
     });
@@ -522,6 +526,7 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('traceroot.trace.metadata', '{"email":"a@b.com"}');
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.equal(span.attributes['user.email'], '[redaction failed]');
     assert.equal(span.attributes['user.tags'], '[redaction failed]');
@@ -530,7 +535,7 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(span.attributes['llm.tokens'], 42);
   });
 
-  it('passes eval error, score comment and model parameters to redact', () => {
+  it('passes eval error, score comment and model parameters to redact', async () => {
     register((attrs) =>
       Object.fromEntries(
         Object.entries(attrs).map(([k, v]) => [
@@ -547,6 +552,7 @@ describe('TraceRootSpanProcessor redact', () => {
       });
       span.end();
     });
+    await provider.forceFlush();
     const [span] = exporter.getFinishedSpans();
     assert.ok(!JSON.stringify(span.attributes).includes('a@b.com'));
   });
@@ -560,13 +566,14 @@ describe('TraceRootSpanProcessor redact', () => {
       },
     ],
   ] as const) {
-    it(`keeps span kind and exception.type when redact ${name}`, () => {
+    it(`keeps span kind and exception.type when redact ${name}`, async () => {
       register(redact);
       trace.getTracer('test').startActiveSpan('kind', (span) => {
         span.setAttributes({ 'openinference.span.kind': 'LLM', 'gen_ai.operation.name': 'chat' });
         span.recordException(new TypeError('bad input from a@b.com'));
         span.end();
       });
+      await provider.forceFlush();
       const [span] = exporter.getFinishedSpans();
       assert.equal(span.attributes['openinference.span.kind'], 'LLM');
       assert.equal(span.attributes['gen_ai.operation.name'], 'chat');
@@ -575,7 +582,7 @@ describe('TraceRootSpanProcessor redact', () => {
     });
   }
 
-  it('passes a string score value to redact', () => {
+  it('passes a string score value to redact', async () => {
     register((attrs) =>
       Object.fromEntries(
         Object.entries(attrs).map(([k, v]) => [
@@ -588,13 +595,14 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('traceroot.eval.score_value', 'reply to a@b.com');
       span.end();
     });
+    await provider.forceFlush();
     assert.equal(
       exporter.getFinishedSpans()[0].attributes['traceroot.eval.score_value'],
       'reply to [email]',
     );
   });
 
-  it('a numeric score value survives a throwing redact', () => {
+  it('a numeric score value survives a throwing redact', async () => {
     register(() => {
       throw new Error('redact bug');
     });
@@ -602,6 +610,7 @@ describe('TraceRootSpanProcessor redact', () => {
       span.setAttribute('traceroot.eval.score_value', 0.75);
       span.end();
     });
+    await provider.forceFlush();
     assert.equal(exporter.getFinishedSpans()[0].attributes['traceroot.eval.score_value'], 0.75);
   });
 
@@ -712,6 +721,36 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.deepEqual(results, [{ code: ExportResultCode.FAILED, error }]);
   });
 
+  it('an inner export that throws after a sync redact reports a failed export', async () => {
+    register();
+    trace.getTracer('test').startActiveSpan('unserializable', (span) => span.end());
+    const failing = new InMemorySpanExporter();
+    const error = new Error('cannot serialize');
+    failing.export = () => {
+      throw error;
+    };
+    const redacting = new RedactingSpanExporter(failing, (attrs) => attrs);
+    const results: ExportResult[] = [];
+    redacting.export(exporter.getFinishedSpans(), (result) => results.push(result));
+    await redacting.forceFlush();
+    assert.deepEqual(results, [{ code: ExportResultCode.FAILED, error }]);
+  });
+
+  it('calls a throwing export callback exactly once', async () => {
+    register();
+    trace.getTracer('test').startActiveSpan('reported', (span) => span.end());
+    const answering = new InMemorySpanExporter();
+    answering.export = (_spans, done) => done({ code: ExportResultCode.SUCCESS });
+    const redacting = new RedactingSpanExporter(answering, async (attrs) => attrs);
+    let calls = 0;
+    redacting.export(exporter.getFinishedSpans(), () => {
+      calls += 1;
+      throw new Error('callback bug');
+    });
+    await redacting.forceFlush();
+    assert.equal(calls, 1);
+  });
+
   it('an async redact covers event attributes and the status message', async () => {
     register(async (attrs) =>
       Object.fromEntries(
@@ -799,11 +838,18 @@ describe('TraceRootSpanProcessor redact', () => {
     );
   });
 
-  it('the redact deadline keeps the process alive while redact is pending', async (t) => {
+  it("the redact deadline timer is ref'd", (t) => {
+    register();
+    trace.getTracer('test').startActiveSpan('pending', (span) => span.end());
     const spy = t.mock.method(globalThis, 'setTimeout');
-    const pending = within(new Promise<string>(() => {}), 20, () => 'blanked');
-    assert.equal(spy.mock.calls[0].result.hasRef(), true);
-    assert.equal(await pending, 'blanked');
+    new RedactingSpanExporter(exporter, () => new Promise(() => {})).export(
+      exporter.getFinishedSpans(),
+      () => {},
+    );
+    const deadline = spy.mock.calls.find((call) => call.arguments[1] === REDACT_TIMEOUT_MS)!.result;
+    clearTimeout(deadline);
+    // A pending redact keeps the process alive until its deadline.
+    assert.equal(deadline.hasRef(), true);
   });
 
   it('classifies every traceroot.* key the SDK writes as content or bookkeeping', () => {
