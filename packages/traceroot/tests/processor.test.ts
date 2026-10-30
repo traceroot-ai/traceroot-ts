@@ -20,8 +20,8 @@ import {
 } from '@opentelemetry/api';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { REDACT_TIMEOUT_MS } from '../src/constants';
 import {
-  REDACT_TIMEOUT_MS,
   RedactingSpanExporter,
   TraceRootSpanProcessor,
   SDK_VERSION,

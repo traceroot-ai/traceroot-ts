@@ -15,7 +15,7 @@ import {
 } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 import { EXPLANATION_MAX, PlatformTransport } from '../src/eval/platform';
-import { REDACT_TIMEOUT_MS } from '../src/processor';
+import { REDACT_TIMEOUT_MS } from '../src/constants';
 import { TraceRoot } from '../src/traceroot';
 
 const echo = (x: unknown) => x;

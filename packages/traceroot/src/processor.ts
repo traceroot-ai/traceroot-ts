@@ -10,6 +10,7 @@ import {
   OI_SPAN_KIND,
   OI_TRACE_SESSION_ID,
   OI_TRACE_USER_ID,
+  REDACT_TIMEOUT_MS,
   SPAN_METADATA,
   SpanAttributes,
   TRACE_METADATA,
@@ -63,8 +64,6 @@ const HELD_BACK_PREFIXES = [
   'ai.usage.',
 ];
 
-/** @internal — shared with eval uploads; well under the 30 s batch export timeout. */
-export const REDACT_TIMEOUT_MS = 5_000;
 // Marks a span whose redact lost the race against the batch deadline.
 const LATE = Symbol('late');
 
@@ -325,15 +324,6 @@ export class RedactingSpanExporter implements SpanExporter {
     await Promise.all(this.pending);
     await this.inner.shutdown();
   }
-}
-
-/** @internal — `value` once it settles, or `fallback()` if that takes longer than `ms`. */
-export function within<T>(value: T | Promise<T>, ms: number, fallback: () => T): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<T>((resolve) => {
-    timer = setTimeout(() => resolve(fallback()), ms);
-  });
-  return Promise.race([value, timeout]).finally(() => clearTimeout(timer));
 }
 
 function shouldExport(predicate: (span: ReadableSpan) => boolean, span: ReadableSpan): boolean {

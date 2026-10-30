@@ -3,7 +3,8 @@
 // Python SDK, since the backend contract is shared.
 
 import { diag, Attributes } from '@opentelemetry/api';
-import { REDACT_TIMEOUT_MS, redactAttributes, within } from '../processor';
+import { REDACT_TIMEOUT_MS } from '../constants';
+import { redactAttributes } from '../processor';
 import { TraceRoot } from '../traceroot';
 import { contentRevision, Dataset } from './types';
 import { newRunId, stableDatasetId } from './ids';
@@ -135,6 +136,15 @@ function isRetryable(err: unknown): boolean {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** `value` once it settles, or `fallback()` if that takes longer than `ms`. */
+function within<T>(value: Promise<T>, ms: number, fallback: () => T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback()), ms);
+  });
+  return Promise.race([value, timeout]).finally(() => clearTimeout(timer));
+}
 
 /** Result-reporting fields are backend z.string(); a non-string is JSON-encoded.
  *
