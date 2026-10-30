@@ -28,6 +28,7 @@ import {
   REDACTABLE_KEYS,
   within,
 } from '../src/processor';
+import { TraceRoot } from '../src/traceroot';
 import type { Redact } from '../src/types';
 
 describe('TraceRootSpanProcessor', () => {
@@ -861,6 +862,32 @@ describe('TraceRootSpanProcessor redact', () => {
       );
     for (const key of new Set(written)) {
       assert.ok(REDACTABLE_KEYS.has(key) !== bookkeeping.has(key), `classify ${key}`);
+    }
+  });
+});
+
+describe('TraceRoot.flush with an async redact', () => {
+  it('waits for a batch still being redacted', async () => {
+    const flushAt = process.env['TRACEROOT_FLUSH_AT'];
+    process.env['TRACEROOT_FLUSH_AT'] = '1'; // one ended span starts the export
+    let settled = false;
+    try {
+      TraceRoot.initialize({
+        apiKey: 'test-key',
+        baseUrl: 'http://127.0.0.1:9',
+        redact: async (attrs) => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          settled = true;
+          return attrs;
+        },
+      });
+      trace.getTracer('test').startActiveSpan('batched', (span) => span.end());
+      await TraceRoot.flush().catch(() => {}); // the export itself fails: nothing listens on :9
+      assert.equal(settled, true);
+    } finally {
+      await TraceRoot.shutdown().catch(() => {});
+      if (flushAt === undefined) delete process.env['TRACEROOT_FLUSH_AT'];
+      else process.env['TRACEROOT_FLUSH_AT'] = flushAt;
     }
   });
 });

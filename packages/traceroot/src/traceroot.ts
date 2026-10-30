@@ -39,6 +39,8 @@ const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 let _isInitialized = false;
 let _tracingActive = false;
 let _provider: NodeTracerProvider | undefined;
+// Flushed after the provider: the batch processor's flush does not wait for an export in flight.
+let _redactingExporter: RedactingSpanExporter | undefined;
 // Resolved on initialize() so the offline-eval module can reach the same credentials
 // (parity with the Python client that eval's _resolve_credentials reads).
 let _apiKey: string | undefined;
@@ -230,10 +232,11 @@ export class TraceRoot {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       compression: 'gzip' as any,
     });
-    const exporter =
+    _redactingExporter =
       options.redact !== undefined
         ? new RedactingSpanExporter(otlpExporter, options.redact)
-        : otlpExporter;
+        : undefined;
+    const exporter = _redactingExporter ?? otlpExporter;
 
     const environment = options.environment ?? process.env['TRACEROOT_ENVIRONMENT'];
 
@@ -360,6 +363,7 @@ export class TraceRoot {
       propagation.disable();
       void _provider.shutdown().catch(() => {});
       _provider = undefined;
+      _redactingExporter = undefined;
       _tracingActive = false;
       throw err;
     }
@@ -371,7 +375,7 @@ export class TraceRoot {
     _setInternalMode(target.internal);
     _isInitialized = true;
     process.once('beforeExit', () => {
-      void _provider?.forceFlush();
+      void TraceRoot.flush();
     });
   }
 
@@ -384,6 +388,7 @@ export class TraceRoot {
    */
   static async flush(): Promise<void> {
     await _provider?.forceFlush();
+    await _redactingExporter?.forceFlush();
   }
 
   static async shutdown(): Promise<void> {
@@ -395,6 +400,7 @@ export class TraceRoot {
       _isInitialized = false;
       _tracingActive = false;
       _provider = undefined;
+      _redactingExporter = undefined;
       _exportTarget = undefined;
       _setInternalMode(false);
       _resetObserveState();
@@ -426,6 +432,7 @@ export function _resetForTesting(): void {
   _redact = undefined;
   _tracingActive = false;
   _provider = undefined;
+  _redactingExporter = undefined;
   _exportTarget = undefined;
   _setInternalMode(false);
   _resetTraceIdState();
