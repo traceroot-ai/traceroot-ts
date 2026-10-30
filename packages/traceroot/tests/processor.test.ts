@@ -10,7 +10,12 @@ import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { context, propagation, trace, Attributes, TraceFlags } from '@opentelemetry/api';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { TraceRootSpanProcessor, SDK_VERSION, REDACTABLE_KEYS } from '../src/processor';
+import {
+  RedactingSpanExporter,
+  TraceRootSpanProcessor,
+  SDK_VERSION,
+  REDACTABLE_KEYS,
+} from '../src/processor';
 
 describe('TraceRootSpanProcessor', () => {
   let exporter: InMemorySpanExporter;
@@ -393,8 +398,10 @@ describe('TraceRootSpanProcessor redact', () => {
   function register(redact?: (attributes: Attributes) => Attributes): void {
     exporter = new InMemorySpanExporter();
     provider = new NodeTracerProvider();
+    // Wired the way initialize() does: redact wraps TraceRoot's exporter.
+    const traceRootExporter = redact ? new RedactingSpanExporter(exporter, redact) : exporter;
     provider.addSpanProcessor(
-      new TraceRootSpanProcessor(new SimpleSpanProcessor(exporter), { redact }),
+      new TraceRootSpanProcessor(new SimpleSpanProcessor(traceRootExporter)),
     );
     provider.register();
   }

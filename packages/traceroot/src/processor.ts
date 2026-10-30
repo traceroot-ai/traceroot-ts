@@ -1,6 +1,7 @@
 // src/processor.ts
 import { diag, trace as otelTrace, Attributes, Context, Span } from '@opentelemetry/api';
-import { ReadableSpan, SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { ExportResult } from '@opentelemetry/core';
+import { ReadableSpan, SpanExporter, SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import {
   LLM_MODEL_PARAMETERS,
   LLM_PROMPT,
@@ -89,18 +90,6 @@ export interface TraceRootSpanProcessorOptions {
    * host over a filter.
    */
   exportSpan?: (span: ReadableSpan) => boolean;
-  /**
-   * Rewrite a finished span's attributes, event attributes and status message
-   * before export to TraceRoot; the span name and resource are not passed in,
-   * and other exporters still see the original span. TraceRoot's bookkeeping
-   * keys (its own `traceroot.*` keys plus user, session, model, token usage and
-   * span kind) are not passed in either; recorded input, output, metadata and
-   * prompt are. A function that throws or returns a non-object (e.g. null or an
-   * array) fails closed: span and trace metadata are dropped, and every other
-   * value except numbers and booleans is replaced. Eval results uploaded to
-   * TraceRoot are redacted too; datasets and scorer definitions are not.
-   */
-  redact?: Redact;
 }
 
 /**
@@ -128,7 +117,6 @@ export class TraceRootSpanProcessor implements SpanProcessor {
 
   private readonly _dropSpansWithoutProjectId: boolean;
   private readonly _exportSpan?: (span: ReadableSpan) => boolean;
-  private readonly _redact?: Redact;
 
   constructor(
     inner: SpanProcessor, // ← WIDENED
@@ -141,7 +129,6 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     this._globalAttributes = opts.globalAttributes;
     this._dropSpansWithoutProjectId = opts.dropSpansWithoutProjectId ?? false;
     this._exportSpan = opts.exportSpan;
-    this._redact = opts.redact;
   }
 
   onStart(span: Span, parentContext: Context): void {
@@ -258,11 +245,37 @@ export class TraceRootSpanProcessor implements SpanProcessor {
       return;
     }
     if (this._exportSpan !== undefined && !shouldExport(this._exportSpan, span)) return;
-    this.inner.onEnd(this._redact !== undefined ? redactedCopy(this._redact, span) : span);
+    this.inner.onEnd(span);
   }
 
   forceFlush(): Promise<void> {
     return this.inner.forceFlush();
+  }
+
+  shutdown(): Promise<void> {
+    return this.inner.shutdown();
+  }
+}
+
+/**
+ * Rewrites each span with `redact` as its batch is exported, so the inner processor has already
+ * seen every span of the trace in its original order.
+ */
+export class RedactingSpanExporter implements SpanExporter {
+  constructor(
+    private readonly inner: SpanExporter,
+    private readonly redact: Redact,
+  ) {}
+
+  export(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
+    this.inner.export(
+      spans.map((span) => redactedCopy(this.redact, span)),
+      resultCallback,
+    );
+  }
+
+  async forceFlush(): Promise<void> {
+    await this.inner.forceFlush?.();
   }
 
   shutdown(): Promise<void> {

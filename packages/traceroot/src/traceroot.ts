@@ -14,7 +14,13 @@ import {
   OpenInferenceSimpleSpanProcessor,
 } from '@arizeai/openinference-vercel';
 import { InitializeOptions, Redact } from './types';
-import { SDK_NAME, SDK_VERSION, TraceRootSpanProcessor, _resetProcessorState } from './processor';
+import {
+  RedactingSpanExporter,
+  SDK_NAME,
+  SDK_VERSION,
+  TraceRootSpanProcessor,
+  _resetProcessorState,
+} from './processor';
 import { wireInstrumentations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
@@ -218,12 +224,16 @@ export class TraceRoot {
     };
     const target = resolveExportTarget(baseUrl, apiKey, sdkHeaders, options.internalExport);
 
-    const exporter = new OTLPTraceExporter({
+    const otlpExporter = new OTLPTraceExporter({
       url: target.url,
       headers: target.headers,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       compression: 'gzip' as any,
     });
+    const exporter =
+      options.redact !== undefined
+        ? new RedactingSpanExporter(otlpExporter, options.redact)
+        : otlpExporter;
 
     const environment = options.environment ?? process.env['TRACEROOT_ENVIRONMENT'];
 
@@ -311,7 +321,6 @@ export class TraceRoot {
         globalAttributes: options.globalAttributes,
         dropSpansWithoutProjectId: shouldDropUnattributed(target.internal, options.internalExport),
         exportSpan: options.exportSpan,
-        redact: options.redact,
       }),
     );
     _provider.register();
