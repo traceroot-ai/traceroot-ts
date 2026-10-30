@@ -2,7 +2,8 @@
 // traceroot-py/traceroot/eval/platform.py). Same endpoints and wire payloads as the
 // Python SDK, since the backend contract is shared.
 
-import { redactAttributes } from '../processor';
+import { diag, Attributes } from '@opentelemetry/api';
+import { REDACT_TIMEOUT_MS, redactAttributes, within } from '../processor';
 import { TraceRoot } from '../traceroot';
 import { contentRevision, Dataset } from './types';
 import { newRunId, stableDatasetId } from './ids';
@@ -159,7 +160,17 @@ async function redactText(
     keys.filter((k) => typeof fields[k] === 'string').map((k) => [k, fields[k] as string]),
   );
   if (redact === undefined) return {};
-  const redacted = await redactAttributes(redact, text);
+  // Past the deadline nothing is redacted, so every text field is withheld.
+  const redacted = await within<Attributes>(
+    redactAttributes(redact, text),
+    REDACT_TIMEOUT_MS,
+    () => {
+      diag.warn(
+        `[TraceRoot] redact did not settle within ${REDACT_TIMEOUT_MS}ms; withholding eval text`,
+      );
+      return {};
+    },
+  );
   return Object.fromEntries(
     Object.keys(text).map((k) => [k, typeof redacted[k] === 'string' ? redacted[k] : null]),
   );
