@@ -7,10 +7,20 @@ import {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
-import { context, propagation, trace, SpanStatusCode, TraceFlags } from '@opentelemetry/api';
+import {
+  context,
+  diag,
+  propagation,
+  trace,
+  Attributes,
+  DiagLogLevel,
+  SpanStatusCode,
+  TraceFlags,
+} from '@opentelemetry/api';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  REDACT_TIMEOUT_MS,
   RedactingSpanExporter,
   TraceRootSpanProcessor,
   SDK_VERSION,
@@ -687,6 +697,72 @@ describe('TraceRootSpanProcessor redact', () => {
     assert.equal(span.events[0].attributes?.['note.text'], 'mail [email]');
     assert.equal(span.status.message, 'failed for [email]');
     assert.ok(!JSON.stringify([span.attributes, span.events, span.status]).includes('a@b.com'));
+  });
+
+  it('a redact still pending at the deadline is blanked; its late answer is ignored', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let answer: (attributes: Attributes) => void = () => {};
+    register(() => new Promise((resolve) => (answer = resolve)));
+    trace.getTracer('test').startActiveSpan('slow', (span) => {
+      span.setAttributes({ 'user.email': 'a@b.com', 'llm.tokens': 42 });
+      span.end();
+    });
+    t.mock.timers.tick(REDACT_TIMEOUT_MS - 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(exporter.getFinishedSpans().length, 0);
+    t.mock.timers.tick(1);
+    await provider.forceFlush();
+    answer({ 'user.email': 'a@b.com' });
+    await provider.forceFlush();
+    const spans = exporter.getFinishedSpans();
+    assert.equal(spans.length, 1);
+    assert.equal(spans[0].attributes['user.email'], '[redaction failed]');
+    assert.equal(spans[0].attributes['llm.tokens'], 42);
+    assert.equal(spans[0].attributes['traceroot.redacted'], true);
+    assert.ok(!JSON.stringify(spans[0].attributes).includes('a@b.com'));
+  });
+
+  it('warns once per batch with the count of spans that missed the deadline', async (t) => {
+    register();
+    const tracer = trace.getTracer('test');
+    for (const speed of ['slow', 'fast', 'slow']) {
+      tracer.startActiveSpan(speed, (span) => {
+        span.setAttribute('speed', speed);
+        span.end();
+      });
+    }
+    const sent = new InMemorySpanExporter();
+    const redacting = new RedactingSpanExporter(sent, (attrs) =>
+      attrs['speed'] === 'slow' ? new Promise(() => {}) : Promise.resolve(attrs),
+    );
+    const warnings: string[] = [];
+    const ignore = () => {};
+    diag.setLogger(
+      {
+        warn: (message) => warnings.push(message),
+        error: ignore,
+        info: ignore,
+        debug: ignore,
+        verbose: ignore,
+      },
+      DiagLogLevel.WARN,
+    );
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      redacting.export(exporter.getFinishedSpans(), () => {});
+      await new Promise((resolve) => setImmediate(resolve)); // let the fast span settle
+      t.mock.timers.tick(REDACT_TIMEOUT_MS);
+      await redacting.forceFlush();
+    } finally {
+      diag.disable();
+    }
+    assert.deepEqual(warnings, [
+      `[TraceRoot] redact did not settle within ${REDACT_TIMEOUT_MS}ms for 2 of 3 spans; blanking their attribute values`,
+    ]);
+    assert.deepEqual(
+      sent.getFinishedSpans().map((span) => span.attributes['speed']),
+      ['[redaction failed]', 'fast', '[redaction failed]'],
+    );
   });
 
   it('classifies every traceroot.* key the SDK writes as content or bookkeeping', () => {

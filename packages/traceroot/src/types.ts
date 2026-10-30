@@ -141,8 +141,9 @@ export interface InitializeOptions {
    * closed: span and trace metadata are dropped, and every other value except
    * numbers and booleans becomes '[redaction failed]'. It may be async (e.g.
    * to call a detection service) and runs when spans are exported; a promise
-   * that rejects fails closed the same way. Eval results uploaded to
-   * TraceRoot are redacted too; datasets and scorer definitions are not.
+   * that rejects or does not settle within 5 seconds fails closed the same
+   * way. Eval results uploaded to TraceRoot are redacted too; datasets and
+   * scorer definitions are not.
    */
   redact?: Redact;
   /** OTel diagnostic log level. Defaults to 'error'. */

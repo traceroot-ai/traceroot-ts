@@ -63,6 +63,9 @@ const HELD_BACK_PREFIXES = [
   'ai.usage.',
 ];
 
+/** @internal — shared with eval uploads; well under the 30 s batch export timeout. */
+export const REDACT_TIMEOUT_MS = 5_000;
+
 /** @internal — reset warn-once state between tests. */
 export function _resetProcessorState(): void {
   _hasWarnedUnattributedDrop = false;
@@ -275,8 +278,21 @@ export class RedactingSpanExporter implements SpanExporter {
       this.inner.export(copies as ReadableSpan[], resultCallback);
       return;
     }
-    const exported: Promise<void> = Promise.all(copies)
+    let late = 0;
+    const exported: Promise<void> = Promise.all(
+      copies.map((copy, i) =>
+        within(copy, REDACT_TIMEOUT_MS, () => {
+          late += 1;
+          return redactedCopy(blankAll, spans[i]) as ReadableSpan;
+        }),
+      ),
+    )
       .then((redacted) => {
+        if (late > 0) {
+          diag.warn(
+            `[TraceRoot] redact did not settle within ${REDACT_TIMEOUT_MS}ms for ${late} of ${spans.length} spans; blanking their attribute values`,
+          );
+        }
         try {
           this.inner.export(redacted, resultCallback);
         } catch (error) {
@@ -296,6 +312,16 @@ export class RedactingSpanExporter implements SpanExporter {
     await Promise.all(this.pending);
     await this.inner.shutdown();
   }
+}
+
+/** @internal — `value` once it settles, or `fallback()` if that takes longer than `ms`. */
+export function within<T>(value: T | Promise<T>, ms: number, fallback: () => T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback()), ms);
+    timer.unref();
+  });
+  return Promise.race([value, timeout]).finally(() => clearTimeout(timer));
 }
 
 function shouldExport(predicate: (span: ReadableSpan) => boolean, span: ReadableSpan): boolean {
@@ -347,6 +373,9 @@ export function redactAttributes(
     ? Promise.resolve(redacted).then(checked, threw)
     : checked(redacted);
 }
+
+// Stands in for a redact that missed the deadline; redactAttributes still holds back bookkeeping.
+const blankAll: Redact = (attributes) => blanked(attributes, {});
 
 // Metadata is dropped rather than blanked: ingest expects a JSON object there.
 function blanked(theirs: Attributes, ours: Attributes): Attributes {
