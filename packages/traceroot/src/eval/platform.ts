@@ -150,23 +150,30 @@ function asText(value: unknown): string | null {
  *  Only those text fields go in, as one flat object: ids, status and scores are never handed to
  *  redact, so a failing one (which blanks every string) cannot break routing. A field redact
  *  drops or turns into a non-string is sent as null. */
-function redactText(fields: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+async function redactText(
+  fields: Record<string, unknown>,
+  keys: string[],
+): Promise<Record<string, unknown>> {
   const redact = TraceRoot._redact;
   const text = Object.fromEntries(
     keys.filter((k) => typeof fields[k] === 'string').map((k) => [k, fields[k] as string]),
   );
   if (redact === undefined) return {};
-  const redacted = redactAttributes(redact, text);
+  const redacted = await redactAttributes(redact, text);
   return Object.fromEntries(
     Object.keys(text).map((k) => [k, typeof redacted[k] === 'string' ? redacted[k] : null]),
   );
 }
 
 /** Run metadata goes to redact as JSON text; whatever no longer parses to an object is withheld. */
-function redactMetadata(metadata: Record<string, unknown>): Record<string, unknown> | null {
+async function redactMetadata(
+  metadata: Record<string, unknown>,
+): Promise<Record<string, unknown> | null> {
   if (TraceRoot._redact === undefined) return metadata;
   try {
-    const { metadata: text } = redactText({ metadata: JSON.stringify(metadata) }, ['metadata']);
+    const { metadata: text } = await redactText({ metadata: JSON.stringify(metadata) }, [
+      'metadata',
+    ]);
     const parsed: unknown = JSON.parse(text as string);
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
@@ -588,7 +595,7 @@ export class PlatformTransport implements EvalTransport {
     // field: metadata is whatever the caller put there (a whole prompt, a config dump), and over
     // the cap the REGISTRATION 400s — the run then never starts at all.
     const sentMetadata =
-      metadata && Object.keys(metadata).length > 0 ? redactMetadata(metadata) : null;
+      metadata && Object.keys(metadata).length > 0 ? await redactMetadata(metadata) : null;
     if (sentMetadata) body.metadata = clampMetadata(sentMetadata, METADATA_MAX);
     const resp = await this.requestWithRetry('POST', '/api/v1/public/evaluation-runs', body);
     this.runId = resp.evaluation_run_id;
@@ -620,21 +627,26 @@ export class PlatformTransport implements EvalTransport {
       status,
       task_error: item.error,
       duration_ms: durationMs(item.durationMs),
-      scores: this.scoresPayload(item).map((score) => {
-        const sent = { ...score, ...redactText(score, ['explanation', 'error', 'string_value']) };
-        clampFields(sent, {
-          explanation: EXPLANATION_MAX,
-          error: SCORE_ERROR_MAX,
-          string_value: STRING_VALUE_MAX,
-        });
-        return sent;
-      }),
+      scores: await Promise.all(
+        this.scoresPayload(item).map(async (score) => {
+          const sent = {
+            ...score,
+            ...(await redactText(score, ['explanation', 'error', 'string_value'])),
+          };
+          clampFields(sent, {
+            explanation: EXPLANATION_MAX,
+            error: SCORE_ERROR_MAX,
+            string_value: STRING_VALUE_MAX,
+          });
+          return sent;
+        }),
+      ),
     };
     // Redact the full text, THEN clamp: redact never sees a cut value (PII straddling the cut
     // would slip through), and whatever redact returns still has to fit the contract limits.
     Object.assign(
       body,
-      redactText(body, ['input', 'expected_output', 'candidate_output', 'task_error']),
+      await redactText(body, ['input', 'expected_output', 'candidate_output', 'task_error']),
     );
     body.input ??= ''; // the one required string on the wire: a dropped input is sent empty
     clampFields(body, {

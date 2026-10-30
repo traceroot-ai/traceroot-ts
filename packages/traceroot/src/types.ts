@@ -4,7 +4,7 @@ import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import type { PiInstrumentationConfig } from './pi';
 
 /** Rewrites span attributes before export; see `InitializeOptions.redact`. */
-export type Redact = (attributes: Attributes) => Attributes;
+export type Redact = (attributes: Attributes) => Attributes | Promise<Attributes>;
 
 export type SpanType = 'span' | 'agent' | 'tool' | 'llm' | 'evaluation' | 'task' | 'scorer';
 
@@ -139,8 +139,10 @@ export interface InitializeOptions {
    * are not passed in; recorded input, output, metadata and prompt are. A
    * function that throws or returns a non-object (e.g. null or an array) fails
    * closed: span and trace metadata are dropped, and every other value except
-   * numbers and booleans becomes '[redaction failed]'. Eval results uploaded
-   * to TraceRoot are redacted too; datasets and scorer definitions are not.
+   * numbers and booleans becomes '[redaction failed]'. It may be async (e.g.
+   * to call a detection service) and runs when spans are exported; a promise
+   * that rejects fails closed the same way. Eval results uploaded to
+   * TraceRoot are redacted too; datasets and scorer definitions are not.
    */
   redact?: Redact;
   /** OTel diagnostic log level. Defaults to 'error'. */

@@ -7,7 +7,7 @@ import {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
-import { context, propagation, trace, Attributes, TraceFlags } from '@opentelemetry/api';
+import { context, propagation, trace, SpanStatusCode, TraceFlags } from '@opentelemetry/api';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -16,6 +16,7 @@ import {
   SDK_VERSION,
   REDACTABLE_KEYS,
 } from '../src/processor';
+import type { Redact } from '../src/types';
 
 describe('TraceRootSpanProcessor', () => {
   let exporter: InMemorySpanExporter;
@@ -395,7 +396,7 @@ describe('TraceRootSpanProcessor redact', () => {
   let exporter: InMemorySpanExporter;
   let provider: NodeTracerProvider;
 
-  function register(redact?: (attributes: Attributes) => Attributes): void {
+  function register(redact?: Redact): void {
     exporter = new InMemorySpanExporter();
     provider = new NodeTracerProvider();
     // Wired the way initialize() does: redact wraps TraceRoot's exporter.
@@ -589,6 +590,103 @@ describe('TraceRootSpanProcessor redact', () => {
       span.end();
     });
     assert.equal(exporter.getFinishedSpans()[0].attributes['traceroot.eval.score_value'], 0.75);
+  });
+
+  it('an async redact runs after the span ends and forceFlush waits for it', async () => {
+    register(async (attrs) => {
+      await new Promise((resolve) => setImmediate(resolve));
+      return { ...attrs, 'user.email': '[email]' };
+    });
+    trace.getTracer('test').startActiveSpan('async', (span) => {
+      span.setAttribute('user.email', 'a@b.com');
+      span.end();
+    });
+    assert.equal(exporter.getFinishedSpans().length, 0);
+    await provider.forceFlush();
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.attributes['user.email'], '[email]');
+    assert.equal(span.attributes['traceroot.redacted'], true);
+  });
+
+  it('a rejecting async redact blanks values and does not crash', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    try {
+      register(async () => {
+        throw new Error('redact bug for a@b.com');
+      });
+      trace.getTracer('test').startActiveSpan('rejects', (span) => {
+        span.setAttributes({ 'user.email': 'a@b.com', 'llm.tokens': 42 });
+        span.end();
+      });
+      await provider.forceFlush();
+      await new Promise((resolve) => setImmediate(resolve));
+      const [span] = exporter.getFinishedSpans();
+      assert.equal(span.attributes['user.email'], '[redaction failed]');
+      assert.equal(span.attributes['llm.tokens'], 42);
+      assert.ok(!JSON.stringify(span.attributes).includes('a@b.com'));
+      assert.deepEqual(rejections, []);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  for (const [name, redact] of [
+    ['returns null', () => null],
+    ['returns an array', () => []],
+    ['resolves to null', async () => null],
+  ] as [string, unknown][]) {
+    it(`a redact that ${name} blanks values`, async () => {
+      register(redact as Redact);
+      trace.getTracer('test').startActiveSpan('non-object', (span) => {
+        span.setAttribute('user.email', 'a@b.com');
+        span.end();
+      });
+      await provider.forceFlush();
+      const [span] = exporter.getFinishedSpans();
+      assert.equal(span.attributes['user.email'], '[redaction failed]');
+      assert.ok(!JSON.stringify(span.attributes).includes('a@b.com'));
+    });
+  }
+
+  it('shutdown waits for a pending async redact before the exporter shuts down', async () => {
+    register(async (attrs) => attrs);
+    const calls: string[] = [];
+    const exportTo = exporter.export.bind(exporter);
+    const shutdown = exporter.shutdown.bind(exporter);
+    exporter.export = (spans, done) => {
+      calls.push(...spans.map((span) => `export ${span.name}`));
+      exportTo(spans, done);
+    };
+    exporter.shutdown = () => {
+      calls.push('shutdown');
+      return shutdown();
+    };
+    trace.getTracer('test').startActiveSpan('pending', (span) => span.end());
+    await provider.shutdown();
+    assert.deepEqual(calls, ['export pending', 'shutdown']);
+  });
+
+  it('an async redact covers event attributes and the status message', async () => {
+    register(async (attrs) =>
+      Object.fromEntries(
+        Object.entries(attrs).map(([k, v]) => [
+          k,
+          typeof v === 'string' ? v.replaceAll('a@b.com', '[email]') : v,
+        ]),
+      ),
+    );
+    trace.getTracer('test').startActiveSpan('event', (span) => {
+      span.addEvent('note', { 'note.text': 'mail a@b.com' });
+      span.setStatus({ code: SpanStatusCode.ERROR, message: 'failed for a@b.com' });
+      span.end();
+    });
+    await provider.forceFlush();
+    const [span] = exporter.getFinishedSpans();
+    assert.equal(span.events[0].attributes?.['note.text'], 'mail [email]');
+    assert.equal(span.status.message, 'failed for [email]');
+    assert.ok(!JSON.stringify([span.attributes, span.events, span.status]).includes('a@b.com'));
   });
 
   it('classifies every traceroot.* key the SDK writes as content or bookkeeping', () => {

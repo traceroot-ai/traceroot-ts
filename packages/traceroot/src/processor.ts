@@ -1,6 +1,6 @@
 // src/processor.ts
 import { diag, trace as otelTrace, Attributes, Context, Span } from '@opentelemetry/api';
-import { ExportResult } from '@opentelemetry/core';
+import { ExportResult, ExportResultCode } from '@opentelemetry/core';
 import { ReadableSpan, SpanExporter, SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import {
   LLM_MODEL_PARAMETERS,
@@ -262,24 +262,39 @@ export class TraceRootSpanProcessor implements SpanProcessor {
  * seen every span of the trace in its original order.
  */
 export class RedactingSpanExporter implements SpanExporter {
+  private readonly pending = new Set<Promise<void>>();
+
   constructor(
     private readonly inner: SpanExporter,
     private readonly redact: Redact,
   ) {}
 
   export(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
-    this.inner.export(
-      spans.map((span) => redactedCopy(this.redact, span)),
-      resultCallback,
-    );
+    const copies = spans.map((span) => redactedCopy(this.redact, span));
+    if (!copies.some((copy) => copy instanceof Promise)) {
+      this.inner.export(copies as ReadableSpan[], resultCallback);
+      return;
+    }
+    const exported: Promise<void> = Promise.all(copies)
+      .then((redacted) => {
+        try {
+          this.inner.export(redacted, resultCallback);
+        } catch (error) {
+          resultCallback({ code: ExportResultCode.FAILED, error: error as Error });
+        }
+      })
+      .finally(() => this.pending.delete(exported));
+    this.pending.add(exported);
   }
 
   async forceFlush(): Promise<void> {
+    await Promise.all(this.pending);
     await this.inner.forceFlush?.();
   }
 
-  shutdown(): Promise<void> {
-    return this.inner.shutdown();
+  async shutdown(): Promise<void> {
+    await Promise.all(this.pending);
+    await this.inner.shutdown();
   }
 }
 
@@ -297,29 +312,40 @@ function isBookkeeping(key: string): boolean {
   return HELD_BACK_KEYS.has(key) || HELD_BACK_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
-/** @internal — the fail-closed rewrite, shared with eval result uploads. */
-export function redactAttributes(redact: Redact, attributes: Attributes): Attributes {
+/** @internal — the fail-closed rewrite, shared with eval result uploads. Never rejects. */
+export function redactAttributes(
+  redact: Redact,
+  attributes: Attributes,
+): Attributes | Promise<Attributes> {
   const ours: Attributes = {};
   const theirs: Attributes = {};
   for (const [key, value] of Object.entries(attributes)) {
     // Copy arrays so a redact that mutates one in place leaves the original span intact.
     (isBookkeeping(key) ? ours : theirs)[key] = Array.isArray(value) ? value.slice() : value;
   }
-  let redacted: unknown;
-  try {
-    redacted = redact(theirs);
-  } catch (err) {
+  const threw = (err: unknown): Attributes => {
     // Name only the error type: its message may quote the data being redacted.
     diag.warn(
       `[TraceRoot] redact threw ${err instanceof Error ? err.name : typeof err}; blanking attribute values`,
     );
     return blanked(theirs, ours);
+  };
+  const checked = (redacted: unknown): Attributes => {
+    if (typeof redacted !== 'object' || redacted === null || Array.isArray(redacted)) {
+      diag.warn('[TraceRoot] redact returned a non-object; blanking attribute values');
+      return blanked(theirs, ours);
+    }
+    return { ...redacted, ...ours };
+  };
+  let redacted: unknown;
+  try {
+    redacted = redact(theirs);
+  } catch (err) {
+    return threw(err);
   }
-  if (typeof redacted !== 'object' || redacted === null || Array.isArray(redacted)) {
-    diag.warn('[TraceRoot] redact returned a non-object; blanking attribute values');
-    return blanked(theirs, ours);
-  }
-  return { ...redacted, ...ours };
+  return typeof (redacted as PromiseLike<unknown> | null)?.then === 'function'
+    ? Promise.resolve(redacted).then(checked, threw)
+    : checked(redacted);
 }
 
 // Metadata is dropped rather than blanked: ingest expects a JSON object there.
@@ -333,24 +359,33 @@ function blanked(theirs: Attributes, ours: Attributes): Attributes {
   return { ...Object.fromEntries(kept), ...ours };
 }
 
-function redactedCopy(redact: Redact, span: ReadableSpan): ReadableSpan {
+function redactedCopy(redact: Redact, span: ReadableSpan): ReadableSpan | Promise<ReadableSpan> {
   const { message } = span.status;
-  const { 'otel.status_description': redactedMessage, ...attributes } = redactAttributes(
+  const attributes = redactAttributes(
     redact,
     message ? { ...span.attributes, 'otel.status_description': message } : span.attributes,
   );
-  // Object.create, not a spread: a spread loses spanContext() and the prototype getters.
-  // Only TraceRoot's exporter receives this copy; other processors keep the original span.
-  return Object.assign(Object.create(span), {
-    attributes: { ...attributes, 'traceroot.redacted': true },
-    events: span.events.map((event) =>
-      event.attributes
-        ? { ...event, attributes: redactAttributes(redact, event.attributes) }
-        : event,
-    ),
-    status: {
-      ...span.status,
-      message: typeof redactedMessage === 'string' ? redactedMessage : undefined,
-    },
-  }) as ReadableSpan;
+  const eventAttributes = span.events.map(
+    (event) => event.attributes && redactAttributes(redact, event.attributes),
+  );
+  const copy = (
+    { 'otel.status_description': redactedMessage, ...rest }: Attributes,
+    redactedEvents: (Attributes | undefined)[],
+  ): ReadableSpan =>
+    // Object.create, not a spread: a spread loses spanContext() and the prototype getters.
+    // Only TraceRoot's exporter receives this copy; other processors keep the original span.
+    Object.assign(Object.create(span), {
+      attributes: { ...rest, 'traceroot.redacted': true },
+      events: span.events.map((event, i) =>
+        event.attributes ? { ...event, attributes: redactedEvents[i] } : event,
+      ),
+      status: {
+        ...span.status,
+        message: typeof redactedMessage === 'string' ? redactedMessage : undefined,
+      },
+    }) as ReadableSpan;
+  if (attributes instanceof Promise || eventAttributes.some((a) => a instanceof Promise)) {
+    return Promise.all([attributes, Promise.all(eventAttributes)]).then(([a, e]) => copy(a, e));
+  }
+  return copy(attributes, eventAttributes as (Attributes | undefined)[]);
 }
