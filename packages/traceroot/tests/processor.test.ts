@@ -7,6 +7,7 @@ import {
   SpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { ExportResult, ExportResultCode } from '@opentelemetry/core';
 import {
   context,
   diag,
@@ -676,6 +677,21 @@ describe('TraceRootSpanProcessor redact', () => {
     trace.getTracer('test').startActiveSpan('pending', (span) => span.end());
     await provider.shutdown();
     assert.deepEqual(calls, ['export pending', 'shutdown']);
+  });
+
+  it('an inner export that throws after an async redact reports a failed export', async () => {
+    register();
+    trace.getTracer('test').startActiveSpan('unserializable', (span) => span.end());
+    const failing = new InMemorySpanExporter();
+    const error = new Error('cannot serialize');
+    failing.export = () => {
+      throw error;
+    };
+    const redacting = new RedactingSpanExporter(failing, async (attrs) => attrs);
+    const results: ExportResult[] = [];
+    redacting.export(exporter.getFinishedSpans(), (result) => results.push(result));
+    await redacting.forceFlush();
+    assert.deepEqual(results, [{ code: ExportResultCode.FAILED, error }]);
   });
 
   it('an async redact covers event attributes and the status message', async () => {
