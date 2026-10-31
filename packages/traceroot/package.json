@@ -69,6 +69,7 @@
     "@types/node": "^20.0.0",
     "anthropic": "^0.0.0",
     "anthropic-legacy": "npm:@anthropic-ai/sdk@0.91.1",
+    "anthropic-minimum": "npm:@anthropic-ai/sdk@0.20.0",
     "anthropic-native": "npm:@anthropic-ai/sdk@0.134.0",
     "esbuild": "^0.28.2",
     "eslint": "^9.0.0",
