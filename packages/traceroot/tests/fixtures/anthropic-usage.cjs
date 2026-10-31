@@ -35,11 +35,13 @@ if (fallback) {
 }
 (async () => {
   const pkg =
-    version === 'legacy'
-      ? 'anthropic-legacy'
-      : version === 'native-first'
-        ? 'anthropic-native'
-        : '@anthropic-ai/sdk';
+    version === 'minimum'
+      ? 'anthropic-minimum'
+      : version === 'legacy'
+        ? 'anthropic-legacy'
+        : version === 'native-first'
+          ? 'anthropic-native'
+          : '@anthropic-ai/sdk';
   const { TraceRoot } = require('../../src/traceroot.ts');
   if (format === 'auto')
     TraceRoot.initialize({
@@ -235,7 +237,7 @@ if (fallback) {
   assert.equal(input, expected ? (mode === 'nested' ? 2512 : 1256) : 0);
   assert.equal(output, expected ? (mode === 'nested' ? 212 : 106) : 0);
   if (style === 'error-stream') assert.equal(captured.filter((s) => s.status.code === 2).length, 2);
-  if (version !== 'legacy' && mode !== 'oi-only' && expected)
+  if (nativeTracerBefore && mode !== 'oi-only' && expected)
     for (const header of propagated) {
       assert.ok(
         header && spans.some((s) => header.includes(s.spanContext().spanId)),
