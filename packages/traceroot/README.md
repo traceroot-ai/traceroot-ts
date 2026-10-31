@@ -11,6 +11,12 @@
 
 Please see the [TypeScript SDK Docs](https://traceroot.ai/docs/tracing/get-started) for details.
 
+When Anthropic's native tracing is enabled (SDK 0.134.0 and newer), the Anthropic
+integration keeps one recording owner per Messages response. This includes clients
+created before initialization and streaming helpers. Native tracing remains available
+for calls OpenInference does not record. Compatibility tests cover Anthropic 0.91.1,
+0.134.0, and 1.3.0 with CommonJS and explicit ES-module instrumentation.
+
 <!-- Links -->
 
 [discord-image]: https://img.shields.io/discord/1395844148568920114?logo=discord&labelColor=%235462eb&logoColor=%23f5f5f5&color=%235462eb

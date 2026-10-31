@@ -6,6 +6,7 @@ import { wireOpenAIAgentsProcessor } from './openai-agents';
 import { wireClaudeAgentSDKInstrumentation } from './claude-agent-sdk';
 import { wirePiCodingAgentInstrumentation } from './pi';
 import { instrumentPiAgentCore } from './pi-agent-core';
+import { withAnthropicOwnership } from './anthropic';
 
 type InstrumentationWithManualPatch = Instrumentation & {
   manuallyInstrument(moduleRef: unknown): void;
@@ -69,7 +70,9 @@ function loadInstrumentation(pkg: string, exportName: string): InstrumentationCt
     const mod = load();
     const ctor = mod[exportName];
     if (typeof ctor !== 'function') return null;
-    return ctor as InstrumentationCtor;
+    return pkg === '@arizeai/openinference-instrumentation-anthropic'
+      ? withAnthropicOwnership(ctor as Parameters<typeof withAnthropicOwnership>[0])
+      : (ctor as InstrumentationCtor);
   } catch {
     return null;
   }
