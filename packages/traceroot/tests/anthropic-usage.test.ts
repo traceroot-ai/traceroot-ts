@@ -53,6 +53,15 @@ describe('Anthropic usage has one recording owner per response', () => {
         run('both', style, false, format, 'minimum'));
     }
   }
+  for (const mode of ['disabled', 'reenabled', 'fallback-owned']) {
+    for (const style of ['create', 'create-stream', 'stream']) {
+      for (const beta of [false, true]) {
+        for (const format of ['cjs', 'esm']) {
+          it(`${mode}: ${style}, beta=${beta}, ${format}`, () => run(mode, style, beta, format));
+        }
+      }
+    }
+  }
   for (const mode of ['both', 'native-only', 'oi-only', 'fallback']) {
     for (const style of ['create', 'create-stream', 'stream']) {
       for (const beta of [false, true]) {

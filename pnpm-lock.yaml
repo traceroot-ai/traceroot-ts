@@ -106,8 +106,8 @@ importers:
         specifier: ^2.0.5
         version: 2.0.5
       '@arizeai/openinference-instrumentation-anthropic':
-        specifier: ^1.0.0
-        version: 1.0.0
+        specifier: 1.0.1
+        version: 1.0.1
       '@arizeai/openinference-instrumentation-bedrock':
         specifier: ^0.4.8
         version: 0.4.8(@aws-sdk/client-bedrock-runtime@3.1048.0)
@@ -315,8 +315,8 @@ packages:
       '@opentelemetry/api': '>=1.9.0'
       '@opentelemetry/semantic-conventions': '>=1.37.0'
 
-  '@arizeai/openinference-instrumentation-anthropic@1.0.0':
-    resolution: {integrity: sha512-ck40HrfPfL38vg8+km9TtrzDjSqmWyyXi2El2hpFzS7c2OH1VB8/Uku8IoLVIgImVKL34gp7F5KDGU0RB2ETSw==}
+  '@arizeai/openinference-instrumentation-anthropic@1.0.1':
+    resolution: {integrity: sha512-mE9vrv4BRHyN9OajAYgojyzugBtnHws4rtCLe/4syFn1ZSJY8bk+gQ40FK3R/11tRW8fFATMggKDmLMUcjzACQ==}
 
   '@arizeai/openinference-instrumentation-bedrock@0.4.8':
     resolution: {integrity: sha512-WRF6oVfYDVEnqD0TgduFUAc+G9ya7qxuUiPTpfWphOIg/WZl8CAtNnadzT12idf7d5Nprc8JSuNU+sDHDD3WKg==}
@@ -2909,7 +2909,7 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/semantic-conventions': 1.40.0
 
-  '@arizeai/openinference-instrumentation-anthropic@1.0.0':
+  '@arizeai/openinference-instrumentation-anthropic@1.0.1':
     dependencies:
       '@arizeai/openinference-core': 2.8.1
       '@arizeai/openinference-semantic-conventions': 2.15.0

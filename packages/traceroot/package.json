@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@arizeai/openinference-core": "^2.0.5",
-    "@arizeai/openinference-instrumentation-anthropic": "^1.0.0",
+    "@arizeai/openinference-instrumentation-anthropic": "1.0.1",
     "@arizeai/openinference-instrumentation-bedrock": "^0.4.8",
     "@arizeai/openinference-instrumentation-claude-agent-sdk": "^0.2.0",
     "@arizeai/openinference-instrumentation-langchain": "^4.0.6",

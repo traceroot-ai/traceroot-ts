@@ -23,7 +23,7 @@ const [
   version = 'modern',
   privacy = '0',
 ] = process.argv.slice(2);
-const fallback = mode === 'fallback' || mode === 'throwing';
+const fallback = mode.startsWith('fallback') || mode === 'throwing';
 if (fallback) {
   const off = new NodeTracerProvider({ sampler: new AlwaysOffSampler() });
   const getTracer = NodeTracerProvider.prototype.getTracer;
@@ -154,6 +154,7 @@ if (fallback) {
   const resource = beta === '1' ? client.beta.messages : client.messages;
   const nativeCreate = resource.create.bind(resource);
   const nativeTracerBefore = client._tracer;
+  const lifecycle = mode === 'disabled' || mode === 'reenabled';
   if (format !== 'auto')
     TraceRoot.initialize({
       apiKey: 'offline-placeholder',
@@ -161,33 +162,75 @@ if (fallback) {
       gitRepo: 'offline/mock',
       gitRef: 'offline',
       disableBatch: true,
-      instrumentModules: mode === 'native-only' ? {} : { anthropic: module },
+      instrumentModules: mode === 'native-only' || lifecycle ? {} : { anthropic: module },
     });
+  if (lifecycle) {
+    const {
+      AnthropicInstrumentation,
+    } = require('@arizeai/openinference-instrumentation-anthropic');
+    const { withAnthropicFallback } = require('../../src/anthropic.ts');
+    const instrumentor = new (withAnthropicFallback(AnthropicInstrumentation))();
+    const prototypes = [Anthropic.Messages?.prototype, Anthropic.Beta?.Messages?.prototype].filter(
+      Boolean,
+    );
+    const originals = prototypes.map((prototype) =>
+      Object.fromEntries(
+        ['create', 'countTokens', 'stream'].map((name) => [name, prototype[name]]),
+      ),
+    );
+    instrumentor.manuallyInstrument(module);
+    instrumentor.disable();
+    for (const [index, prototype] of prototypes.entries())
+      for (const [name, original] of Object.entries(originals[index]))
+        assert.equal(prototype[name], original, `${name} must be restored after disable`);
+    if (mode === 'reenabled') {
+      instrumentor.enable();
+      instrumentor.manuallyInstrument(module);
+    }
+  }
   const run = async () => {
     const args = {
       model: 'claude-sonnet-4-6',
       max_tokens: 100,
       messages: [{ role: 'user', content: 'private-request' }],
     };
+    const owned =
+      mode === 'fallback-owned'
+        ? {
+            __span: {
+              span: trace.getTracer('offline.caller').startSpan('caller-owned'),
+              name: 'anthropic.messages.create',
+              startTime: Date.now(),
+            },
+          }
+        : undefined;
     if (style === 'count') assert.equal((await resource.countTokens(args)).input_tokens, 598);
     else if (style === 'error-stream')
       await assert.rejects(resource.stream(args).finalMessage(), /mock rejected request/);
     else if (style === 'create')
-      assert.equal((await resource.create(args)).content[0].text, 'private-response');
+      assert.equal((await resource.create(args, owned)).content[0].text, 'private-response');
     else if (style === 'stream')
       assert.equal(
-        (await resource.stream(args).finalMessage()).content[0].text,
+        (await resource.stream(args, owned).finalMessage()).content[0].text,
         'private-response',
       );
     else {
-      const stream = await resource.create({ ...args, stream: true });
+      const stream = await resource.create({ ...args, stream: true }, owned);
       const received = [];
       for await (const event of stream) received.push(event.type);
       assert.equal(received.at(-1), 'message_stop');
     }
   };
+  let caller;
   await usingAttributes({ userId: 'offline-user', sessionId: 'offline-session' }, () =>
-    Promise.all([run(), run()]),
+    trace.getTracer('offline.caller').startActiveSpan('caller', async (span) => {
+      caller = span;
+      try {
+        await Promise.all([run(), run()]);
+      } finally {
+        span.end();
+      }
+    }),
   );
   await TraceRoot.flush();
   assert.equal(client._tracer, nativeTracerBefore, 'client tracing state must not be mutated');
@@ -236,6 +279,13 @@ if (fallback) {
   );
   assert.equal(input, expected ? (mode === 'nested' ? 2512 : 1256) : 0);
   assert.equal(output, expected ? (mode === 'nested' ? 212 : 106) : 0);
+  if (mode === 'fallback')
+    for (const span of spans) assert.equal(span.parentSpanId, caller.spanContext().spanId);
+  if (mode === 'disabled')
+    assert.ok(
+      spans.every((span) => span.instrumentationLibrary.name === 'com.anthropic.sdk.typescript'),
+    );
+  if (mode === 'fallback-owned') assert.ok(spans.every((span) => span.name === 'caller-owned'));
   if (style === 'error-stream') assert.equal(captured.filter((s) => s.status.code === 2).length, 2);
   if (nativeTracerBefore && mode !== 'oi-only' && expected)
     for (const header of propagated) {
