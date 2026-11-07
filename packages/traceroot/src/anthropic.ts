@@ -8,9 +8,10 @@ import {
   type SpanOptions,
   type TracerProvider,
 } from '@opentelemetry/api';
-import type {
-  Instrumentation,
-  InstrumentationModuleDefinition,
+import {
+  isWrapped,
+  type Instrumentation,
+  type InstrumentationModuleDefinition,
 } from '@opentelemetry/instrumentation';
 
 const fallbackParents = new WeakMap<SpanContext, Context>();
@@ -46,7 +47,13 @@ function fallbackProvider(provider: TracerProvider): TracerProvider {
 
 type Method = (this: unknown, ...args: unknown[]) => unknown;
 type Prototype = Record<string, Method>;
-const wrapped = new WeakMap<object, Map<string, { original: Method; replacement: Method }>>();
+const wrapped = new WeakMap<
+  object,
+  {
+    owner: object;
+    methods: Map<string, { original: Method; replacement: Method }>;
+  }
+>();
 
 function messagePrototypes(moduleRef: unknown): Prototype[] {
   const module = moduleRef as {
@@ -60,9 +67,14 @@ function messagePrototypes(moduleRef: unknown): Prototype[] {
   );
 }
 
-function wrapFallback(moduleRef: unknown): void {
-  for (const prototype of messagePrototypes(moduleRef)) {
-    if (wrapped.has(prototype)) continue;
+function wrapFallback(moduleRef: unknown, owner: object): boolean {
+  const prototypes = messagePrototypes(moduleRef);
+  if (
+    (moduleRef as { openInferencePatched?: boolean })?.openInferencePatched ||
+    prototypes.some((prototype) => wrapped.has(prototype) || isWrapped(prototype.create))
+  )
+    return false;
+  for (const prototype of prototypes) {
     const originals = new Map<string, { original: Method; replacement: Method }>();
     for (const name of ['create', 'countTokens']) {
       const original = prototype[name];
@@ -94,13 +106,16 @@ function wrapFallback(moduleRef: unknown): void {
       originals.set(name, { original, replacement });
       prototype[name] = replacement;
     }
-    wrapped.set(prototype, originals);
+    wrapped.set(prototype, { owner, methods: originals });
   }
+  return prototypes.length > 0;
 }
 
-function unwrapFallback(moduleRef: unknown): void {
+function unwrapFallback(moduleRef: unknown, owner: object): void {
   for (const prototype of messagePrototypes(moduleRef)) {
-    for (const [name, { original, replacement }] of wrapped.get(prototype) ?? []) {
+    const entry = wrapped.get(prototype);
+    if (entry?.owner !== owner) continue;
+    for (const [name, { original, replacement }] of entry.methods) {
       if (prototype[name] === replacement) prototype[name] = original;
     }
     wrapped.delete(prototype);
@@ -135,13 +150,13 @@ export function withAnthropicFallback(Base: Constructor): Constructor {
         const patch = definition.patch;
         const unpatch = definition.unpatch;
         definition.patch = (module, version) => {
-          wrapFallback(module);
-          this.remember(module);
+          if (wrapFallback(module, this)) this.remember(module);
           return patch?.(module, version) ?? module;
         };
         definition.unpatch = (module, version) => {
+          if (!modules.get(this)?.has(module)) return;
           unpatch?.(module, version);
-          unwrapFallback(module);
+          unwrapFallback(module, this);
           modules.get(this)?.delete(module);
         };
       }
@@ -149,14 +164,13 @@ export function withAnthropicFallback(Base: Constructor): Constructor {
     }
 
     manuallyInstrument(moduleRef: unknown): void {
-      wrapFallback(moduleRef);
-      this.remember(moduleRef);
+      if (wrapFallback(moduleRef, this)) this.remember(moduleRef);
       super.manuallyInstrument(moduleRef);
     }
 
     disable(): void {
       super.disable();
-      for (const module of modules.get(this) ?? []) unwrapFallback(module);
+      for (const module of modules.get(this) ?? []) unwrapFallback(module, this);
       modules.delete(this);
     }
   };

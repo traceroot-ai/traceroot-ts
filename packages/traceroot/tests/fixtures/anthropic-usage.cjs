@@ -154,7 +154,33 @@ if (fallback) {
   const resource = beta === '1' ? client.beta.messages : client.messages;
   const nativeCreate = resource.create.bind(resource);
   const nativeTracerBefore = client._tracer;
-  const lifecycle = mode === 'disabled' || mode === 'reenabled';
+  const lifecycle = ['disabled', 'reenabled', 'owner-first', 'owner-last'].includes(mode);
+  const prototypes = [Anthropic.Messages?.prototype, Anthropic.Beta?.Messages?.prototype].filter(
+    Boolean,
+  );
+  const snapshotMethods = () =>
+    prototypes.map((prototype) =>
+      Object.fromEntries(
+        ['create', 'countTokens', 'stream'].map((name) => [name, prototype[name]]),
+      ),
+    );
+  const assertMethods = (expected, message) => {
+    for (const [index, prototype] of prototypes.entries())
+      for (const [name, original] of Object.entries(expected[index]))
+        assert.equal(prototype[name], original, `${name}: ${message}`);
+  };
+  const originals = snapshotMethods();
+  let existing;
+  let existingMethods;
+  let activeInstrumentor;
+  if (mode === 'existing-oi') {
+    const {
+      AnthropicInstrumentation,
+    } = require('@arizeai/openinference-instrumentation-anthropic');
+    existing = new AnthropicInstrumentation();
+    existing.manuallyInstrument(module);
+    existingMethods = snapshotMethods();
+  }
   if (format !== 'auto')
     TraceRoot.initialize({
       apiKey: 'offline-placeholder',
@@ -162,30 +188,51 @@ if (fallback) {
       gitRepo: 'offline/mock',
       gitRef: 'offline',
       disableBatch: true,
-      instrumentModules: mode === 'native-only' || lifecycle ? {} : { anthropic: module },
+      instrumentModules:
+        format === 'auto-existing'
+          ? undefined
+          : mode === 'native-only' || lifecycle
+            ? {}
+            : { anthropic: module },
     });
+  if (format === 'auto-existing') require(pkg);
+  if (existing) {
+    assertMethods(existingMethods, 'TraceRoot must leave existing instrumentation untouched');
+    existing.disable();
+    assertMethods(originals, 'existing instrumentation must restore original methods');
+  }
   if (lifecycle) {
     const {
       AnthropicInstrumentation,
     } = require('@arizeai/openinference-instrumentation-anthropic');
     const { withAnthropicFallback } = require('../../src/anthropic.ts');
     const instrumentor = new (withAnthropicFallback(AnthropicInstrumentation))();
-    const prototypes = [Anthropic.Messages?.prototype, Anthropic.Beta?.Messages?.prototype].filter(
-      Boolean,
-    );
-    const originals = prototypes.map((prototype) =>
-      Object.fromEntries(
-        ['create', 'countTokens', 'stream'].map((name) => [name, prototype[name]]),
-      ),
-    );
     instrumentor.manuallyInstrument(module);
-    instrumentor.disable();
-    for (const [index, prototype] of prototypes.entries())
-      for (const [name, original] of Object.entries(originals[index]))
-        assert.equal(prototype[name], original, `${name} must be restored after disable`);
-    if (mode === 'reenabled') {
-      instrumentor.enable();
-      instrumentor.manuallyInstrument(module);
+    if (mode.startsWith('owner-')) {
+      const firstMethods = snapshotMethods();
+      const second = new (withAnthropicFallback(AnthropicInstrumentation))();
+      second.manuallyInstrument(module);
+      assertMethods(firstMethods, 'the second instance must not add wrappers');
+      if (mode === 'owner-last') {
+        second.disable();
+        assertMethods(firstMethods, 'disabling the second instance must preserve the owner');
+        instrumentor.disable();
+      } else {
+        instrumentor.disable();
+        second.disable();
+      }
+      assertMethods(originals, 'both disable orders must restore original methods');
+      second.enable();
+      second.manuallyInstrument(module);
+      activeInstrumentor = second;
+    } else {
+      instrumentor.disable();
+      assertMethods(originals, 'methods must be restored after disable');
+      if (mode === 'reenabled') {
+        instrumentor.enable();
+        instrumentor.manuallyInstrument(module);
+        activeInstrumentor = instrumentor;
+      }
     }
   }
   const run = async () => {
@@ -281,7 +328,7 @@ if (fallback) {
   assert.equal(output, expected ? (mode === 'nested' ? 212 : 106) : 0);
   if (mode === 'fallback')
     for (const span of spans) assert.equal(span.parentSpanId, caller.spanContext().spanId);
-  if (mode === 'disabled')
+  if (mode === 'disabled' || mode === 'existing-oi')
     assert.ok(
       spans.every((span) => span.instrumentationLibrary.name === 'com.anthropic.sdk.typescript'),
     );
@@ -300,7 +347,7 @@ if (fallback) {
       'HTTP span must remain a child of its usage owner',
     );
   }
-  if (mode === 'both' || mode === 'oi-only')
+  if (mode === 'both' || mode === 'oi-only' || mode === 'reenabled' || mode.startsWith('owner-'))
     for (const span of spans) {
       assert.equal(span.attributes['user.id'], 'offline-user');
       assert.equal(span.attributes['session.id'], 'offline-session');
@@ -313,6 +360,10 @@ if (fallback) {
         assert.ok(attrs.includes('private-response'), attrs);
       }
     }
+  if (activeInstrumentor) {
+    activeInstrumentor.disable();
+    assertMethods(originals, 'the new owner must clean up after the calls');
+  }
   console.log(
     JSON.stringify({
       requests,
