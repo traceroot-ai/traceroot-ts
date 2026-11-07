@@ -1,20 +1,11 @@
 import {
   context,
-  createContextKey,
-  INVALID_SPAN_CONTEXT,
   trace,
   TraceFlags,
-  type Attributes,
-  type AttributeValue,
   type Context,
-  type Exception,
-  type Link,
   type Span,
   type SpanContext,
   type SpanOptions,
-  type SpanStatus,
-  type TimeInput,
-  type Tracer,
   type TracerProvider,
 } from '@opentelemetry/api';
 import type {
@@ -22,96 +13,9 @@ import type {
   InstrumentationModuleDefinition,
 } from '@opentelemetry/instrumentation';
 
-interface RequestOwner {
-  parent: Context;
-  span?: Span;
-  deferred?: DeferredNativeSpan;
-}
-const REQUEST_OWNER = createContextKey('traceroot.anthropic.request-owner');
+const fallbackParents = new WeakMap<SpanContext, Context>();
 
-/** A stream helper starts native tracing just before entering instrumented create().
- * Delay that recording decision until OI has made its own sampling decision. Native
- * setup only needs isRecording/setAttribute in this synchronous interval. */
-class DeferredNativeSpan implements Span {
-  private delegate?: Span;
-  private pending: Array<(span: Span) => void> = [];
-
-  constructor(private readonly startNative: () => Span) {}
-
-  resolve(owner: Span): void {
-    if (this.delegate) return;
-    if (owner.isRecording() && owner.spanContext().traceFlags & TraceFlags.SAMPLED) {
-      // Native end/content/usage writes must not end or unmask OI's recording span.
-      this.delegate = trace.wrapSpanContext(owner.spanContext());
-      this.pending = [];
-    } else {
-      this.native();
-    }
-  }
-
-  private native(): Span {
-    if (!this.delegate) {
-      // This runs after Anthropic's original guardTracing() call returned.
-      // Preserve its guarantee that a telemetry failure cannot fail an API call.
-      try {
-        this.delegate = this.startNative();
-        for (const action of this.pending) action(this.delegate);
-      } catch {
-        try {
-          this.delegate?.end();
-        } catch {
-          /* best-effort telemetry cleanup */
-        }
-        this.delegate = trace.wrapSpanContext(INVALID_SPAN_CONTEXT);
-      } finally {
-        this.pending = [];
-      }
-    }
-    return this.delegate;
-  }
-
-  private apply(action: (span: Span) => void): this {
-    if (this.delegate) action(this.delegate);
-    else this.pending.push(action);
-    return this;
-  }
-
-  isRecording(): boolean {
-    return this.delegate?.isRecording() ?? true;
-  }
-  spanContext(): SpanContext {
-    return this.native().spanContext();
-  }
-  end(time?: TimeInput): void {
-    this.native().end(time);
-  }
-  setAttribute(key: string, value: AttributeValue): this {
-    return this.apply((span) => span.setAttribute(key, value));
-  }
-  setAttributes(attrs: Attributes): this {
-    return this.apply((span) => span.setAttributes(attrs));
-  }
-  addEvent(name: string, attrs?: Attributes | TimeInput, time?: TimeInput): this {
-    return this.apply((span) => span.addEvent(name, attrs, time));
-  }
-  setStatus(status: SpanStatus): this {
-    return this.apply((span) => span.setStatus(status));
-  }
-  updateName(name: string): this {
-    return this.apply((span) => span.updateName(name));
-  }
-  recordException(error: Exception, time?: TimeInput): void {
-    this.apply((span) => span.recordException(error, time));
-  }
-  addLink(link: Link): this {
-    return this.apply((span) => span.addLink(link));
-  }
-  addLinks(links: Link[]): this {
-    return this.apply((span) => span.addLinks(links));
-  }
-}
-
-function ownershipProvider(provider: TracerProvider): TracerProvider {
+function fallbackProvider(provider: TracerProvider): TracerProvider {
   return {
     getTracer(name, version, options) {
       const tracer = provider.getTracer(name, version, options);
@@ -120,12 +24,16 @@ function ownershipProvider(provider: TracerProvider): TracerProvider {
           if (key === 'startSpan') {
             return (spanName: string, opts?: SpanOptions, parent = context.active()) => {
               const span = target.startSpan(spanName, opts, parent);
-              const owner = parent.getValue(REQUEST_OWNER) as RequestOwner | undefined;
-              if (owner) {
-                owner.span = span;
-                owner.deferred?.resolve(span);
-              }
-              return span;
+              const spanContext = span.spanContext();
+              if (span.isRecording() && spanContext.traceFlags & TraceFlags.SAMPLED) return span;
+              fallbackParents.set(spanContext, parent);
+              return new Proxy(span, {
+                get(delegate, property) {
+                  if (property === 'spanContext') return () => spanContext;
+                  const value = Reflect.get(delegate, property, delegate);
+                  return typeof value === 'function' ? value.bind(delegate) : value;
+                },
+              });
             };
           }
           const value = Reflect.get(target, key, target);
@@ -136,54 +44,7 @@ function ownershipProvider(provider: TracerProvider): TracerProvider {
   };
 }
 
-type Resource = { _client?: object };
-
-/** Proxy only this invocation. Client options, cached clients and other requests
- * remain untouched, including their native tracer/provider and content settings. */
-function resourceForRequest(resource: Resource, defer: boolean): Resource {
-  const client = resource._client;
-  if (!client) return resource;
-  const clientProxy = new Proxy(client, {
-    get(target, key) {
-      const value = Reflect.get(target, key, target);
-      if (key === '_tracer' && value) {
-        const tracer = value as Tracer;
-        return new Proxy(tracer, {
-          get(native, property) {
-            if (property === 'startSpan') {
-              return (name: string, opts?: SpanOptions, parent = context.active()) => {
-                const owner = parent.getValue(REQUEST_OWNER) as RequestOwner | undefined;
-                const active = trace.getSpan(parent);
-                const owned = owner?.span;
-                if (
-                  owned?.isRecording() &&
-                  owned.spanContext().traceFlags & TraceFlags.SAMPLED &&
-                  active?.spanContext().spanId === owned.spanContext().spanId &&
-                  active.spanContext().traceId === owned.spanContext().traceId
-                ) {
-                  return trace.wrapSpanContext(owned.spanContext());
-                }
-                const start = () => native.startSpan(name, opts, owner?.parent ?? parent);
-                return defer ? new DeferredNativeSpan(start) : start();
-              };
-            }
-            const member = Reflect.get(native, property, native);
-            return typeof member === 'function' ? member.bind(native) : member;
-          },
-        });
-      }
-      // Native clients use private fields. Their methods/getters need the real receiver.
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  return new Proxy(resource, {
-    get(target, key) {
-      return key === '_client' ? clientProxy : Reflect.get(target, key, target);
-    },
-  });
-}
-
-type Method = (this: Resource, ...args: unknown[]) => unknown;
+type Method = (this: unknown, ...args: unknown[]) => unknown;
 type Prototype = Record<string, Method>;
 const wrapped = new WeakMap<object, Map<string, { original: Method; replacement: Method }>>();
 
@@ -199,23 +60,36 @@ function messagePrototypes(moduleRef: unknown): Prototype[] {
   );
 }
 
-function wrapMessages(moduleRef: unknown): void {
+function wrapFallback(moduleRef: unknown): void {
   for (const prototype of messagePrototypes(moduleRef)) {
     if (wrapped.has(prototype)) continue;
     const originals = new Map<string, { original: Method; replacement: Method }>();
-    for (const name of ['create', 'countTokens', 'stream']) {
+    for (const name of ['create', 'countTokens']) {
       const original = prototype[name];
       if (typeof original !== 'function') continue;
       const replacement: Method = function (...args) {
+        const active = trace.getActiveSpan();
+        const activeContext = active?.spanContext();
+        const parent = activeContext && fallbackParents.get(activeContext);
         const options = args[1] as { __span?: { span?: Span } } | undefined;
-        const deferred = options?.__span?.span;
-        const owner: RequestOwner = {
-          parent: context.active(),
-          deferred: deferred instanceof DeferredNativeSpan ? deferred : undefined,
-        };
-        return context.with(context.active().setValue(REQUEST_OWNER, owner), () =>
-          original.apply(resourceForRequest(this, name === 'stream'), args),
-        );
+        const callContext = options?.__span?.span?.spanContext();
+        if (
+          !parent ||
+          (options?.__span &&
+            (callContext?.traceId !== activeContext?.traceId ||
+              callContext?.spanId !== activeContext?.spanId))
+        ) {
+          return original.apply(this, args);
+        }
+        // Upstream 1.0.1 treats a sampled-out OI span as a usage owner. Let native
+        // tracing decide under the caller's context, preserving caller-owned spans.
+        const callArgs = [...args];
+        if (options?.__span) {
+          const nativeOptions = { ...options };
+          delete nativeOptions.__span;
+          callArgs[1] = nativeOptions;
+        }
+        return context.with(parent, () => original.apply(this, callArgs));
       };
       originals.set(name, { original, replacement });
       prototype[name] = replacement;
@@ -224,7 +98,7 @@ function wrapMessages(moduleRef: unknown): void {
   }
 }
 
-function unwrapMessages(moduleRef: unknown): void {
+function unwrapFallback(moduleRef: unknown): void {
   for (const prototype of messagePrototypes(moduleRef)) {
     for (const [name, { original, replacement }] of wrapped.get(prototype) ?? []) {
       if (prototype[name] === replacement) prototype[name] = original;
@@ -239,15 +113,20 @@ interface AnthropicInstrumentor extends Instrumentation {
 }
 type Constructor = new (options?: { tracerProvider?: TracerProvider }) => AnthropicInstrumentor;
 
-/** Decorate the optional OI instrumentor without importing Anthropic or OI eagerly. */
-export function withAnthropicOwnership(Base: Constructor): Constructor {
+export function withAnthropicFallback(Base: Constructor): Constructor {
+  const modules = new WeakMap<object, Set<unknown>>();
   return class extends Base {
     constructor() {
-      super({ tracerProvider: ownershipProvider(trace.getTracerProvider()) });
+      super({ tracerProvider: fallbackProvider(trace.getTracerProvider()) });
+    }
+
+    private remember(moduleRef: unknown): void {
+      if (!modules.has(this)) modules.set(this, new Set());
+      modules.get(this)?.add(moduleRef);
     }
 
     setTracerProvider(provider: TracerProvider): void {
-      super.setTracerProvider(ownershipProvider(provider));
+      super.setTracerProvider(fallbackProvider(provider));
     }
 
     init(): ReturnType<AnthropicInstrumentor['init']> {
@@ -256,21 +135,29 @@ export function withAnthropicOwnership(Base: Constructor): Constructor {
         const patch = definition.patch;
         const unpatch = definition.unpatch;
         definition.patch = (module, version) => {
-          const result = patch?.(module, version) ?? module;
-          wrapMessages(result);
-          return result;
+          wrapFallback(module);
+          this.remember(module);
+          return patch?.(module, version) ?? module;
         };
         definition.unpatch = (module, version) => {
-          unwrapMessages(module);
           unpatch?.(module, version);
+          unwrapFallback(module);
+          modules.get(this)?.delete(module);
         };
       }
       return definitions;
     }
 
     manuallyInstrument(moduleRef: unknown): void {
+      wrapFallback(moduleRef);
+      this.remember(moduleRef);
       super.manuallyInstrument(moduleRef);
-      wrapMessages(moduleRef);
+    }
+
+    disable(): void {
+      super.disable();
+      for (const module of modules.get(this) ?? []) unwrapFallback(module);
+      modules.delete(this);
     }
   };
 }
