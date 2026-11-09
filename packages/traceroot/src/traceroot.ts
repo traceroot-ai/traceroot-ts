@@ -9,6 +9,7 @@ import {
 } from '@opentelemetry/api';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import type { SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import {
   OpenInferenceBatchSpanProcessor,
   OpenInferenceSimpleSpanProcessor,
@@ -39,6 +40,7 @@ const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 let _isInitialized = false;
 let _tracingActive = false;
 let _provider: NodeTracerProvider | undefined;
+let _processor: TraceRootSpanProcessor | undefined;
 // Flushed after the provider: the batch processor's flush does not wait for an export in flight.
 let _redactingExporter: RedactingSpanExporter | undefined;
 // Resolved on initialize() so the offline-eval module can reach the same credentials
@@ -170,6 +172,21 @@ export class TraceRoot {
    */
   static isTracingActive(): boolean {
     return _isInitialized && _tracingActive;
+  }
+
+  /**
+   * A SpanProcessor that sends spans recorded elsewhere, and handed over already ended,
+   * through TraceRoot's own pipeline: exportSpan, redact, globalAttributes, environment and
+   * git context apply to them as to any other span. Built for Temporal's workflow spans:
+   *
+   *   sinks: { exporter: makeWorkflowExporter(TraceRoot.spanProcessor(), resource) }
+   *
+   * Safe to take before initialize() or with tracing disabled: spans that arrive while
+   * TraceRoot is not initialized are dropped. Its shutdown() is a no-op; TraceRoot.shutdown()
+   * owns the pipeline.
+   */
+  static spanProcessor(): SpanProcessor {
+    return _endedSpanProcessor;
   }
 
   static initialize(options: InitializeOptions = {}): void {
@@ -317,16 +334,15 @@ export class TraceRoot {
       target.internal ? { idGenerator: new ContextIdGenerator() } : {},
     );
     _redactingExporter = redactingExporter;
-    _provider.addSpanProcessor(
-      new TraceRootSpanProcessor(innerProcessor, {
-        environment,
-        gitRepo,
-        gitRef,
-        globalAttributes: options.globalAttributes,
-        dropSpansWithoutProjectId: shouldDropUnattributed(target.internal, options.internalExport),
-        exportSpan: options.exportSpan,
-      }),
-    );
+    _processor = new TraceRootSpanProcessor(innerProcessor, {
+      environment,
+      gitRepo,
+      gitRef,
+      globalAttributes: options.globalAttributes,
+      dropSpansWithoutProjectId: shouldDropUnattributed(target.internal, options.internalExport),
+      exportSpan: options.exportSpan,
+    });
+    _provider.addSpanProcessor(_processor);
     _provider.register();
 
     // register() calls trace.setGlobalTracerProvider() internally, which is a no-op
@@ -364,6 +380,7 @@ export class TraceRoot {
       propagation.disable();
       void _provider.shutdown().catch(() => {});
       _provider = undefined;
+      _processor = undefined;
       _redactingExporter = undefined;
       _tracingActive = false;
       throw err;
@@ -404,6 +421,7 @@ export class TraceRoot {
       _isInitialized = false;
       _tracingActive = false;
       _provider = undefined;
+      _processor = undefined;
       _redactingExporter = undefined;
       _exportTarget = undefined;
       _setInternalMode(false);
@@ -430,12 +448,21 @@ export class TraceRoot {
   }
 }
 
+// Resolves the live processor per span, so one handle survives initialize()/shutdown() cycles.
+const _endedSpanProcessor: SpanProcessor = {
+  onStart: () => {},
+  onEnd: (span) => _processor?.onEndedSpan(span),
+  forceFlush: () => TraceRoot.flush(),
+  shutdown: () => Promise.resolve(),
+};
+
 /** @internal */
 export function _resetForTesting(): void {
   _isInitialized = false;
   _redact = undefined;
   _tracingActive = false;
   _provider = undefined;
+  _processor = undefined;
   _redactingExporter = undefined;
   _exportTarget = undefined;
   _setInternalMode(false);
