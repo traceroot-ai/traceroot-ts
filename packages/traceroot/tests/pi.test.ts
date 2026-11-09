@@ -130,16 +130,51 @@ describe('pi spans and config boundary coverage', () => {
     closeLlmSpan(span, message, false);
 
     const a = attrs(spans[0]!);
-    assert.equal(a['gen_ai.usage.input_tokens'], 5);
+    // Input is gross of cache: 5 uncached + 11 read + 13 written.
+    assert.equal(a['gen_ai.usage.input_tokens'], 29);
     assert.equal(a['gen_ai.usage.output_tokens'], 7);
     assert.equal(a['gen_ai.usage.cache_read_input_tokens'], 11);
     assert.equal(a['gen_ai.usage.cache_creation_input_tokens'], 13);
     // OpenInference llm.* dual-write of the same numbers; total is pi's own totalTokens.
-    assert.equal(a['llm.token_count.prompt'], 5);
+    assert.equal(a['llm.token_count.prompt'], 29);
     assert.equal(a['llm.token_count.completion'], 7);
     assert.equal(a['llm.token_count.total'], 36);
     assert.equal(a['llm.token_count.prompt_details.cache_read'], 11);
     assert.equal(a['llm.token_count.prompt_details.cache_write'], 13);
+  });
+
+  it('closeLlmSpan reports input tokens gross of cache, because pi reports usage.input net', () => {
+    // pi's usage.input leaves out cacheRead and cacheWrite. The backend prices
+    // input - cache_read - cache_write as uncached input, so a net count floors
+    // that bucket to 0 and the uncached tokens are never charged.
+    const cases = [
+      { input: 12000, output: 800, cacheRead: 48000, cacheWrite: 0 },
+      { input: 3, output: 120, cacheRead: 3581, cacheWrite: 834 },
+      { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 },
+    ];
+    for (const usage of cases) {
+      const { tracer, spans } = makeTracer();
+      const message = assistantMessage({
+        usage: {
+          ...usage,
+          totalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      });
+      const span = openLlmSpan(tracer, ROOT_CONTEXT, message);
+      closeLlmSpan(span, message, false);
+
+      const a = attrs(spans[0]!);
+      const prompt = a['llm.token_count.prompt'] as number;
+      assert.equal(a['gen_ai.usage.input_tokens'], prompt);
+      // prompt + completion adds up to pi's own totalTokens...
+      assert.equal(
+        prompt + (a['llm.token_count.completion'] as number),
+        a['llm.token_count.total'],
+      );
+      // ...and taking the cache back out recovers pi's uncached input.
+      assert.equal(prompt - usage.cacheRead - usage.cacheWrite, usage.input);
+    }
   });
 
   it('closeLlmSpan updates the span name to responseModel when it differs from the request model', () => {
