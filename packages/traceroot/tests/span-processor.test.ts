@@ -111,6 +111,13 @@ describe('TraceRoot.spanProcessor()', () => {
     assert.equal(seen.length, 0);
   });
 
+  it('drops spans after _clearCredentials() (local-only eval runs)', () => {
+    init();
+    TraceRoot._clearCredentials();
+    TraceRoot.spanProcessor().onEnd(workflowSpan());
+    assert.equal(seen.length, 0);
+  });
+
   it('drops spans when tracing is disabled', () => {
     init({ enabled: false });
     TraceRoot.spanProcessor().onEnd(workflowSpan());

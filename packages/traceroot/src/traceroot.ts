@@ -184,6 +184,11 @@ export class TraceRoot {
    * Safe to take before initialize() or with tracing disabled: spans that arrive while
    * TraceRoot is not initialized are dropped. Its shutdown() is a no-op; TraceRoot.shutdown()
    * owns the pipeline.
+   *
+   * In internal export mode these spans carry no per-root project id (it lives in the
+   * in-process OTel context, which never reaches them), so they need a default
+   * internalExport.projectId or an X-Project-Id header, or they are dropped like any other
+   * unattributed span.
    */
   static spanProcessor(): SpanProcessor {
     return _endedSpanProcessor;
@@ -451,7 +456,10 @@ export class TraceRoot {
 // Resolves the live processor per span, so one handle survives initialize()/shutdown() cycles.
 const _endedSpanProcessor: SpanProcessor = {
   onStart: () => {},
-  onEnd: (span) => _processor?.onEndedSpan(span),
+  // Gated on _isInitialized too: _clearCredentials() clears it but keeps the provider.
+  onEnd: (span) => {
+    if (_isInitialized) _processor?.onEndedSpan(span);
+  },
   forceFlush: () => TraceRoot.flush(),
   shutdown: () => Promise.resolve(),
 };
