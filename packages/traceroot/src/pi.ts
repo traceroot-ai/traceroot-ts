@@ -280,6 +280,14 @@ function setAttr(
   span.setAttribute(key, value);
 }
 
+// Pi's usage.input leaves out cacheRead and cacheWrite. Report it gross, as
+// applyUsage does and as gen_ai.usage.input_tokens is defined, so the backend's
+// input - cache_read - cache_write gets the uncached count back.
+function grossInputTokens(usage: Usage | undefined): number | undefined {
+  if (usage?.input == null) return undefined;
+  return usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+}
+
 function endSpanSafe(span: Span | undefined): void {
   if (!span) return;
   try {
@@ -510,7 +518,8 @@ export function closeLlmSpan(
 ): void {
   span.updateName(message.responseModel || message.model || 'pi.llm');
   setAttr(span, GEN_AI_ATTRIBUTES.RESPONSE_MODEL, message.responseModel || message.model);
-  setAttr(span, GEN_AI_ATTRIBUTES.USAGE_INPUT_TOKENS, message.usage?.input);
+  const inputTokens = grossInputTokens(message.usage);
+  setAttr(span, GEN_AI_ATTRIBUTES.USAGE_INPUT_TOKENS, inputTokens);
   setAttr(span, GEN_AI_ATTRIBUTES.USAGE_OUTPUT_TOKENS, message.usage?.output);
   setAttr(span, GEN_AI_ATTRIBUTES.CACHE_READ_INPUT_TOKENS, message.usage?.cacheRead);
   setAttr(span, GEN_AI_ATTRIBUTES.CACHE_WRITE_INPUT_TOKENS, message.usage?.cacheWrite);
@@ -518,7 +527,7 @@ export function closeLlmSpan(
   // reports totalTokens directly, so llm.token_count.total uses it as-is rather
   // than recomputing prompt+completion.
   setAttr(span, OI_LLM_MODEL_NAME, message.responseModel || message.model);
-  setAttr(span, OI_LLM_TOKEN_COUNT_PROMPT, message.usage?.input);
+  setAttr(span, OI_LLM_TOKEN_COUNT_PROMPT, inputTokens);
   setAttr(span, OI_LLM_TOKEN_COUNT_COMPLETION, message.usage?.output);
   setAttr(span, OI_LLM_TOKEN_COUNT_TOTAL, message.usage?.totalTokens);
   setAttr(span, OI_LLM_TOKEN_COUNT_CACHE_READ, message.usage?.cacheRead);
