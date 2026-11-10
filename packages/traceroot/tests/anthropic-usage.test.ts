@@ -40,11 +40,23 @@ function run(
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(
     JSON.parse(result.stdout).spans,
-    mode === 'throwing' || style === 'error-stream' ? 0 : mode === 'nested' ? 4 : 2,
+    mode === 'throwing' || mode === 'shared-off' || style === 'error-stream'
+      ? 0
+      : mode === 'nested'
+        ? 4
+        : 2,
   );
 }
 
 describe('Anthropic usage has one recording owner per response', () => {
+  for (const mode of ['independent-on', 'independent-off', 'shared-off']) {
+    for (const style of ['create', 'create-stream', 'stream']) {
+      for (const beta of [false, true]) {
+        it(`public provider configuration: ${mode}, ${style}, beta=${beta}`, () =>
+          run(mode, style, beta, 'cjs'));
+      }
+    }
+  }
   // The peer-range floor has stable Messages but predates Beta.Messages and
   // native tracing. Exercise every supported response style in both builds.
   for (const style of ['create', 'create-stream', 'stream']) {
