@@ -152,7 +152,8 @@ export interface InitializeOptions {
   /** OTel diagnostic log level. Defaults to 'error'. */
   logLevel?: 'debug' | 'info' | 'warn' | 'error';
   /**
-   * Disable all tracing. Falls back to TRACEROOT_ENABLED env var ('false' disables).
+   * Disable all tracing. Falls back to TRACEROOT_ENABLED env var. The env var is
+   * case-insensitive and accepts false, 0, no or off to disable tracing.
    * When false, initialize() is a no-op and no spans are recorded.
    */
   enabled?: boolean;
