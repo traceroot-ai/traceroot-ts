@@ -4,7 +4,12 @@
 const assert = require('node:assert/strict');
 const net = require('node:net');
 const { trace } = require('@opentelemetry/api');
-const { AlwaysOffSampler } = require('@opentelemetry/sdk-trace-base');
+const {
+  AlwaysOffSampler,
+  AlwaysOnSampler,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} = require('@opentelemetry/sdk-trace-base');
 const { NodeTracerProvider } = require('@opentelemetry/sdk-trace-node');
 const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-proto');
 net.Socket.prototype.connect = function () {
@@ -23,6 +28,13 @@ const [
   version = 'modern',
   privacy = '0',
 ] = process.argv.slice(2);
+if (mode === 'independent-off' || mode === 'shared-off')
+  process.env.OTEL_TRACES_SAMPLER = 'always_off';
+const nativeExporter = mode.startsWith('independent-') ? new InMemorySpanExporter() : undefined;
+const nativeProvider = nativeExporter
+  ? new NodeTracerProvider({ sampler: new AlwaysOnSampler() })
+  : undefined;
+if (nativeProvider) nativeProvider.addSpanProcessor(new SimpleSpanProcessor(nativeExporter));
 const fallback = mode.startsWith('fallback') || mode === 'throwing';
 if (fallback) {
   const off = new NodeTracerProvider({ sampler: new AlwaysOffSampler() });
@@ -105,6 +117,7 @@ if (fallback) {
       : {
           openTelemetry: {
             traces: { contentMode: 'content' },
+            ...(nativeProvider ? { tracerProvider: nativeProvider } : {}),
             ...(mode === 'throwing'
               ? {
                   tracerProvider: {
@@ -231,6 +244,9 @@ if (fallback) {
       if (mode === 'reenabled') {
         instrumentor.enable();
         instrumentor.manuallyInstrument(module);
+        for (const [index, prototype] of prototypes.entries())
+          for (const [name, original] of Object.entries(originals[index]))
+            assert.notEqual(prototype[name], original, `${name}: must be wrapped after enable`);
         activeInstrumentor = instrumentor;
       }
     }
@@ -280,6 +296,7 @@ if (fallback) {
     }),
   );
   await TraceRoot.flush();
+  if (nativeExporter) captured.push(...nativeExporter.getFinishedSpans());
   assert.equal(client._tracer, nativeTracerBefore, 'client tracing state must not be mutated');
   if (style === 'count') {
     const counts = captured.filter((s) => s.name === 'Anthropic Count Tokens');
@@ -300,15 +317,7 @@ if (fallback) {
   );
   const input = spans.reduce(
     (n, s) =>
-      n +
-      (s.attributes['llm.token_count.prompt'] ??
-        s.attributes['gen_ai.usage.input_tokens'] +
-          (s.attributes['gen_ai.usage.cache_read.input_tokens'] ??
-            s.attributes['gen_ai.usage.cache_read_input_tokens'] ??
-            0) +
-          (s.attributes['gen_ai.usage.cache_creation.input_tokens'] ??
-            s.attributes['gen_ai.usage.cache_creation_input_tokens'] ??
-            0)),
+      n + (s.attributes['llm.token_count.prompt'] ?? s.attributes['gen_ai.usage.input_tokens']),
     0,
   );
   const output = spans.reduce(
@@ -318,7 +327,12 @@ if (fallback) {
     0,
   );
   assert.equal(requests, mode === 'nested' ? 4 : 2);
-  const expected = style === 'error-stream' || mode === 'throwing' ? 0 : mode === 'nested' ? 4 : 2;
+  const expected =
+    style === 'error-stream' || mode === 'throwing' || mode === 'shared-off'
+      ? 0
+      : mode === 'nested'
+        ? 4
+        : 2;
   assert.equal(
     spans.length,
     expected,
@@ -328,9 +342,16 @@ if (fallback) {
   assert.equal(output, expected ? (mode === 'nested' ? 212 : 106) : 0);
   if (mode === 'fallback')
     for (const span of spans) assert.equal(span.parentSpanId, caller.spanContext().spanId);
-  if (mode === 'disabled' || mode === 'existing-oi')
+  if (mode === 'disabled' || mode === 'existing-oi' || mode === 'independent-off')
     assert.ok(
       spans.every((span) => span.instrumentationLibrary.name === 'com.anthropic.sdk.typescript'),
+    );
+  if (mode === 'independent-on')
+    assert.ok(
+      spans.every(
+        (span) =>
+          span.instrumentationLibrary.name === '@arizeai/openinference-instrumentation-anthropic',
+      ),
     );
   if (mode === 'fallback-owned') assert.ok(spans.every((span) => span.name === 'caller-owned'));
   if (style === 'error-stream') assert.equal(captured.filter((s) => s.status.code === 2).length, 2);
@@ -374,6 +395,7 @@ if (fallback) {
     }),
   );
   await TraceRoot.shutdown();
+  if (nativeProvider) await nativeProvider.shutdown();
 })().catch((e) => {
   console.error(e);
   process.exitCode = 1;
