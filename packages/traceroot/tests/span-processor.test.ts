@@ -96,6 +96,21 @@ describe('TraceRoot.spanProcessor()', () => {
     assert.equal(seen[0].attributes['team'], 'billing');
   });
 
+  it("drops the workflow info fields Temporal's sink copies in that hold user payloads (#183)", () => {
+    init();
+    const payloads = {
+      memo: 'm',
+      searchAttributes: 's',
+      typedSearchAttributes: 't',
+      lastResult: 'r',
+      lastFailure: 'f',
+    };
+    TraceRoot.spanProcessor().onEnd(workflowSpan({ workflowId: 'wf-1', ...payloads }));
+    const { attributes } = seen[0];
+    assert.equal(attributes['workflowId'], 'wf-1');
+    for (const key of Object.keys(payloads)) assert.equal(attributes[key], undefined, key);
+  });
+
   it('does not mutate the span it was handed', () => {
     init({ globalAttributes: { team: 'search' } });
     const span = workflowSpan();

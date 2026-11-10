@@ -67,6 +67,15 @@ const HELD_BACK_PREFIXES = [
 // Marks a span whose redact lost the race against the batch deadline.
 const LATE = Symbol('late');
 
+// Temporal's workflow sink copies the whole WorkflowInfo onto each span; these keys hold user payloads.
+const WORKFLOW_PAYLOAD_KEYS = [
+  'memo',
+  'searchAttributes',
+  'typedSearchAttributes',
+  'lastResult',
+  'lastFailure',
+];
+
 /** @internal — reset warn-once state between tests. */
 export function _resetProcessorState(): void {
   _hasWarnedUnattributedDrop = false;
@@ -244,13 +253,17 @@ export class TraceRootSpanProcessor implements SpanProcessor {
    * For a span recorded outside this provider that arrives already ended, such as a
    * Temporal workflow span from its sink: onStart never ran for it, so it gets the base
    * attributes here. Its own attributes win, as they would have after onStart. There is no
-   * traceroot.span.path: its ancestors were never seen in this process.
+   * traceroot.span.path: its ancestors were never seen in this process. The WorkflowInfo
+   * fields that hold user payloads (memo, search attributes, lastResult, lastFailure) are
+   * dropped: Temporal's sink copies them onto every workflow span.
    */
   onEndedSpan(span: ReadableSpan): void {
+    const own = { ...span.attributes };
+    for (const key of WORKFLOW_PAYLOAD_KEYS) delete own[key];
     // Object.create, not a spread: a spread loses spanContext() and the prototype getters.
     this.onEnd(
       Object.assign(Object.create(span), {
-        attributes: { ...this._baseAttributes, ...span.attributes },
+        attributes: { ...this._baseAttributes, ...own },
       }) as ReadableSpan,
     );
   }
