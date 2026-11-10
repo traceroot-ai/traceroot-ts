@@ -132,6 +132,9 @@ importers:
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
+      '@opentelemetry/context-async-hooks':
+        specifier: ^1.30.1
+        version: 1.30.1(@opentelemetry/api@1.9.1)
       '@opentelemetry/core':
         specifier: ^1.30.1
         version: 1.30.1(@opentelemetry/api@1.9.1)
@@ -145,9 +148,6 @@ importers:
         specifier: ^1.30.1
         version: 1.30.1(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-trace-base':
-        specifier: ^1.30.1
-        version: 1.30.1(@opentelemetry/api@1.9.1)
-      '@opentelemetry/sdk-trace-node':
         specifier: ^1.30.1
         version: 1.30.1(@opentelemetry/api@1.9.1)
       '@opentelemetry/semantic-conventions':
@@ -169,6 +169,9 @@ importers:
       '@openai/agents':
         specifier: '>=0.0.1'
         version: 0.8.5(@cfworker/json-schema@4.1.1)(ws@8.21.3)(zod@4.6.7)
+      '@opentelemetry/sdk-trace-node':
+        specifier: ^1.30.1
+        version: 1.30.1(@opentelemetry/api@1.9.1)
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.37
