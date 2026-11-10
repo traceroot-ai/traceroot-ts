@@ -159,7 +159,8 @@ export interface InitializeOptions {
   /**
    * Deployment environment tag (e.g. 'production', 'staging').
    * Falls back to TRACEROOT_ENVIRONMENT env var.
-   * Stamped on every span as 'deployment.environment'.
+   * Stamped on every span as 'traceroot.environment', the key traceroot reads, and as
+   * 'deployment.environment'.
    */
   environment?: string;
   /**
