@@ -36,6 +36,16 @@ import { assertValidProjectId, _resetProjectIdState } from './project-id';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
+// Matches traceroot-py's TracerootClient: lowercased, with 'false'/'0'/'no'/'off' disabling
+// and an unset or empty value enabling, so TRACEROOT_ENABLED behaves the same in both SDKs.
+const ENV_DISABLED_VALUES = new Set(['false', '0', 'no', 'off']);
+
+function isEnabledByEnv(): boolean {
+  const value = process.env['TRACEROOT_ENABLED'];
+  if (!value) return true;
+  return !ENV_DISABLED_VALUES.has(value.toLowerCase());
+}
+
 let _isInitialized = false;
 let _tracingActive = false;
 let _provider: NodeTracerProvider | undefined;
@@ -173,7 +183,7 @@ export class TraceRoot {
   }
 
   static initialize(options: InitializeOptions = {}): void {
-    const enabled = options.enabled ?? process.env['TRACEROOT_ENABLED'] !== 'false';
+    const enabled = options.enabled ?? isEnabledByEnv();
     // Kept even with tracing disabled: eval uploads can still run on ambient credentials.
     if (!_isInitialized) _redact = options.redact;
     if (!enabled) {

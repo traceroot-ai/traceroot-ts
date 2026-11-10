@@ -97,6 +97,59 @@ describe('TraceRoot.initialize()', () => {
     }
   });
 
+  for (const value of ['False', 'FALSE', '0', 'no', 'No', 'off', 'OFF']) {
+    it(`skips initialization when TRACEROOT_ENABLED=${value} env var is set`, () => {
+      const prev = process.env['TRACEROOT_ENABLED'];
+      process.env['TRACEROOT_ENABLED'] = value;
+      try {
+        TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+        assert.equal(TraceRoot.isInitialized(), false);
+      } finally {
+        if (prev === undefined) {
+          delete process.env['TRACEROOT_ENABLED'];
+        } else {
+          process.env['TRACEROOT_ENABLED'] = prev;
+        }
+      }
+    });
+  }
+
+  for (const value of [undefined, '', 'true', '1', 'yes', 'on', 'disabled']) {
+    it(`initializes when TRACEROOT_ENABLED=${JSON.stringify(value)}`, () => {
+      const prev = process.env['TRACEROOT_ENABLED'];
+      if (value === undefined) {
+        delete process.env['TRACEROOT_ENABLED'];
+      } else {
+        process.env['TRACEROOT_ENABLED'] = value;
+      }
+      try {
+        TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+        assert.equal(TraceRoot.isInitialized(), true);
+      } finally {
+        if (prev === undefined) {
+          delete process.env['TRACEROOT_ENABLED'];
+        } else {
+          process.env['TRACEROOT_ENABLED'] = prev;
+        }
+      }
+    });
+  }
+
+  it('options.enabled overrides TRACEROOT_ENABLED env var', () => {
+    const prev = process.env['TRACEROOT_ENABLED'];
+    process.env['TRACEROOT_ENABLED'] = 'off';
+    try {
+      TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true, enabled: true });
+      assert.equal(TraceRoot.isInitialized(), true);
+    } finally {
+      if (prev === undefined) {
+        delete process.env['TRACEROOT_ENABLED'];
+      } else {
+        process.env['TRACEROOT_ENABLED'] = prev;
+      }
+    }
+  });
+
   it('completes initialization without error when environment is provided', () => {
     TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true, environment: 'prod' });
     assert.equal(TraceRoot.isInitialized(), true);
