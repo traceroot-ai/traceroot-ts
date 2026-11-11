@@ -67,6 +67,15 @@ const HELD_BACK_PREFIXES = [
 // Marks a span whose redact lost the race against the batch deadline.
 const LATE = Symbol('late');
 
+// Temporal's workflow sink copies the whole WorkflowInfo onto each span; these keys hold user payloads.
+const WORKFLOW_PAYLOAD_KEYS = [
+  'memo',
+  'searchAttributes',
+  'typedSearchAttributes',
+  'lastResult',
+  'lastFailure',
+];
+
 /** @internal — reset warn-once state between tests. */
 export function _resetProcessorState(): void {
   _hasWarnedUnattributedDrop = false;
@@ -104,10 +113,8 @@ export interface TraceRootSpanProcessorOptions {
 export class TraceRootSpanProcessor implements SpanProcessor {
   private readonly inner: SpanProcessor; // ← WIDENED from BatchSpanProcessor | SimpleSpanProcessor
 
-  private readonly _environment: string | undefined;
-  private readonly _gitRepo: string | undefined;
-  private readonly _gitRef: string | undefined;
-  private readonly _globalAttributes: Record<string, string | number | boolean> | undefined;
+  // SDK, environment and git keys, then caller-supplied globals (which may override them).
+  private readonly _baseAttributes: Attributes;
   // Keyed by spanId. Allows children to inherit paths even when the parent
   // is a NonRecordingSpan (remote context) with no attributes — which is
   // what OpenInference produces for LangGraph-instrumented node spans.
@@ -127,34 +134,24 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     opts: TraceRootSpanProcessorOptions = {},
   ) {
     this.inner = inner;
-    this._environment = opts.environment;
-    this._gitRepo = opts.gitRepo;
-    this._gitRef = opts.gitRef;
-    this._globalAttributes = opts.globalAttributes;
+    this._baseAttributes = {
+      'traceroot.sdk.name': SDK_NAME,
+      'traceroot.sdk.version': SDK_VERSION,
+      ...(opts.environment !== undefined && {
+        'deployment.environment': opts.environment, // back-compat
+        'traceroot.environment': opts.environment, // key the backend transform reads
+      }),
+      ...(opts.gitRepo !== undefined && { 'traceroot.git.repo': opts.gitRepo }),
+      ...(opts.gitRef !== undefined && { 'traceroot.git.ref': opts.gitRef }),
+      ...opts.globalAttributes,
+    };
     this._dropSpansWithoutProjectId = opts.dropSpansWithoutProjectId ?? false;
     this._exportSpan = opts.exportSpan;
   }
 
   onStart(span: Span, parentContext: Context): void {
-    span.setAttributes({
-      'traceroot.sdk.name': SDK_NAME,
-      'traceroot.sdk.version': SDK_VERSION,
-    });
-    if (this._environment !== undefined) {
-      span.setAttribute('deployment.environment', this._environment); // back-compat
-      span.setAttribute('traceroot.environment', this._environment); // key the backend transform reads
-    }
-    if (this._gitRepo !== undefined) {
-      span.setAttribute('traceroot.git.repo', this._gitRepo);
-    }
-    if (this._gitRef !== undefined) {
-      span.setAttribute('traceroot.git.ref', this._gitRef);
-    }
-    // Caller-supplied globals may override the sdk/environment/git keys above, but the
-    // structural traceroot.span.* keys computed below stay SDK-owned.
-    if (this._globalAttributes !== undefined) {
-      span.setAttributes(this._globalAttributes);
-    }
+    // The structural traceroot.span.* keys computed below stay SDK-owned.
+    span.setAttributes(this._baseAttributes);
 
     // Enrich every span with its full name path from root to current span.
     // path[0] is always the root span name, so the backend can recover the
@@ -250,6 +247,29 @@ export class TraceRootSpanProcessor implements SpanProcessor {
     }
     if (this._exportSpan !== undefined && !shouldExport(this._exportSpan, span)) return;
     this.inner.onEnd(span);
+  }
+
+  /**
+   * For a span recorded outside this provider that arrives already ended, such as a
+   * Temporal workflow span from its sink: onStart never ran for it, so it gets the base
+   * attributes here. Its own attributes win, as they would have after onStart. There is no
+   * traceroot.span.path: its ancestors were never seen in this process. The WorkflowInfo
+   * fields that hold user payloads (memo, search attributes, lastResult, lastFailure) are
+   * dropped from spans that carry WorkflowInfo (workflowId and runId): Temporal's sink
+   * copies them onto every workflow span.
+   */
+  onEndedSpan(span: ReadableSpan): void {
+    const own = { ...span.attributes };
+    // Only on spans that carry WorkflowInfo, so another source's own `memo` survives.
+    if ('workflowId' in own && 'runId' in own) {
+      for (const key of WORKFLOW_PAYLOAD_KEYS) delete own[key];
+    }
+    // Object.create, not a spread: a spread loses spanContext() and the prototype getters.
+    this.onEnd(
+      Object.assign(Object.create(span), {
+        attributes: { ...this._baseAttributes, ...own },
+      }) as ReadableSpan,
+    );
   }
 
   forceFlush(): Promise<void> {
