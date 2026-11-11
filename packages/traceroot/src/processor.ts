@@ -255,11 +255,15 @@ export class TraceRootSpanProcessor implements SpanProcessor {
    * attributes here. Its own attributes win, as they would have after onStart. There is no
    * traceroot.span.path: its ancestors were never seen in this process. The WorkflowInfo
    * fields that hold user payloads (memo, search attributes, lastResult, lastFailure) are
-   * dropped: Temporal's sink copies them onto every workflow span.
+   * dropped from spans that carry WorkflowInfo (workflowId and runId): Temporal's sink
+   * copies them onto every workflow span.
    */
   onEndedSpan(span: ReadableSpan): void {
     const own = { ...span.attributes };
-    for (const key of WORKFLOW_PAYLOAD_KEYS) delete own[key];
+    // Only on spans that carry WorkflowInfo, so another source's own `memo` survives.
+    if ('workflowId' in own && 'runId' in own) {
+      for (const key of WORKFLOW_PAYLOAD_KEYS) delete own[key];
+    }
     // Object.create, not a spread: a spread loses spanContext() and the prototype getters.
     this.onEnd(
       Object.assign(Object.create(span), {

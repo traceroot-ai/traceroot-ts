@@ -105,10 +105,19 @@ describe('TraceRoot.spanProcessor()', () => {
       lastResult: 'r',
       lastFailure: 'f',
     };
-    TraceRoot.spanProcessor().onEnd(workflowSpan({ workflowId: 'wf-1', ...payloads }));
+    TraceRoot.spanProcessor().onEnd(
+      workflowSpan({ workflowId: 'wf-1', runId: 'run-1', ...payloads }),
+    );
     const { attributes } = seen[0];
     assert.equal(attributes['workflowId'], 'wf-1');
     for (const key of Object.keys(payloads)) assert.equal(attributes[key], undefined, key);
+  });
+
+  it('keeps those keys on spans that carry no WorkflowInfo', () => {
+    init();
+    TraceRoot.spanProcessor().onEnd(workflowSpan({ memo: 'm', lastResult: 'r' }));
+    assert.equal(seen[0].attributes['memo'], 'm');
+    assert.equal(seen[0].attributes['lastResult'], 'r');
   });
 
   it('does not mutate the span it was handed', () => {
