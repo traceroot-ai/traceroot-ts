@@ -2,6 +2,7 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { GITHUB_REPOSITORY, GITHUB_SHA } from './constants';
 
 const REPO_URL_RE = /(?:https?:\/\/|ssh:\/\/git@|git@)github\.com[:/](.+?)(?:\.git)?$/;
@@ -22,7 +23,16 @@ export function getGitRoot(): string | undefined {
   return _gitRootCache || undefined;
 }
 
-function relativePath(filepath: string): string | undefined {
+function relativePath(frameFile: string): string | undefined {
+  let filepath = frameFile;
+  // An ES module's stack frames carry a file:// URL, not a path.
+  if (filepath.startsWith('file://')) {
+    try {
+      filepath = fileURLToPath(filepath);
+    } catch {
+      return undefined; // not a local file URL
+    }
+  }
   const gitRoot = getGitRoot();
   if (gitRoot && filepath.startsWith(gitRoot)) {
     return filepath.slice(gitRoot.length).replace(/^[/\\]/, '');
