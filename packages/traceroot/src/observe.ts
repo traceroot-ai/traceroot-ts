@@ -244,7 +244,13 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
     span.setStatus({ code: SpanStatusCode.ERROR });
     throw err;
   } finally {
-    span.end();
+    try {
+      // A consumer that stops early (break, return, throw) never drains innerGen. Close it so
+      // its finally blocks run, as yield* would. A no-op once it has finished.
+      await context.with(spanCtx, () => innerGen.return(undefined));
+    } finally {
+      span.end();
+    }
   }
 }
 

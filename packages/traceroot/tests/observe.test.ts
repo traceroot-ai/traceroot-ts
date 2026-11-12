@@ -306,6 +306,25 @@ describe('observe()', () => {
     assert.equal(child.parentSpanId, parent.spanContext().spanId);
   });
 
+  it('async generator — closes the wrapped generator when the consumer stops early', async () => {
+    let cleanedUp = false;
+    async function* stream() {
+      try {
+        yield 1;
+        yield 2;
+      } finally {
+        cleanedUp = true;
+      }
+    }
+
+    for await (const item of observe({ name: 'early-stop' }, stream)) {
+      if (item === 1) break;
+    }
+
+    assert.equal(cleanedUp, true, "the wrapped generator's finally block should run");
+    assert.equal(exporter.getFinishedSpans().length, 1);
+  });
+
   it('auto-initializes when TRACEROOT_API_KEY is set and SDK is not yet initialized', async () => {
     // Remove the provider so the SDK is "not initialized"
     await provider.shutdown();
