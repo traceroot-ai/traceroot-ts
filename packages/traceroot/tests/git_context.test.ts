@@ -242,6 +242,8 @@ describe('relativePath()', () => {
   });
 
   it('returns undefined without a git root', () => {
-    assert.equal(relativePath('/work/repo/app.js', undefined), undefined);
+    // A path inside the real checkout, so a fallback to the detected root would be caught.
+    const inCheckout = path.join(getGitRoot() ?? '/', 'app.js');
+    assert.equal(relativePath(inCheckout, undefined), undefined);
   });
 });

@@ -30,10 +30,7 @@ function toPosix(p: string): string {
 }
 
 /** @internal */
-export function relativePath(
-  frameFile: string,
-  gitRoot: string | undefined = getGitRoot(),
-): string | undefined {
+export function relativePath(frameFile: string, gitRoot: string | undefined): string | undefined {
   let filepath = frameFile;
   // An ES module's stack frames carry a file:// URL, not a path.
   if (filepath.startsWith('file://')) {
@@ -207,7 +204,7 @@ export function captureSourceLocation(): { file?: string; line?: number; functio
 
     const [, fnName, file, lineStr] = match;
     return {
-      file: relativePath(file),
+      file: relativePath(file, getGitRoot()),
       line: parseInt(lineStr, 10),
       functionName: fnName || undefined,
     };
