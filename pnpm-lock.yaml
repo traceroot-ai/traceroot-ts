@@ -6,7 +6,7 @@ settings:
 
 overrides:
   '@anthropic-ai/sdk@>=0.79.0 <0.91.1': ^0.91.1
-  '@hono/node-server@>=1.0.0 <1.19.15': ^1.19.15
+  '@hono/node-server@>=1.0.0 <1.19.18': ^1.19.18
   '@humanfs/node@>=0.16.0 <0.16.8': ^0.16.8
   '@modelcontextprotocol/sdk@>=1.12.0 <1.31.0': ^1.31.0
   '@opentelemetry/core@>=2.0.0 <2.8.0': ^2.8.0
@@ -17,7 +17,7 @@ overrides:
   brace-expansion@>=1.0.0 <1.1.21: ^1.1.21
   brace-expansion@>=5.0.0 <5.0.12: ^5.0.12
   fast-uri@>=3.0.0 <3.1.9: ^3.1.9
-  hono@>=4.0.0 <4.13.11: ^4.13.11
+  hono@>=4.0.0 <4.13.16: ^4.13.16
   ip-address@>=10.0.0 <10.7.4: ^10.7.4
   js-yaml@>=3.0.0 <3.15.1: ^3.15.1
   js-yaml@>=4.0.0 <4.3.1: ^4.3.1
@@ -684,17 +684,17 @@ packages:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@hono/node-server@1.19.17':
-    resolution: {integrity: sha512-dSneS5qhiauZWGDCeK4o695Xd9nUNjviSZCMQrj10eetr8Uln1ucn6bbphOM6UynAMMtNIzZNSpL9vnASJwrPQ==}
+  '@hono/node-server@1.19.19':
+    resolution: {integrity: sha512-Fy9R7PACOzHU9LDpfnuzVyuVYevKQRcEG2mZhmfc+DRdmayEd3RVfa2XOt2IgGcPNgA77Yk63KBszepcMFK5Ng==}
     engines: {node: '>=18.14.1'}
     peerDependencies:
-      hono: ^4.13.11
+      hono: ^4.13.16
 
   '@hono/standard-validator@0.4.0':
     resolution: {integrity: sha512-MxOm1asDh9j7c1D0KiWwppSbFgAQxTRO4YEhjMrJn3lF1BIcXenPdgjSGKDRfQmZdaTaMA8slQLETgVOKyJxFw==}
     peerDependencies:
       '@standard-schema/spec': ^1.0.0
-      hono: ^4.13.11
+      hono: ^4.13.16
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -1008,7 +1008,9 @@ packages:
   '@smithy/core@3.29.2':
     resolution: {integrity: sha512-DXUk6yU0C1Q1tYvJh1VCtl8QOBcSoZpKwjTPkxT6A4MUQYHvgeKGByL8mrEdxnvhdf9nq5GyzmRb5n/vPgu3Lw==}
     engines: {node: '>=18.0.0'}
-    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
+    deprecated: |-
+      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
+        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.4.7':
     resolution: {integrity: sha512-UEMLOoA0Fl4uYBxh6l0uN0H6EJe/A89OGeDNTteQeXpJ20BcpfIr4wlCY9pel1jEAUHAxaYwuqrYlrKdXE1GKQ==}
@@ -1806,10 +1808,10 @@ packages:
   hono-openapi@1.3.5:
     resolution: {integrity: sha512-t1YpXno9oXa6400xi9rX6i1jKB0496VvikcVKpN/UY3s7yDDQqeCgnKlDr3rfkqxGvykq3+bgX/64eCm7UnUMA==}
     peerDependencies:
-      hono: ^4.13.11
+      hono: ^4.13.16
 
-  hono@4.13.13:
-    resolution: {integrity: sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA==}
+  hono@4.13.18:
+    resolution: {integrity: sha512-H9q/E1XizaWstJxUW881dmLxEj+t/TrGGnyxINkm4+sK0qUwsMtFdo2BWI9Vs3cIS19MU6b6iCijoUoEf4f3DA==}
     engines: {node: '>=16.9.0'}
 
   hosted-git-info@9.0.3:
@@ -3417,15 +3419,15 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@hono/node-server@1.19.17(hono@4.13.13)':
+  '@hono/node-server@1.19.19(hono@4.13.18)':
     dependencies:
-      hono: 4.13.13
+      hono: 4.13.18
     optional: true
 
-  '@hono/standard-validator@0.4.0(@standard-schema/spec@1.1.0)(hono@4.13.13)':
+  '@hono/standard-validator@0.4.0(@standard-schema/spec@1.1.0)(hono@4.13.18)':
     dependencies:
       '@standard-schema/spec': 1.1.0
-      hono: 4.13.13
+      hono: 4.13.18
 
   '@humanfs/core@0.19.2':
     dependencies:
@@ -3534,8 +3536,8 @@ snapshots:
       execa: 9.6.1
       fastq: 1.20.3
       gray-matter: 4.0.3
-      hono: 4.13.13
-      hono-openapi: 1.3.5(hono@4.13.13)(quansync@0.2.11)(typebox@1.1.38)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
+      hono: 4.13.18
+      hono-openapi: 1.3.5(hono@4.13.18)(quansync@0.2.11)(typebox@1.1.38)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       ignore: 7.0.5
       jpeg-js: 0.4.4
       json-schema: 0.4.0
@@ -3593,7 +3595,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7)':
     dependencies:
-      '@hono/node-server': 1.19.17(hono@4.13.13)
+      '@hono/node-server': 1.19.19(hono@4.13.18)
       ajv: 8.18.0
       ajv-formats: 3.0.1(ajv@8.18.0)
       content-type: 1.0.5
@@ -3603,7 +3605,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.2.1
       express-rate-limit: 8.3.2(express@5.2.1)
-      hono: 4.13.13
+      hono: 4.13.18
       jose: 6.2.2
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -4657,14 +4659,14 @@ snapshots:
 
   highlight.js@10.7.3: {}
 
-  hono-openapi@1.3.5(hono@4.13.13)(quansync@0.2.11)(typebox@1.1.38)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7):
+  hono-openapi@1.3.5(hono@4.13.18)(quansync@0.2.11)(typebox@1.1.38)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7):
     dependencies:
-      '@hono/standard-validator': 0.4.0(@standard-schema/spec@1.1.0)(hono@4.13.13)
+      '@hono/standard-validator': 0.4.0(@standard-schema/spec@1.1.0)(hono@4.13.18)
       '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(typebox@1.1.38)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       '@standard-community/standard-openapi': 0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(quansync@0.2.11)(typebox@1.1.38)(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-schema/spec@1.1.0)(openapi-types@12.1.3)(typebox@1.1.38)(zod@4.6.7)
       '@standard-schema/spec': 1.1.0
       '@types/json-schema': 7.0.15
-      hono: 4.13.13
+      hono: 4.13.18
       openapi-types: 12.1.3
     transitivePeerDependencies:
       - '@valibot/to-json-schema'
@@ -4678,7 +4680,7 @@ snapshots:
       - zod-openapi
       - zod-to-json-schema
 
-  hono@4.13.13: {}
+  hono@4.13.18: {}
 
   hosted-git-info@9.0.3:
     dependencies:
