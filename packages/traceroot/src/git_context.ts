@@ -23,7 +23,17 @@ export function getGitRoot(): string | undefined {
   return _gitRootCache || undefined;
 }
 
-function relativePath(frameFile: string): string | undefined {
+// Windows frames use backslashes (and sometimes a lowercase drive) while git prints C:/..., so
+// compare and report paths in one form.
+function toPosix(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^[a-z]:/, (d) => d.toUpperCase());
+}
+
+/** @internal */
+export function relativePath(
+  frameFile: string,
+  gitRoot: string | undefined = getGitRoot(),
+): string | undefined {
   let filepath = frameFile;
   // An ES module's stack frames carry a file:// URL, not a path.
   if (filepath.startsWith('file://')) {
@@ -33,10 +43,10 @@ function relativePath(frameFile: string): string | undefined {
       return undefined; // not a local file URL
     }
   }
-  const gitRoot = getGitRoot();
-  if (gitRoot && filepath.startsWith(gitRoot)) {
-    return filepath.slice(gitRoot.length).replace(/^[/\\]/, '');
-  }
+  if (!gitRoot) return undefined;
+  const root = toPosix(gitRoot).replace(/\/$/, '');
+  filepath = toPosix(filepath);
+  if (filepath.startsWith(root + '/')) return filepath.slice(root.length + 1);
   // If we can't make the path relative, don't stamp it — avoid leaking absolute paths.
   return undefined;
 }
@@ -185,7 +195,8 @@ export function captureSourceLocation(): { file?: string; line?: number; functio
   if (!stack) return {};
 
   const lines = stack.split('\n').slice(1); // remove "Error" header line
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\\/g, '/'); // Windows frames use backslashes
     if (line.includes('/packages/traceroot/src/')) continue;
     if (line.includes('/node_modules/')) continue;
     if (line.includes('(node:')) continue; // skip Node.js built-in frames (e.g. node:internal/async_local_storage)

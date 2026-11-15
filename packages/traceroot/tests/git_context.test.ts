@@ -11,6 +11,7 @@ import {
   getGitRoot,
   harvestCiGitContext,
   gitContextFromFiles,
+  relativePath,
 } from '../src/git_context';
 
 describe('autoDetectGitContext()', () => {
@@ -197,8 +198,20 @@ describe('captureSourceLocation()', () => {
       filename: pathToFileURL(path.join(gitRoot, 'app', 'my handler.mjs')).href,
     });
     const result = call(captureSourceLocation);
-    assert.equal(result.file, path.join('app', 'my handler.mjs'));
+    assert.equal(result.file, 'app/my handler.mjs');
     assert.equal(result.line, 1);
+  });
+
+  it('skips node_modules frames written with Windows separators', () => {
+    // On Windows every frame is a C:\ path; the installed SDK's own frames sit under node_modules.
+    const sdk = vm.runInThisContext('(capture) => capture()', {
+      filename: 'C:\\app\\node_modules\\traceroot\\dist\\index.js',
+    });
+    const caller = vm.runInThisContext('\n(sdk, capture) => sdk(capture)', {
+      filename: 'C:\\app\\src\\main.js',
+    });
+    const result = caller(sdk, captureSourceLocation);
+    assert.equal(result.line, 2, "the line must be the caller's, not the SDK's");
   });
 
   it('functionName is defined when called from a named function', () => {
@@ -212,5 +225,23 @@ describe('captureSourceLocation()', () => {
         `functionName should include "myTestFn", got: ${result.functionName}`,
       );
     }
+  });
+});
+
+describe('relativePath()', () => {
+  it('relates a Windows frame to the forward-slash root git prints on Windows', () => {
+    assert.equal(relativePath('C:\\repo\\src\\app.js', 'C:/repo'), 'src/app.js');
+  });
+
+  it('ignores a lowercase drive letter in the frame', () => {
+    assert.equal(relativePath('c:\\repo\\src\\app.js', 'C:/repo'), 'src/app.js');
+  });
+
+  it('does not match a sibling directory that shares the root as a prefix', () => {
+    assert.equal(relativePath('/work/repo-other/app.js', '/work/repo'), undefined);
+  });
+
+  it('returns undefined without a git root', () => {
+    assert.equal(relativePath('/work/repo/app.js', undefined), undefined);
   });
 });
