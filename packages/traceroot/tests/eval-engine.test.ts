@@ -282,6 +282,7 @@ describe('dataset revision', () => {
     const d = ds(2);
     const snap = d.snapshot();
     assert.equal(await revisionOf(d), snap.revision);
-    assert.equal(await revisionOf(snap), snap.revision);
+    // A revision its cases don't hash to, so a snapshot's revision recomputed from them fails here.
+    assert.equal(await revisionOf({ ...snap, revision: 'rev_pinned' }), 'rev_pinned');
   });
 });
