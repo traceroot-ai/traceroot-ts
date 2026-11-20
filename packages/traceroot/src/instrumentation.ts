@@ -117,7 +117,7 @@ export function wireInstrumentations(
     if (!moduleRef) continue;
     const Ctor = loadInstrumentation(pkg, exportName);
     if (!Ctor) {
-      throw new Error(`[TraceRoot] Failed to load ${pkg}. Install it: npm install ${pkg}`);
+      throw new Error(`[traceroot] Failed to load ${pkg}. Install it: npm install ${pkg}`);
     }
     const instr = new Ctor();
     instrs.push(instr);

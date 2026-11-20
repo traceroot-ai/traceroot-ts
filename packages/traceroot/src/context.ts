@@ -31,7 +31,7 @@ export function updateCurrentSpan(attrs: {
   modelParameters?: Record<string, unknown>;
   /** Token usage (e.g. { input: 100, output: 50 }). */
   usage?: TokenUsage;
-  /** Total cost of this LLM call in USD; replaces TraceRoot's computed price for this span. */
+  /** Total cost of this LLM call in USD; replaces traceroot's computed price for this span. */
   cost?: number;
   /** Prompt / messages sent to the LLM. */
   prompt?: unknown;
@@ -102,7 +102,7 @@ export function updateCurrentTrace(attrs: {
   }
 }
 
-/** The active span as a TraceRoot handle, or undefined outside a span. */
+/** The active span as a traceroot handle, or undefined outside a span. */
 export function getCurrentSpan(): Span | undefined {
   const otel = trace.getActiveSpan();
   return otel ? wrapSpan(otel) : undefined;

@@ -1,4 +1,4 @@
-# TraceRoot TypeScript SDK
+# traceroot TypeScript SDK
 
 [![Y Combinator][y-combinator-image]][y-combinator-url]
 [![License][license-image]][license-url]

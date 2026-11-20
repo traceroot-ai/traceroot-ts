@@ -682,14 +682,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
       // misdirects a user who HAS a key but passed inline cases or an unsynced dataset.
       if (TraceRoot.resolveCredentials().apiKey) {
         throw new Error(
-          'evaluate() reports to the TraceRoot platform, but this run has no synced dataset to ' +
+          'evaluate() reports to the traceroot platform, but this run has no synced dataset to ' +
             'report against. Pass a Dataset that was pulled or pushed (pullDataset(...) / ' +
             'Dataset.push(...)), or pass datasetId, or pass local: true to run without ' +
             'reporting.',
         );
       }
       throw new Error(
-        'evaluate() reports to the TraceRoot platform, but no credentials were found. Set ' +
+        'evaluate() reports to the traceroot platform, but no credentials were found. Set ' +
           'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass local: true to ' +
           'run without reporting.',
       );

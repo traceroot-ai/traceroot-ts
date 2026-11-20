@@ -853,7 +853,7 @@ export function wireClaudeAgentSDKInstrumentation(mod: unknown): void {
   const sdk = mod as ClaudeAgentSDKModule & { [WRAPPED]?: boolean };
   if (!sdk || typeof sdk !== 'object' || typeof sdk.query !== 'function') {
     throw new Error(
-      '[TraceRoot] instrumentModules.claudeAgentSDK does not expose query. ' +
+      '[traceroot] instrumentModules.claudeAgentSDK does not expose query. ' +
         'Pass a mutable module namespace, e.g. `{ ...claudeAgentSDK }`.',
     );
   }

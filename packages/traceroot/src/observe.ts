@@ -37,7 +37,7 @@ function isAsyncGeneratorFunction(fn: unknown): boolean {
  * - If fn is an async generator function, the span stays open until the generator is
  *   exhausted and all yielded items are collected as output.
  * - Nested calls automatically become child spans via AsyncLocalStorage context propagation.
- * - Works as a no-op if TraceRoot is not initialized. Auto-initializes if TRACEROOT_API_KEY is set.
+ * - Works as a no-op if traceroot is not initialized. Auto-initializes if TRACEROOT_API_KEY is set.
  *
  * @example
  * // Auto-capture args as input, return value as output:
@@ -116,7 +116,7 @@ async function _observeRegular<A extends unknown[], T>(
       if (!isTracingSuppressed(context.active()) && !_hasWarnedUninit) {
         _hasWarnedUninit = true;
         console.warn(
-          '[TraceRoot] observe() called but TraceRoot.initialize() was not called. Spans will not be recorded.',
+          '[traceroot] observe() called but TraceRoot.initialize() was not called. Spans will not be recorded.',
         );
       }
       try {
@@ -207,7 +207,7 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
     if (!isTracingSuppressed(context.active()) && !_hasWarnedUninit) {
       _hasWarnedUninit = true;
       console.warn(
-        '[TraceRoot] observe() called but TraceRoot.initialize() was not called. Spans will not be recorded.',
+        '[traceroot] observe() called but TraceRoot.initialize() was not called. Spans will not be recorded.',
       );
     }
     yield* fn(...args);

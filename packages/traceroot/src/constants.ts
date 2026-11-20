@@ -1,4 +1,4 @@
-// src/constants.ts — TraceRoot-specific span attribute keys and SDK defaults
+// src/constants.ts — traceroot-specific span attribute keys and SDK defaults
 
 // GitHub Actions environment variable names used for git-context harvesting.
 export const GITHUB_REPOSITORY = 'GITHUB_REPOSITORY';
@@ -44,7 +44,7 @@ export const TRACE_METADATA = 'traceroot.trace.metadata';
 export const TRACE_TAGS = 'traceroot.trace.tags';
 
 /**
- * All TraceRoot span attribute key constants in one object.
+ * All traceroot span attribute key constants in one object.
  * Use these instead of hardcoding strings when setting custom span attributes.
  *
  * @example

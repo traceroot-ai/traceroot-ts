@@ -412,7 +412,7 @@ describe('TraceRootSpanProcessor redact', () => {
   function register(redact?: Redact): void {
     exporter = new InMemorySpanExporter();
     provider = new NodeTracerProvider();
-    // Wired the way initialize() does: redact wraps TraceRoot's exporter.
+    // Wired the way initialize() does: redact wraps traceroot's exporter.
     const traceRootExporter = redact ? new RedactingSpanExporter(exporter, redact) : exporter;
     provider.addSpanProcessor(
       new TraceRootSpanProcessor(new SimpleSpanProcessor(traceRootExporter)),
@@ -831,7 +831,7 @@ describe('TraceRootSpanProcessor redact', () => {
       diag.disable();
     }
     assert.deepEqual(warnings, [
-      `[TraceRoot] redact did not settle within ${REDACT_TIMEOUT_MS}ms for 2 of 3 spans; blanking their attribute values`,
+      `[traceroot] redact did not settle within ${REDACT_TIMEOUT_MS}ms for 2 of 3 spans; blanking their attribute values`,
     ]);
     assert.deepEqual(
       sent.getFinishedSpans().map((span) => span.attributes['speed']),

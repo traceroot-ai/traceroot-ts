@@ -272,7 +272,7 @@ describe('forcing failure detection (foreign global provider)', () => {
   before(() => {
     exporter = new InMemorySpanExporter();
     // A provider the APPLICATION registered first — default id generator, no
-    // ContextIdGenerator — so TraceRoot's provider never becomes global and
+    // ContextIdGenerator — so traceroot's provider never becomes global and
     // forced ids cannot be applied.
     provider = new NodeTracerProvider();
     provider.addSpanProcessor(new SimpleSpanProcessor(exporter));

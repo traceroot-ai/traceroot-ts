@@ -1,7 +1,7 @@
 /**
  * TraceRootExporter for Mastra Observability
  *
- * Sends Mastra tracing events to TraceRoot via OTLP/HTTP (protobuf).
+ * Sends Mastra tracing events to traceroot via OTLP/HTTP (protobuf).
  * OpenInference semantic conventions are used internally — they are not
  * part of the public API.
  */
@@ -93,11 +93,11 @@ type InstrumentationScope = InstrumentationLibrary;
 
 export interface TraceRootExporterConfig extends BaseExporterConfig {
   /**
-   * TraceRoot API key. Defaults to `process.env.TRACEROOT_API_KEY`.
+   * traceroot API key. Defaults to `process.env.TRACEROOT_API_KEY`.
    */
   apiKey?: string;
   /**
-   * Base URL for the TraceRoot backend. Defaults to `https://app.traceroot.ai`.
+   * Base URL for the traceroot backend. Defaults to `https://app.traceroot.ai`.
    * Falls back to `process.env.TRACEROOT_HOST_URL`.
    */
   baseUrl?: string;
@@ -440,7 +440,7 @@ function buildTraceRootAttributes(
   attrs[TR_ATTRIBUTES.SDK_NAME] = SDK_NAME;
   attrs[TR_ATTRIBUTES.SDK_VERSION] = SDK_VERSION;
 
-  // Span kind → openinference.span.kind (drives icons in TraceRoot UI)
+  // Span kind → openinference.span.kind (drives icons in traceroot UI)
   attrs[OI_ATTRIBUTES.SPAN_KIND] = mapToOISpanKind(span.type);
 
   // Input / output

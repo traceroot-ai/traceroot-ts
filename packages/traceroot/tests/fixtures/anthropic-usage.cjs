@@ -210,7 +210,7 @@ if (fallback) {
     });
   if (format === 'auto-existing') require(pkg);
   if (existing) {
-    assertMethods(existingMethods, 'TraceRoot must leave existing instrumentation untouched');
+    assertMethods(existingMethods, 'traceroot must leave existing instrumentation untouched');
     existing.disable();
     assertMethods(originals, 'existing instrumentation must restore original methods');
   }

@@ -28,7 +28,7 @@ export function assertValidTraceId(traceId: string): void {
     const description =
       typeof traceId === 'string' ? JSON.stringify(traceId) : `a value of type ${typeof traceId}`;
     throw new TypeError(
-      `[TraceRoot] traceId must be a lowercase 32-hex string, got: ${description}`,
+      `[traceroot] traceId must be a lowercase 32-hex string, got: ${description}`,
     );
   }
 }
@@ -87,7 +87,7 @@ export function shouldForceTraceId(traceId: string): boolean {
     if (!_hasWarnedPublicIgnore) {
       _hasWarnedPublicIgnore = true;
       console.warn(
-        '[TraceRoot] traceId forcing is only honored in internal export mode; ignoring forced id.',
+        '[traceroot] traceId forcing is only honored in internal export mode; ignoring forced id.',
       );
     }
     return false;
@@ -106,8 +106,8 @@ export function warnIfForcingFailed(expected: string, span: Span): void {
   if (span.spanContext().traceId === expected || _hasWarnedForceFailed) return;
   _hasWarnedForceFailed = true;
   console.warn(
-    '[TraceRoot] forced traceId was not applied: the global tracer provider does not use ' +
-      "TraceRoot's id generator (was another provider registered before TraceRoot.initialize()?). " +
+    '[traceroot] forced traceId was not applied: the global tracer provider does not use ' +
+      "traceroot's id generator (was another provider registered before TraceRoot.initialize()?). " +
       'Spans will get random trace ids.',
   );
 }

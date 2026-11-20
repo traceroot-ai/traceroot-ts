@@ -69,9 +69,9 @@ export interface ObserveOptions {
 }
 
 export interface InitializeOptions {
-  /** API key for TraceRoot. Falls back to TRACEROOT_API_KEY env var. */
+  /** API key for traceroot. Falls back to TRACEROOT_API_KEY env var. */
   apiKey?: string;
-  /** Base URL for the TraceRoot backend. Defaults to https://app.traceroot.ai */
+  /** Base URL for the traceroot backend. Defaults to https://app.traceroot.ai */
   baseUrl?: string;
   /**
    * Modules to instrument.
@@ -92,8 +92,8 @@ export interface InitializeOptions {
     /**
      * @openai/agents module ref. Pass `import * as agents from '@openai/agents'`.
      *
-     * Replaces the SDK's default OpenAI tracing processor with TraceRoot's —
-     * spans go to TraceRoot only, NOT to OpenAI's tracing backend.
+     * Replaces the SDK's default OpenAI tracing processor with traceroot's —
+     * spans go to traceroot only, NOT to OpenAI's tracing backend.
      * To dual-export, call `addTraceProcessor(...)` from `@openai/agents`
      * after `initialize()`.
      */
@@ -131,12 +131,12 @@ export interface InitializeOptions {
    */
   exportSpan?: (span: ReadableSpan) => boolean;
   /**
-   * Rewrite a finished span's attributes before export to TraceRoot, so
-   * personal data never reaches TraceRoot; return the attributes to keep.
+   * Rewrite a finished span's attributes before export to traceroot, so
+   * personal data never reaches traceroot; return the attributes to keep.
    * Other exporters still see the original span. Also runs on event
    * attributes and the status message. It receives the attributes as they
    * will be exported, including keys derived from the Vercel AI SDK ones.
-   * TraceRoot's bookkeeping keys (its own `traceroot.*` keys plus user,
+   * traceroot's bookkeeping keys (its own `traceroot.*` keys plus user,
    * session, model, token usage and span kind) are not passed in; recorded
    * input, output, metadata, prompt, model parameters and eval error, score
    * value and score comment are. A function that throws or returns
@@ -146,7 +146,7 @@ export interface InitializeOptions {
    * and runs when spans are exported; a promise that rejects or does not
    * settle within 5 seconds fails closed the same way. A call that misses the
    * deadline is not cancelled; its late answer is ignored. Eval results uploaded
-   * to TraceRoot are redacted too; datasets and scorer definitions are not.
+   * to traceroot are redacted too; datasets and scorer definitions are not.
    */
   redact?: Redact;
   /** OTel diagnostic log level. Defaults to 'error'. */
@@ -258,7 +258,7 @@ export interface SpanUpdate {
   model?: string;
   modelParameters?: Record<string, unknown>;
   usage?: TokenUsage;
-  /** Total cost of this LLM call in USD; replaces TraceRoot's computed price for this span. */
+  /** Total cost of this LLM call in USD; replaces traceroot's computed price for this span. */
   cost?: number;
   /**
    * Arbitrary span attributes for keys the typed fields above don't cover
