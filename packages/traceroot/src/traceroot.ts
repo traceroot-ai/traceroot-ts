@@ -181,20 +181,20 @@ export class TraceRoot {
     }
 
     if (_isInitialized) {
-      console.warn('[TraceRoot] Already initialized. Skipping duplicate initialize() call.');
+      console.warn('[traceroot] Already initialized. Skipping duplicate initialize() call.');
       return;
     }
 
     if (options.internalExport && !options.internalExport.path.startsWith('/')) {
       throw new TypeError(
-        `[TraceRoot] internalExport.path must start with '/', got: ${JSON.stringify(options.internalExport.path)}`,
+        `[traceroot] internalExport.path must start with '/', got: ${JSON.stringify(options.internalExport.path)}`,
       );
     }
 
     const apiKey = options.apiKey ?? process.env['TRACEROOT_API_KEY'];
     if (!apiKey && !options.internalExport) {
       console.warn(
-        '[TraceRoot] No API key provided. Set TRACEROOT_API_KEY env var or pass apiKey to initialize(). ' +
+        '[traceroot] No API key provided. Set TRACEROOT_API_KEY env var or pass apiKey to initialize(). ' +
           'Spans will be emitted but export will fail.',
       );
     }
@@ -277,7 +277,7 @@ export class TraceRoot {
     // Honest absence: warn once, never fabricate.
     if (gitRepo === undefined || gitRef === undefined) {
       console.warn(
-        '[TraceRoot] git context incomplete (repo=' +
+        '[traceroot] git context incomplete (repo=' +
           (gitRepo ?? 'unset') +
           ', ref=' +
           (gitRef ?? 'unset') +
@@ -343,10 +343,10 @@ export class TraceRoot {
     _tracingActive = delegate === _provider;
     if (!_tracingActive) {
       console.error(
-        '[TraceRoot] tracer-provider registration was rejected: another OpenTelemetry ' +
+        '[traceroot] tracer-provider registration was rejected: another OpenTelemetry ' +
           'provider is already registered globally (registered before TraceRoot.initialize()). ' +
           'Spans flow through that provider and trace-id forcing will not take effect. ' +
-          'Initialize TraceRoot before any other OpenTelemetry SDK.',
+          'Initialize traceroot before any other OpenTelemetry SDK.',
       );
     }
 

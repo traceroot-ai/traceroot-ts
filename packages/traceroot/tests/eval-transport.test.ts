@@ -17,7 +17,7 @@ describe('cloud-only default', () => {
   it('bare evaluate requires reporting (no credentials + inline dataset -> throws)', async () => {
     await assert.rejects(
       evaluate({ name: 'r', dataset: ds(1), task: echo, scorers: [exact] }),
-      /reports to the TraceRoot platform/,
+      /reports to the traceroot platform/,
     );
   });
 });

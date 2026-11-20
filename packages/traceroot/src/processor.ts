@@ -97,7 +97,7 @@ export interface TraceRootSpanProcessorOptions {
 }
 
 /**
- * Wraps an inner SpanProcessor and injects TraceRoot SDK metadata attributes
+ * Wraps an inner SpanProcessor and injects traceroot SDK metadata attributes
  * on every span start. The inner processor handles export batching and, when
  * the Vercel AI SDK is in use, OpenInference attribute enrichment.
  */
@@ -241,7 +241,7 @@ export class TraceRootSpanProcessor implements SpanProcessor {
       if (!_hasWarnedUnattributedDrop) {
         _hasWarnedUnattributedDrop = true;
         console.warn(
-          `[TraceRoot] dropping span "${span.name}": no traceroot.project_id and no ` +
+          `[traceroot] dropping span "${span.name}": no traceroot.project_id and no ` +
             'process-default project is configured, so it cannot be routed. ' +
             'Further drops will not be logged.',
         );
@@ -304,7 +304,7 @@ export class RedactingSpanExporter implements SpanExporter {
       const late = copies.filter((copy) => copy === LATE).length;
       if (late > 0) {
         diag.warn(
-          `[TraceRoot] redact did not settle within ${REDACT_TIMEOUT_MS}ms for ${late} of ${spans.length} spans; blanking their attribute values`,
+          `[traceroot] redact did not settle within ${REDACT_TIMEOUT_MS}ms for ${late} of ${spans.length} spans; blanking their attribute values`,
         );
       }
       return await Promise.all(
@@ -330,7 +330,7 @@ function shouldExport(predicate: (span: ReadableSpan) => boolean, span: Readable
   try {
     return predicate(span) !== false;
   } catch (err) {
-    diag.warn('[TraceRoot] exportSpan threw; exporting the span', err);
+    diag.warn('[traceroot] exportSpan threw; exporting the span', err);
     return true;
   }
 }
@@ -354,7 +354,7 @@ export async function redactAttributes(
   try {
     const redacted: unknown = await redact(theirs);
     if (typeof redacted !== 'object' || redacted === null || Array.isArray(redacted)) {
-      diag.warn('[TraceRoot] redact returned a non-object; blanking attribute values');
+      diag.warn('[traceroot] redact returned a non-object; blanking attribute values');
       return blanked(theirs, ours);
     }
     // Spread inside the try: copying the result can throw (e.g. a throwing getter).
@@ -362,7 +362,7 @@ export async function redactAttributes(
   } catch (err) {
     // Name only the error type: its message may quote the data being redacted.
     diag.warn(
-      `[TraceRoot] redact threw ${err instanceof Error ? err.name : typeof err}; blanking attribute values`,
+      `[traceroot] redact threw ${err instanceof Error ? err.name : typeof err}; blanking attribute values`,
     );
     return blanked(theirs, ours);
   }
@@ -395,7 +395,7 @@ async function redactedCopy(redact: Redact, span: ReadableSpan): Promise<Readabl
       ),
     ]);
   // Object.create, not a spread: a spread loses spanContext() and the prototype getters.
-  // Only TraceRoot's exporter receives this copy; other processors keep the original span.
+  // Only traceroot's exporter receives this copy; other processors keep the original span.
   return Object.assign(Object.create(span), {
     attributes: { ...rest, 'traceroot.redacted': true },
     events: span.events.map((event, i) =>

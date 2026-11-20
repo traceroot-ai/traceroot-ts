@@ -7,7 +7,7 @@
 [![Discord][discord-image]][discord-url]
 [![Documentation][docs-image]][docs-url]
 
-TraceRoot observability exporter for [Mastra](https://mastra.ai). Sends Mastra agent traces to TraceRoot with full span-type semantics (agent, tool, LLM).
+traceroot observability exporter for [Mastra](https://mastra.ai). Sends Mastra agent traces to traceroot with full span-type semantics (agent, tool, LLM).
 
 ## Installation
 
@@ -43,8 +43,8 @@ export const mastra = new Mastra({
 
 | Option | Default | Description |
 |---|---|---|
-| `apiKey` | `TRACEROOT_API_KEY` env | TraceRoot API key |
-| `baseUrl` | `https://app.traceroot.ai` | TraceRoot backend URL (`TRACEROOT_HOST_URL` env) |
+| `apiKey` | `TRACEROOT_API_KEY` env | traceroot API key |
+| `baseUrl` | `https://app.traceroot.ai` | traceroot backend URL (`TRACEROOT_HOST_URL` env) |
 | `realtime` | `false` | Flush after every span (useful for short-lived scripts) |
 | `disableBatch` | `false` | Use `SimpleSpanProcessor` instead of batch |
 | `batchSize` | `512` | Max spans per export batch |
@@ -52,7 +52,7 @@ export const mastra = new Mastra({
 
 ## Documentation
 
-See the [TraceRoot Docs](https://traceroot.ai/docs/tracing/get-started) for details.
+See the [traceroot Docs](https://traceroot.ai/docs/tracing/get-started) for details.
 
 <!-- Links -->
 

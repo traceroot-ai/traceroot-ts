@@ -190,13 +190,13 @@ export class OpenAIAgentsProcessor {
 }
 
 /**
- * Replaces @openai/agents' default tracing processors with TraceRoot's.
+ * Replaces @openai/agents' default tracing processors with traceroot's.
  *
  * The SDK's umbrella package eagerly registers an OpenAI-hosted exporter at
  * import time (sends spans to api.openai.com). Calling `setTraceProcessors`
- * here replaces that default — spans go to TraceRoot only.
+ * here replaces that default — spans go to traceroot only.
  *
- * To dual-export (e.g. ship to both TraceRoot *and* OpenAI), call
+ * To dual-export (e.g. ship to both traceroot *and* OpenAI), call
  * `addTraceProcessor(otherProcessor)` from `@openai/agents` after `initialize()`.
  */
 export function wireOpenAIAgentsProcessor(mod: unknown): void {
@@ -204,7 +204,7 @@ export function wireOpenAIAgentsProcessor(mod: unknown): void {
   const setTraceProcessors = (mod as any)?.setTraceProcessors;
   if (typeof setTraceProcessors !== 'function') {
     throw new Error(
-      '[TraceRoot] instrumentModules.openaiAgents does not expose setTraceProcessors. ' +
+      '[traceroot] instrumentModules.openaiAgents does not expose setTraceProcessors. ' +
         'Pass `import * as agents from "@openai/agents"` (the module namespace, not a sub-export).',
     );
   }

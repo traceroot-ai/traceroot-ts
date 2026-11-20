@@ -820,7 +820,7 @@ describe('pi wiring and wireInstrumentations() dispatch', () => {
       assert.equal(
         TraceRoot.isInitialized(),
         false,
-        'the wiring-failure rollback must leave TraceRoot uninitialized (it never reached _isInitialized = true)',
+        'the wiring-failure rollback must leave traceroot uninitialized (it never reached _isInitialized = true)',
       );
     });
   });
@@ -947,7 +947,7 @@ describe('pi integration', () => {
     _resetForTesting();
   });
 
-  it('the real in-tree pi instrumentation wired through TraceRoot.initialize exports enriched spans into TraceRoot own pipeline', async () => {
+  it('the real in-tree pi instrumentation wired through TraceRoot.initialize exports enriched spans into traceroot own pipeline', async () => {
     delete process.env.TRACEROOT_API_KEY;
 
     const Session = makeFakeSessionClass();
@@ -993,7 +993,7 @@ describe('pi integration', () => {
 
     assert.ok(
       rootSpan,
-      'the real in-tree pi instrumentation must export an AGENT root span through TraceRoot shared provider',
+      'the real in-tree pi instrumentation must export an AGENT root span through traceroot shared provider',
     );
 
     assert.equal(rootSpan!.name, 'AgentSession.prompt');
@@ -1012,7 +1012,7 @@ describe('pi integration', () => {
       'the root span must carry TraceRootSpanProcessor span-path enrichment',
     );
 
-    assert.ok(llmSpan, 'the LLM child span must also route through TraceRoot provider');
+    assert.ok(llmSpan, 'the LLM child span must also route through traceroot provider');
     assert.equal(
       llmSpan!.parentSpanId,
       rootSpan!.spanContext().spanId,

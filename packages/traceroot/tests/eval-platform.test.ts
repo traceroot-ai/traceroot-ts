@@ -319,7 +319,7 @@ describe('reporting (cloud-only)', () => {
     ds.upsert({ input: 1, id: 'c0', expected: 1 });
     await assert.rejects(
       evaluate({ name: 'r', dataset: ds, task: echo, scorers: [exact] }),
-      /reports to the TraceRoot platform/,
+      /reports to the traceroot platform/,
     );
   });
 

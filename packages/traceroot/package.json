@@ -1,7 +1,7 @@
 {
   "name": "@traceroot-ai/traceroot",
   "version": "0.8.1",
-  "description": "TraceRoot TypeScript SDK for AI observability",
+  "description": "traceroot TypeScript SDK for AI observability",
   "keywords": [
     "traceroot",
     "sdk"

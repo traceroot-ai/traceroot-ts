@@ -176,7 +176,7 @@ async function redactText(
     REDACT_TIMEOUT_MS,
     () => {
       diag.warn(
-        `[TraceRoot] redact did not settle within ${REDACT_TIMEOUT_MS}ms; withholding eval text`,
+        `[traceroot] redact did not settle within ${REDACT_TIMEOUT_MS}ms; withholding eval text`,
       );
       return {};
     },
@@ -326,7 +326,7 @@ function datasetFromVersion(
 export async function pullDataset(datasetId: string, opts: PullOptions = {}): Promise<Dataset> {
   const { apiKey, baseUrl } = TraceRoot.resolveCredentials(opts.apiKey, opts.baseUrl);
   if (!apiKey)
-    throw new Error('pullDataset needs an API key (initialize TraceRoot or pass apiKey).');
+    throw new Error('pullDataset needs an API key (initialize traceroot or pass apiKey).');
 
   const meta = await httpGetJson(
     `${baseUrl}/api/v1/public/datasets/${encodeURIComponent(datasetId)}`,
@@ -385,7 +385,7 @@ export async function pullDatasetVersion(
 ): Promise<Dataset> {
   const { apiKey, baseUrl } = TraceRoot.resolveCredentials(opts.apiKey, opts.baseUrl);
   if (!apiKey)
-    throw new Error('pullDatasetVersion needs an API key (initialize TraceRoot or pass apiKey).');
+    throw new Error('pullDatasetVersion needs an API key (initialize traceroot or pass apiKey).');
 
   let snapshot: any;
   try {
@@ -475,7 +475,7 @@ function warnOnMetricNameCollisions(contributors: Map<string, string[]>): void {
   }
 }
 
-/** Reports an evaluation run to the TraceRoot backend. One instance per run. */
+/** Reports an evaluation run to the traceroot backend. One instance per run. */
 export class PlatformTransport implements EvalTransport {
   runId: string | null = null;
   /** Absolute UI run link from the backend (resolved against the UI origin), when present. */

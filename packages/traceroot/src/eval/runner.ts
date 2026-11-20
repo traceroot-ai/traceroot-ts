@@ -108,7 +108,7 @@ function loadOptions(): RunnerOptions {
   return raw ? JSON.parse(raw) : {};
 }
 
-/** Guarantee no TraceRoot data leaves this process in local-only mode: disables span export
+/** Guarantee no traceroot data leaves this process in local-only mode: disables span export
  *  (TRACEROOT_ENABLED=false) AND drops credentials so the engine can build no reporting
  *  transport — a local run never silently uploads eval results on ambient credentials.
  *  Mirrors traceroot-py's _enforce_local_only (which resets its client). */
@@ -329,7 +329,7 @@ function ensureGitignore(dir: string): void {
   try {
     writeFileSync(
       gi,
-      '# TraceRoot local evaluation artifacts -- may contain payloads. Do not commit.\n*\n',
+      '# traceroot local evaluation artifacts -- may contain payloads. Do not commit.\n*\n',
       { mode: 0o600 },
     );
   } catch {

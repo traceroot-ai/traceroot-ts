@@ -318,7 +318,7 @@ function handlePiAgentCoreEvent(
  * Patches `Agent.prototype.prompt`/`subscribe` from `@earendil-works/pi-agent-core`.
  * On prompt(): the AGENT root span parents on `context.active()` — never a bare
  * ROOT_CONTEXT — so when the host has an active span (including one holding a
- * forced trace id, e.g. TraceRoot's internal-export `observe()` wrapper; see
+ * forced trace id, e.g. traceroot's internal-export `observe()` wrapper; see
  * trace-id.ts's forcedTraceRootContext()), the AGENT span nests as a CHILD in that
  * same trace instead of opening a new root. This is the identical guard pi.ts's own
  * `proto.prompt` wrapper already applies for AgentSession, and satisfies the same

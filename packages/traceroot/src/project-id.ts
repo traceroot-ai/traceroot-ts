@@ -27,7 +27,7 @@ export function assertValidProjectId(projectId: unknown): asserts projectId is s
       typeof projectId === 'string'
         ? JSON.stringify(projectId)
         : `a value of type ${typeof projectId}`;
-    throw new TypeError(`[TraceRoot] projectId must be a non-empty string, got: ${description}`);
+    throw new TypeError(`[traceroot] projectId must be a non-empty string, got: ${description}`);
   }
 }
 
@@ -43,7 +43,7 @@ export function shouldAttachProjectId(projectId: unknown): boolean {
     if (!_hasWarnedPublicIgnore) {
       _hasWarnedPublicIgnore = true;
       console.warn(
-        '[TraceRoot] per-root projectId is only honored in internal export mode; ignoring it.',
+        '[traceroot] per-root projectId is only honored in internal export mode; ignoring it.',
       );
     }
     return false;

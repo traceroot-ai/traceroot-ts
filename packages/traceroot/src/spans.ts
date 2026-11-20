@@ -127,12 +127,12 @@ export function startSpan(options: StartSpanOptions, tracerOverride?: Tracer): S
 
   if (options.traceId !== undefined && options.parent !== undefined) {
     throw new TypeError(
-      '[TraceRoot] startSpan: traceId forces a new root and is mutually exclusive with parent.',
+      '[traceroot] startSpan: traceId forces a new root and is mutually exclusive with parent.',
     );
   }
   if (options.projectId !== undefined && options.parent !== undefined) {
     throw new TypeError(
-      '[TraceRoot] startSpan: projectId applies to a new root and is mutually exclusive with parent (children inherit it).',
+      '[traceroot] startSpan: projectId applies to a new root and is mutually exclusive with parent (children inherit it).',
     );
   }
   const forcedId = options.traceId;
@@ -176,7 +176,7 @@ export function startSpan(options: StartSpanOptions, tracerOverride?: Tracer): S
   ) {
     _hasWarnedUninit = true;
     console.warn(
-      '[TraceRoot] startSpan() called but TraceRoot.initialize() was not called. Spans will not be recorded.',
+      '[traceroot] startSpan() called but TraceRoot.initialize() was not called. Spans will not be recorded.',
     );
   }
   if (otel.isRecording()) {
