@@ -8,7 +8,8 @@ import {
   trace,
 } from '@opentelemetry/api';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
-import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
 import {
   OpenInferenceBatchSpanProcessor,
   OpenInferenceSimpleSpanProcessor,
@@ -38,7 +39,7 @@ const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
 let _isInitialized = false;
 let _tracingActive = false;
-let _provider: NodeTracerProvider | undefined;
+let _provider: BasicTracerProvider | undefined;
 // Flushed after the provider: the batch processor's flush does not wait for an export in flight.
 let _redactingExporter: RedactingSpanExporter | undefined;
 // Resolved on initialize() so the offline-eval module can reach the same credentials
@@ -313,7 +314,10 @@ export class TraceRoot {
           },
         });
 
-    _provider = new NodeTracerProvider(
+    // BasicTracerProvider + an explicit AsyncLocalStorage context manager is exactly what NodeTracerProvider
+    // registers for TraceRoot (W3C trace-context + baggage propagation), without pulling in
+    // @opentelemetry/propagator-jaeger 1.x (CVE-2026-59892) through sdk-trace-node.
+    _provider = new BasicTracerProvider(
       target.internal ? { idGenerator: new ContextIdGenerator() } : {},
     );
     _redactingExporter = redactingExporter;
@@ -327,7 +331,7 @@ export class TraceRoot {
         exportSpan: options.exportSpan,
       }),
     );
-    _provider.register();
+    _provider.register({ contextManager: new AsyncLocalStorageContextManager().enable() });
 
     // register() calls trace.setGlobalTracerProvider() internally, which is a no-op
     // (logs via diag, returns false — never throws) if another OTel provider was
