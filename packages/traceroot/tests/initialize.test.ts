@@ -11,6 +11,7 @@ import {
   shouldDropUnattributed,
 } from '../src/traceroot';
 import { TraceRootSpanProcessor } from '../src/processor';
+import { observe } from '../src/observe';
 import { isInternalMode, withForcedTraceId } from '../src/trace-id';
 import { trace } from '@opentelemetry/api';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
@@ -565,5 +566,48 @@ describe('TraceRoot.isTracingActive()', () => {
     await TraceRoot.shutdown();
     TraceRoot.initialize({ apiKey: 'test-key-2', disableBatch: true });
     assert.equal(TraceRoot.isTracingActive(), true);
+  });
+});
+
+describe('TRACEROOT_ENABLED and span export', () => {
+  const prev = process.env['TRACEROOT_ENABLED'];
+  afterEach(() => {
+    _resetForTesting();
+    if (prev === undefined) delete process.env['TRACEROOT_ENABLED'];
+    else process.env['TRACEROOT_ENABLED'] = prev;
+  });
+
+  // Counts the spans that reach export; returning false keeps them off the network.
+  async function exportedSpans(env: string | undefined, enabled?: boolean): Promise<number> {
+    if (env === undefined) delete process.env['TRACEROOT_ENABLED'];
+    else process.env['TRACEROOT_ENABLED'] = env;
+    let exported = 0;
+    TraceRoot.initialize({
+      apiKey: 'test-key',
+      baseUrl: 'http://127.0.0.1:9',
+      disableBatch: true,
+      instrumentModules: {},
+      enabled,
+      exportSpan: () => {
+        exported++;
+        return false;
+      },
+    });
+    await observe({ name: 'probe' }, async () => 1);
+    return exported;
+  }
+
+  it('exports spans when TRACEROOT_ENABLED is unset', async () => {
+    assert.equal(await exportedSpans(undefined), 1);
+  });
+
+  for (const value of ['False', '0', 'no', 'off']) {
+    it(`exports no spans when TRACEROOT_ENABLED=${JSON.stringify(value)}`, async () => {
+      assert.equal(await exportedSpans(value), 0);
+    });
+  }
+
+  it('exports no spans when enabled: false overrides TRACEROOT_ENABLED=true', async () => {
+    assert.equal(await exportedSpans('true', false), 0);
   });
 });
