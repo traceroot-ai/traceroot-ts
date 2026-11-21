@@ -229,15 +229,22 @@ async function* _observeAsyncGenerator<A extends unknown[], T>(
 
   const collected: T[] = [];
   try {
-    while (true) {
-      const { value, done } = await context.with(spanCtx, () => innerGen.next());
-      if (done) break;
-      collected.push(value as T);
-      yield value as T;
-    }
-    if (options.captureOutput !== false && collected.length > 0) {
-      const serialized = trySerialize(collected);
-      if (serialized !== undefined) span.setAttribute(OUTPUT_VALUE, serialized);
+    try {
+      while (true) {
+        const { value, done } = await context.with(spanCtx, () => innerGen.next());
+        if (done) break;
+        collected.push(value as T);
+        yield value as T;
+      }
+      if (options.captureOutput !== false && collected.length > 0) {
+        const serialized = trySerialize(collected);
+        if (serialized !== undefined) span.setAttribute(OUTPUT_VALUE, serialized);
+      }
+    } finally {
+      // A consumer that stops early (break, return, throw) never drains innerGen. Close it so
+      // its finally blocks run, as yield* would. A no-op once it has finished. Inside the outer
+      // try so an error thrown while closing is recorded on the span.
+      await context.with(spanCtx, () => innerGen.return(undefined));
     }
   } catch (err) {
     span.recordException(err instanceof Error ? err : new Error(String(err)));
