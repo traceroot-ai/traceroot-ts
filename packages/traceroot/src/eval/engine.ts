@@ -86,7 +86,8 @@ export interface EvaluateOptions {
   onCaseStart?: (c: EvalCase) => void;
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void;
   /** Cooperative cancellation: when aborted, no further cases start and the run finishes
-   *  terminally (incomplete) so callers can finalize a partial result (e.g. SIGINT). */
+   *  terminally (incomplete) so callers can finalize a partial result (e.g. SIGINT). Cases
+   *  already running get {@link CANCEL_DRAIN_MS} to settle; any still running then are left out. */
   signal?: AbortSignal;
 }
 
@@ -111,6 +112,15 @@ export const LOCAL_AND_TRANSPORT =
 const INLINE_DATASET = '<inline>';
 const EVAL_ATTR_CONTRACT_VERSION = '1';
 const ZERO_TRACE_ID = /^0+$/;
+
+/**
+ * How long a cancelled run waits for the cases already running before it is finalized without
+ * them. A promise can't be cancelled, so a case awaiting a stream that went silent would otherwise
+ * keep the run from ever finishing. traceroot-cli kills the runner 10 s after Ctrl+C: the first
+ * half lets ordinary in-flight calls finish, and the second is left for finalizing, closing an
+ * uploaded run as incomplete (its retries back off 0.5 s + 1 s) and flushing spans included.
+ */
+export const CANCEL_DRAIN_MS = 5_000;
 
 function fmtError(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -235,6 +245,31 @@ async function runBounded<T>(
   return results;
 }
 
+/**
+ * `work` once it settles, or null if `signal` aborts and `work` is still pending `drainMs` later.
+ * `work` keeps running after a null; racing it leaves a handler on it, so a later rejection is
+ * not unhandled.
+ */
+function drainOnAbort<T>(
+  work: Promise<T>,
+  signal: AbortSignal | undefined,
+  drainMs: number,
+): Promise<T | null> {
+  if (signal === undefined) return work;
+  let drain!: (value: null) => void;
+  const drained = new Promise<null>((resolve) => (drain = resolve));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onAbort = (): void => {
+    timer = setTimeout(() => drain(null), drainMs);
+  };
+  if (signal.aborted) onAbort();
+  else signal.addEventListener('abort', onAbort, { once: true });
+  return Promise.race([work, drained]).finally(() => {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', onAbort);
+  });
+}
+
 function setSpanAttr(
   span: Span,
   key: string,
@@ -331,6 +366,7 @@ async function runCase(
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void,
   emittedOwnership?: Map<string, Set<string>>,
   droppedResults?: string[],
+  abandoned?: () => boolean,
 ): Promise<EvalItemResult> {
   onCaseStart?.(evalCase);
   try {
@@ -492,6 +528,9 @@ async function runCase(
   } finally {
     root.end();
   }
+  // A cancelled run that stopped waiting for this case was finalized without it: recording it now
+  // would add a result to a closed run and report a case after the run's last event.
+  if (abandoned?.()) return result;
   try {
     await transport.recordItemResult(run, result);
     await transport.recordScores(run, result.caseId, result.scores);
@@ -501,6 +540,7 @@ async function runCase(
     // "uploaded" with missing results can be told apart from a clean one.
     droppedResults?.push(fmtError(err));
   }
+  if (abandoned?.()) return result;
   onCaseComplete?.(result, result.durationMs ?? 0);
   return result;
 }
@@ -777,11 +817,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   if (local) {
     _pushSuppressGlobalAutoInit();
   }
+  // Set once a cancelled run stops waiting for the cases still running (see CANCEL_DRAIN_MS). From
+  // then on the run is finalized without them, so one that settles later records nothing.
+  let abandoned = false;
   const runCases = () =>
     runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
-      // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip),
-      // but already-running cases are still awaited by runBounded — so every case that began
-      // finishes recording before we finish the run below (no lost in-flight results).
+      // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip).
+      // Cases already running are awaited for up to CANCEL_DRAIN_MS below, so one that settles in
+      // that time still finishes recording before the run is finished.
       if (options.signal?.aborted) {
         cancelled = true;
         return Promise.resolve(null);
@@ -799,16 +842,26 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         onCaseComplete,
         emittedOwnership,
         droppedResults,
+        () => abandoned,
       );
     });
   try {
     // Scope suppression to exactly the case-execution phase of a local run: spans created under
     // this context (and their auto-instrumented descendants) are non-recording, so they never
     // forward to the exporter — including late spans whose .end() fires after the run returns.
-    const raw = local
-      ? await context.with(suppressTracing(context.active()), runCases)
-      : await runCases();
-    itemResults = raw.filter((r): r is EvalItemResult => r !== null);
+    const raw = await drainOnAbort(
+      local ? context.with(suppressTracing(context.active()), runCases) : runCases(),
+      options.signal,
+      CANCEL_DRAIN_MS,
+    );
+    if (raw === null) {
+      // Cancelled, and a case was still running when the drain ran out. The cases that completed
+      // reached the caller through onCaseComplete; Python leaves a cancelled in-flight case out
+      // the same way, rather than recording it as errored.
+      abandoned = true;
+    } else {
+      itemResults = raw.filter((r): r is EvalItemResult => r !== null);
+    }
     // If every case was already in flight when the abort arrived, no worker pulled a new case, so
     // the flag above never flipped — re-check the signal after runBounded settles so an
     // in-flight-only cancellation still finalizes as incomplete and raises CancelledError.
@@ -824,10 +877,11 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     reporter?.finish();
     // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
     // A cancelled run closes 'incomplete', so a registered run is never left orphaned in 'running'.
-    // Runs AFTER all in-flight cases above have settled. Completion is the LAST thing to run, so
-    // it must never become the story: if the run already failed, the original error keeps
-    // propagating and the completion failure rides along on it (it used to REPLACE the real
-    // cause — a /complete 400 buried the actual exception).
+    // Runs AFTER the in-flight cases above have settled, or once a cancelled run's drain ran out
+    // without them. Completion is the LAST thing to run, so it must never become the story: if
+    // the run already failed, the original error keeps propagating and the completion failure
+    // rides along on it (it used to REPLACE the real cause — a /complete 400 buried the actual
+    // exception).
     // A run whose body did not get through its cases is INCOMPLETE, whatever stopped it — an
     // abort, or anything that threw out of the case loop. Left to derive its own status the
     // transport would report 'completed' for an evaluation that scored two cases out of five. An
