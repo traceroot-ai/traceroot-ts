@@ -126,16 +126,22 @@ async function judged(ctx: any) {
 export const e = new Evaluation({ name: 'usage-dropped-stream', dataset: ds, task, scorers: [judged] });
 `;
 
-function bucket(calls: number, withUsage: number, input: number | null, output: number | null) {
+/** A bucket of `calls` calls, `reported` of which reported input and output (so a total). */
+function bucket(calls: number, reported: number, input: number, output: number) {
   return {
     llm_calls: calls,
-    llm_calls_with_usage: withUsage,
     input_tokens: input,
+    llm_calls_with_input_tokens: reported,
     output_tokens: output,
-    total_tokens: input === null || output === null ? null : input + output,
+    llm_calls_with_output_tokens: reported,
+    total_tokens: input + output,
+    llm_calls_with_total_tokens: reported,
     cache_read_tokens: null,
+    llm_calls_with_cache_read_tokens: 0,
     cache_write_tokens: null,
+    llm_calls_with_cache_write_tokens: 0,
     reasoning_tokens: null,
+    llm_calls_with_reasoning_tokens: 0,
     cost: null,
     llm_calls_with_cost: 0,
     currency: null,

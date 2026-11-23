@@ -11,6 +11,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Emitter, runSuite } from '../src/eval';
+import { emptyBucket, type UsageBucket } from '../src/eval/usage';
+
+const bucket = (overrides: Partial<UsageBucket>): UsageBucket => ({
+  ...emptyBucket(),
+  ...overrides,
+});
 
 const srcDir = join(__dirname, '..', 'src').replace(/\\/g, '/');
 const openaiEntry = require.resolve('openai').replace(/\\/g, '/');
@@ -172,84 +178,43 @@ describe('local runner records LLM usage end to end', () => {
     }
 
     assert.ok(!events.some((e) => e.type === 'fatal'), JSON.stringify(events));
-    const none = {
-      cache_write_tokens: null,
-      cost: null,
-      llm_calls_with_cost: 0,
-      currency: null,
-    };
     // A stream whose provider sends no usage chunk counts as a call without usage, so each task
-    // bucket has one call more than it has calls with usage.
+    // bucket covers one call fewer than it counts.
+    const tokens = (n: number, input: number, output: number) => ({
+      input_tokens: input,
+      llm_calls_with_input_tokens: n,
+      output_tokens: output,
+      llm_calls_with_output_tokens: n,
+      total_tokens: input + output,
+      llm_calls_with_total_tokens: n,
+    });
     const expected: Record<string, unknown> = {
       a: {
-        task: {
+        task: bucket({
           llm_calls: 3,
-          llm_calls_with_usage: 2,
-          input_tokens: 31,
-          output_tokens: 8,
-          total_tokens: 39,
+          ...tokens(2, 31, 8),
           cache_read_tokens: 4,
-          cache_write_tokens: null,
+          llm_calls_with_cache_read_tokens: 1,
           reasoning_tokens: 2,
-          cost: null,
-          llm_calls_with_cost: 0,
-          currency: null,
-        },
-        scorers: {
-          llm_calls: 1,
-          llm_calls_with_usage: 1,
-          input_tokens: 30,
-          output_tokens: 1,
-          total_tokens: 31,
-          cache_read_tokens: null,
-          reasoning_tokens: null,
-          ...none,
-        },
+          llm_calls_with_reasoning_tokens: 1,
+        }),
+        scorers: bucket({ llm_calls: 1, ...tokens(1, 30, 1) }),
       },
       b: {
-        task: {
-          llm_calls: 3,
-          llm_calls_with_usage: 2,
-          input_tokens: 300,
-          output_tokens: 30,
-          total_tokens: 330,
-          cache_read_tokens: null,
-          reasoning_tokens: null,
-          ...none,
-        },
-        scorers: {
-          llm_calls: 1,
-          llm_calls_with_usage: 1,
-          input_tokens: 300,
-          output_tokens: 2,
-          total_tokens: 302,
-          cache_read_tokens: null,
-          reasoning_tokens: null,
-          ...none,
-        },
+        task: bucket({ llm_calls: 3, ...tokens(2, 300, 30) }),
+        scorers: bucket({ llm_calls: 1, ...tokens(1, 300, 2) }),
       },
     };
     const runTotal = {
-      task: {
+      task: bucket({
         llm_calls: 6,
-        llm_calls_with_usage: 4,
-        input_tokens: 331,
-        output_tokens: 38,
-        total_tokens: 369,
+        ...tokens(4, 331, 38),
         cache_read_tokens: 4,
+        llm_calls_with_cache_read_tokens: 1,
         reasoning_tokens: 2,
-        ...none,
-      },
-      scorers: {
-        llm_calls: 2,
-        llm_calls_with_usage: 2,
-        input_tokens: 330,
-        output_tokens: 3,
-        total_tokens: 333,
-        cache_read_tokens: null,
-        reasoning_tokens: null,
-        ...none,
-      },
+        llm_calls_with_reasoning_tokens: 1,
+      }),
+      scorers: bucket({ llm_calls: 2, ...tokens(2, 330, 3) }),
     };
 
     // case_completed events

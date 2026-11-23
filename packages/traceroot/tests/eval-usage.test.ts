@@ -32,9 +32,27 @@ import {
 } from '../src/eval/usage';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
 
+// The bucket's keys, in the order both SDKs write them: each sum, then the calls it covers.
 const BUCKET_KEYS = [
   'llm_calls',
-  'llm_calls_with_usage',
+  'input_tokens',
+  'llm_calls_with_input_tokens',
+  'output_tokens',
+  'llm_calls_with_output_tokens',
+  'total_tokens',
+  'llm_calls_with_total_tokens',
+  'cache_read_tokens',
+  'llm_calls_with_cache_read_tokens',
+  'cache_write_tokens',
+  'llm_calls_with_cache_write_tokens',
+  'reasoning_tokens',
+  'llm_calls_with_reasoning_tokens',
+  'cost',
+  'llm_calls_with_cost',
+  'currency',
+];
+
+const SUM_FIELDS = [
   'input_tokens',
   'output_tokens',
   'total_tokens',
@@ -42,9 +60,16 @@ const BUCKET_KEYS = [
   'cache_write_tokens',
   'reasoning_tokens',
   'cost',
-  'llm_calls_with_cost',
-  'currency',
-];
+] as const;
+
+/** A count is 0 exactly when its sum is null, and never above llm_calls. */
+function assertCoverage(b: UsageBucket): void {
+  for (const field of SUM_FIELDS) {
+    const count = b[`llm_calls_with_${field}` as keyof UsageBucket] as number;
+    assert.equal(count === 0, b[field] === null, `${field}: count ${count}, sum ${b[field]}`);
+    assert.ok(count <= b.llm_calls, `${field}: ${count} calls of ${b.llm_calls}`);
+  }
+}
 
 // A provider that is never registered globally: these tests hand it explicit parent contexts.
 const provider = new BasicTracerProvider();
@@ -62,6 +87,19 @@ function llm(attrs: Attributes = {}, parent?: Span): Span {
 
 function bucket(overrides: Partial<UsageBucket>): UsageBucket {
   return { ...emptyBucket(), ...overrides };
+}
+
+/** A bucket whose every call reported input and output, so each has a total too. */
+function reported(calls: number, input: number, output: number): UsageBucket {
+  return bucket({
+    llm_calls: calls,
+    input_tokens: input,
+    llm_calls_with_input_tokens: calls,
+    output_tokens: output,
+    llm_calls_with_output_tokens: calls,
+    total_tokens: input + output,
+    llm_calls_with_total_tokens: calls,
+  });
 }
 
 describe('usage buckets', () => {
@@ -90,21 +128,89 @@ describe('usage buckets', () => {
       usage.task,
       bucket({
         llm_calls: 3,
-        llm_calls_with_usage: 2,
         input_tokens: 17,
+        llm_calls_with_input_tokens: 2,
         output_tokens: 7,
+        llm_calls_with_output_tokens: 2,
         total_tokens: 24,
+        llm_calls_with_total_tokens: 2,
         cache_read_tokens: 3,
+        llm_calls_with_cache_read_tokens: 1,
         cost: 0.25,
         llm_calls_with_cost: 1,
         currency: 'USD',
       }),
     );
+    assertCoverage(usage.task);
     assert.deepEqual(
       usage.scorers,
       emptyBucket(),
       'a role with no calls is zero calls, null tokens',
     );
+    assertCoverage(usage.scorers);
+  });
+
+  it('counts the calls behind each sum: a call with input only covers no output or total', async () => {
+    const rec = new CaseUsageRecorder();
+    withUsageScope(rec, 'task', () => {
+      llm({ 'llm.token_count.prompt': 100 }).end();
+      llm({
+        'llm.token_count.prompt': 20,
+        'llm.token_count.completion': 8,
+        'llm.token_count.total': 28,
+      }).end();
+    });
+    const { task } = await rec.finish();
+    assert.deepEqual(
+      task,
+      bucket({
+        llm_calls: 2,
+        input_tokens: 120,
+        llm_calls_with_input_tokens: 2,
+        output_tokens: 8,
+        llm_calls_with_output_tokens: 1,
+        total_tokens: 28,
+        llm_calls_with_total_tokens: 1,
+      }),
+    );
+    assertCoverage(task);
+  });
+
+  it('counts each detail field on its own', async () => {
+    const rec = new CaseUsageRecorder();
+    withUsageScope(rec, 'task', () => {
+      llm({
+        'llm.token_count.prompt': 50,
+        'llm.token_count.prompt_details.cache_read': 30,
+        'llm.token_count.completion_details.reasoning': 4,
+      }).end();
+      llm({
+        'llm.token_count.prompt': 60,
+        'llm.token_count.prompt_details.cache_write': 12,
+        'llm.token_count.completion_details.reasoning': 6,
+        'llm.cost.total': 0.01,
+      }).end();
+      llm({ 'llm.token_count.prompt_details.cache_read': 5 }).end();
+    });
+    const { task } = await rec.finish();
+    assert.deepEqual(
+      task,
+      bucket({
+        llm_calls: 3,
+        input_tokens: 110,
+        llm_calls_with_input_tokens: 2,
+        cache_read_tokens: 35,
+        llm_calls_with_cache_read_tokens: 2,
+        cache_write_tokens: 12,
+        llm_calls_with_cache_write_tokens: 1,
+        reasoning_tokens: 10,
+        llm_calls_with_reasoning_tokens: 2,
+        cost: 0.01,
+        llm_calls_with_cost: 1,
+        currency: 'USD',
+      }),
+    );
+    assertCoverage(task);
   });
 
   it('first present convention wins, and an invalid value counts as absent', async () => {
@@ -128,14 +234,19 @@ describe('usage buckets', () => {
       task,
       bucket({
         llm_calls: 1,
-        llm_calls_with_usage: 1,
         input_tokens: 10,
+        llm_calls_with_input_tokens: 1,
         output_tokens: 5,
+        llm_calls_with_output_tokens: 1,
         total_tokens: 15,
+        llm_calls_with_total_tokens: 1,
         cache_write_tokens: 6,
+        llm_calls_with_cache_write_tokens: 1,
         reasoning_tokens: 3,
+        llm_calls_with_reasoning_tokens: 1,
       }),
     );
+    assertCoverage(task);
   });
 
   it('reads the remaining fallbacks: cache tokens from gen_ai.*, a reported total alone', async () => {
@@ -153,43 +264,74 @@ describe('usage buckets', () => {
       task,
       bucket({
         llm_calls: 2,
-        // The first call reported neither input nor output, so only the second has usage.
-        llm_calls_with_usage: 1,
         input_tokens: 3,
+        llm_calls_with_input_tokens: 1,
         total_tokens: 40,
+        llm_calls_with_total_tokens: 1,
         cache_read_tokens: 8,
+        llm_calls_with_cache_read_tokens: 1,
         cache_write_tokens: 9,
+        llm_calls_with_cache_write_tokens: 1,
       }),
     );
+    assertCoverage(task);
   });
 
-  it('a run sums its cases; a token field stays null only when null in every case', () => {
+  it('a run sums its cases, counts included; a sum stays null only when null in every case', () => {
     const a: CaseUsage = {
-      task: bucket({ llm_calls: 2, llm_calls_with_usage: 2, input_tokens: 5, output_tokens: 1 }),
+      task: bucket({
+        llm_calls: 2,
+        input_tokens: 5,
+        llm_calls_with_input_tokens: 2,
+        output_tokens: 1,
+        llm_calls_with_output_tokens: 1,
+        reasoning_tokens: 2,
+        llm_calls_with_reasoning_tokens: 1,
+      }),
       scorers: emptyBucket(),
     };
     const b: CaseUsage = {
-      task: bucket({ llm_calls: 1, llm_calls_with_usage: 0 }),
+      task: bucket({
+        llm_calls: 3,
+        input_tokens: 7,
+        llm_calls_with_input_tokens: 1,
+        cache_read_tokens: 4,
+        llm_calls_with_cache_read_tokens: 2,
+      }),
       scorers: bucket({
         llm_calls: 1,
-        llm_calls_with_usage: 1,
         input_tokens: 4,
+        llm_calls_with_input_tokens: 1,
         cost: 0.5,
         llm_calls_with_cost: 1,
         currency: 'USD',
       }),
     };
-    assert.deepEqual(sumUsage([a, b]), {
-      task: bucket({ llm_calls: 3, llm_calls_with_usage: 2, input_tokens: 5, output_tokens: 1 }),
+    const total = sumUsage([a, b])!;
+    assert.deepEqual(total, {
+      task: bucket({
+        llm_calls: 5,
+        input_tokens: 12,
+        llm_calls_with_input_tokens: 3,
+        output_tokens: 1,
+        llm_calls_with_output_tokens: 1,
+        cache_read_tokens: 4,
+        llm_calls_with_cache_read_tokens: 2,
+        reasoning_tokens: 2,
+        llm_calls_with_reasoning_tokens: 1,
+      }),
       scorers: bucket({
         llm_calls: 1,
-        llm_calls_with_usage: 1,
         input_tokens: 4,
+        llm_calls_with_input_tokens: 1,
         cost: 0.5,
         llm_calls_with_cost: 1,
         currency: 'USD',
       }),
     });
+    assert.deepEqual(Object.keys(total.task), BUCKET_KEYS);
+    assertCoverage(total.task);
+    assertCoverage(total.scorers);
     assert.equal(sumUsage([null, undefined]), null, 'not captured in any case');
     assert.equal(sumUsage([]), null);
   });
@@ -258,16 +400,7 @@ describe('what counts as an LLM call', () => {
       outer.end();
     });
     const { task } = await rec.finish();
-    assert.deepEqual(
-      task,
-      bucket({
-        llm_calls: 2,
-        llm_calls_with_usage: 2,
-        input_tokens: 50,
-        output_tokens: 6,
-        total_tokens: 56,
-      }),
-    );
+    assert.deepEqual(task, reported(2, 50, 6));
   });
 });
 
@@ -406,20 +539,8 @@ describe('engine: local runs', () => {
     for (const item of result.itemResults) {
       const n = calls[item.caseId];
       assert.deepEqual(item.usage, {
-        task: bucket({
-          llm_calls: n,
-          llm_calls_with_usage: n,
-          input_tokens: n * n,
-          output_tokens: n,
-          total_tokens: n * n + n,
-        }),
-        scorers: bucket({
-          llm_calls: 1,
-          llm_calls_with_usage: 1,
-          input_tokens: 100,
-          output_tokens: 2,
-          total_tokens: 102,
-        }),
+        task: reported(n, n * n, n),
+        scorers: reported(1, 100, 2),
       });
     }
     assert.deepEqual(fetchCalls, [], 'a local run makes no network call');
@@ -578,14 +699,7 @@ describe('engine: uploaded runs', () => {
       },
       scorers: [() => 1],
     });
-    assert.deepEqual(result.itemResults[0].usage?.task, {
-      ...emptyBucket(),
-      llm_calls: 1,
-      llm_calls_with_usage: 1,
-      input_tokens: 7,
-      output_tokens: 2,
-      total_tokens: 9,
-    });
+    assert.deepEqual(result.itemResults[0].usage?.task, reported(1, 7, 2));
     assert.ok(exported.includes('llm'), 'the LLM span still reached the export path');
     assert.ok(exported.includes('evaluation-item'));
   });
@@ -615,7 +729,7 @@ describe('engine: uploaded runs', () => {
 describe('reading artifacts back', () => {
   it('an artifact without usage reads as null; one with usage keeps it', () => {
     const usage: CaseUsage = {
-      task: bucket({ llm_calls: 1, llm_calls_with_usage: 1, input_tokens: 3 }),
+      task: bucket({ llm_calls: 1, input_tokens: 3, llm_calls_with_input_tokens: 1 }),
       scorers: emptyBucket(),
     };
     const runDoc = (u?: CaseUsage) => ({

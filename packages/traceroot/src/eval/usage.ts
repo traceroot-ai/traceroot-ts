@@ -14,26 +14,43 @@ import { OI_SPAN_KIND } from '../constants';
 
 export type UsageRole = 'task' | 'scorer';
 
-/** One role's LLM usage. snake_case because it is written as-is to the run artifacts and events. */
+/**
+ * One role's LLM usage. snake_case because it is written as-is to the run artifacts and events.
+ *
+ * Each token field sums the calls that reported it, and is null when none did. The
+ * `llm_calls_with_<field>` right after it counts those calls: below `llm_calls`, the sum is a lower
+ * bound. A count is 0 exactly when its sum is null, and never above `llm_calls`.
+ */
 export interface UsageBucket {
   /** Counted LLM calls. */
   llm_calls: number;
-  /** Of those, how many reported an input or output token count. Below `llm_calls`, the token
-   *  sums are lower bounds. */
-  llm_calls_with_usage: number;
-  /** Each token field sums the calls that reported it; null when none did. */
   input_tokens: number | null;
+  llm_calls_with_input_tokens: number;
   output_tokens: number | null;
+  llm_calls_with_output_tokens: number;
+  /** A call's reported total, or its input + output when it reports both and no total. */
   total_tokens: number | null;
+  llm_calls_with_total_tokens: number;
   cache_read_tokens: number | null;
+  llm_calls_with_cache_read_tokens: number;
   cache_write_tokens: number | null;
+  llm_calls_with_cache_write_tokens: number;
   reasoning_tokens: number | null;
+  llm_calls_with_reasoning_tokens: number;
   /** Sum of the reported `llm.cost.total`, null when no call reported one. Never priced here, so
    *  an unreported cost is unknown, not 0. */
   cost: number | null;
   llm_calls_with_cost: number;
   currency: 'USD' | null;
 }
+
+type TokenField =
+  | 'input_tokens'
+  | 'output_tokens'
+  | 'total_tokens'
+  | 'cache_read_tokens'
+  | 'cache_write_tokens'
+  | 'reasoning_tokens';
 
 /** A case's (or a run's) usage, split between the candidate task and its scorers. */
 export interface CaseUsage {
@@ -133,18 +150,35 @@ function readCall(attrs: Attributes): CallReading {
 export function emptyBucket(): UsageBucket {
   return {
     llm_calls: 0,
-    llm_calls_with_usage: 0,
     input_tokens: null,
+    llm_calls_with_input_tokens: 0,
     output_tokens: null,
+    llm_calls_with_output_tokens: 0,
     total_tokens: null,
+    llm_calls_with_total_tokens: 0,
     cache_read_tokens: null,
+    llm_calls_with_cache_read_tokens: 0,
     cache_write_tokens: null,
+    llm_calls_with_cache_write_tokens: 0,
     reasoning_tokens: null,
+    llm_calls_with_reasoning_tokens: 0,
     cost: null,
     llm_calls_with_cost: 0,
     currency: null,
   };
 }
+
+/** Each token sum, the reading it adds up, and the count of calls it covers. */
+const TOKEN_FIELDS: Array<[TokenField, keyof CallReading]> = [
+  ['input_tokens', 'input'],
+  ['output_tokens', 'output'],
+  ['total_tokens', 'total'],
+  ['cache_read_tokens', 'cacheRead'],
+  ['cache_write_tokens', 'cacheWrite'],
+  ['reasoning_tokens', 'reasoning'],
+];
+
+const coverage = (field: TokenField) => `llm_calls_with_${field}` as const;
 
 /** null + null stays null (nothing reported); anything reported sums. */
 function plus(a: number | null, b: number | null): number | null {
@@ -153,13 +187,12 @@ function plus(a: number | null, b: number | null): number | null {
 
 function addCall(bucket: UsageBucket, call: CallReading): void {
   bucket.llm_calls += 1;
-  if (call.input !== null || call.output !== null) bucket.llm_calls_with_usage += 1;
-  bucket.input_tokens = plus(bucket.input_tokens, call.input);
-  bucket.output_tokens = plus(bucket.output_tokens, call.output);
-  bucket.total_tokens = plus(bucket.total_tokens, call.total);
-  bucket.cache_read_tokens = plus(bucket.cache_read_tokens, call.cacheRead);
-  bucket.cache_write_tokens = plus(bucket.cache_write_tokens, call.cacheWrite);
-  bucket.reasoning_tokens = plus(bucket.reasoning_tokens, call.reasoning);
+  for (const [field, reading] of TOKEN_FIELDS) {
+    const value = call[reading];
+    if (value === null) continue;
+    bucket[field] = (bucket[field] ?? 0) + value;
+    bucket[coverage(field)] += 1;
+  }
   if (call.cost !== null) {
     bucket.cost = plus(bucket.cost, call.cost);
     bucket.llm_calls_with_cost += 1;
@@ -169,13 +202,10 @@ function addCall(bucket: UsageBucket, call: CallReading): void {
 
 function addBucket(into: UsageBucket, b: UsageBucket): void {
   into.llm_calls += b.llm_calls;
-  into.llm_calls_with_usage += b.llm_calls_with_usage;
-  into.input_tokens = plus(into.input_tokens, b.input_tokens);
-  into.output_tokens = plus(into.output_tokens, b.output_tokens);
-  into.total_tokens = plus(into.total_tokens, b.total_tokens);
-  into.cache_read_tokens = plus(into.cache_read_tokens, b.cache_read_tokens);
-  into.cache_write_tokens = plus(into.cache_write_tokens, b.cache_write_tokens);
-  into.reasoning_tokens = plus(into.reasoning_tokens, b.reasoning_tokens);
+  for (const [field] of TOKEN_FIELDS) {
+    into[field] = plus(into[field], b[field]);
+    into[coverage(field)] += b[coverage(field)];
+  }
   into.cost = plus(into.cost, b.cost);
   into.llm_calls_with_cost += b.llm_calls_with_cost;
   into.currency = into.cost !== null ? 'USD' : null;
