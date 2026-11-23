@@ -302,6 +302,7 @@ function caseMetadata(item: EvalItemResult, policy: ScorePolicy): Record<string,
     scorer_errors: scorerErrorEvents(item),
     trace_id: item.traceId,
     duration_ms: item.durationMs,
+    usage: item.usage ?? null,
   };
 }
 
@@ -437,6 +438,7 @@ export function writeArtifacts(
       task_error: item.error,
       trace_id: item.traceId,
       duration_ms: item.durationMs,
+      usage: item.usage ?? null,
     });
   });
   atomicWrite(casesPath, caseLines.join('\n') + (caseLines.length ? '\n' : ''));
@@ -473,6 +475,7 @@ export function writeArtifacts(
     })),
     counts: counts(result),
     scores: Object.fromEntries(Object.entries(result.scoreSummary).map(([k, v]) => [k, { ...v }])),
+    usage: result.usage,
     upload: {
       status: result.uploadState.status,
       dashboard_url: result.uploadState.dashboardUrl,
@@ -493,7 +496,12 @@ export async function runSuite(
   signal?: AbortSignal,
 ): Promise<boolean> {
   const reporting = Boolean(options.reporting);
-  if (!reporting) enforceLocalOnly();
+  if (!reporting) {
+    enforceLocalOnly();
+    // Before discovery: an eval module's initialize() call, made at import, then records LLM usage
+    // in-process (an exporter-less provider) instead of returning disabled.
+    TraceRoot._armUsageCapture();
+  }
 
   emitter.emit({
     type: 'hello',
@@ -634,6 +642,7 @@ async function runOne(
         localRunId: ce?.localRunId,
         runId: ce?.runId,
         uploadState: ce?.uploadState,
+        usageCaptured: ce?.usageCaptured,
       });
     } else {
       throw err;
@@ -678,6 +687,7 @@ async function runOne(
     score_summary: Object.fromEntries(
       Object.entries(result.scoreSummary).map(([k, v]) => [k, { ...v }]),
     ),
+    usage: result.usage,
     artifact,
   });
   if (cancelled) throw new CancelledError();
@@ -687,7 +697,12 @@ function partialResult(
   evaluation: Evaluation,
   collected: EvalItemResult[],
   candidateVersion: string | null,
-  run?: { localRunId?: string; runId?: string | null; uploadState?: UploadState },
+  run?: {
+    localRunId?: string;
+    runId?: string | null;
+    uploadState?: UploadState;
+    usageCaptured?: boolean;
+  },
 ): EvalRunResult {
   const data = evaluation.dataset;
   let datasetId = 'ds_inline';
@@ -722,6 +737,7 @@ function partialResult(
       runId: run?.runId ?? null,
       candidateVersion,
       dataset,
+      usageCaptured: run?.usageCaptured,
     },
   );
 }

@@ -27,6 +27,59 @@ const OPENINFERENCE_PACKAGES = {
 // already traced (which would nest an LLM span inside an LLM span).
 const _instrumentedProviders = new Set<string>();
 
+// TypeSafe emits decision spans, never LLM calls, so wiring it alone does not make an eval run's
+// LLM usage readable.
+const NOT_LLM_INTEGRATIONS = new Set(['typeSafe']);
+const isLlmIntegration = (key: string): boolean => !NOT_LLM_INTEGRATIONS.has(key);
+
+/** The LLM integrations one initialize() wired. */
+export interface WiredIntegrations {
+  /** How many were wired. */
+  count: number;
+  /** Whether one has patched a module yet. A module passed in `instrumentModules` is patched as it
+   *  is wired; an auto-wired require hook patches only once it fires, which it never does for a
+   *  module loaded as an ES module import. */
+  patched(): boolean;
+}
+
+interface PatchableDefinition {
+  patch?: (this: unknown, exports: unknown, version?: string) => unknown;
+  files?: Array<{ patch: (this: unknown, exports: unknown, version?: string) => unknown }>;
+}
+
+/** Subclass an instrumentation so `onPatch` runs whenever one of its module hooks patches a
+ *  module. Same seam as the Anthropic fallback: the definitions returned by init(). */
+function withPatchSignal(Base: InstrumentationCtor, onPatch: () => void): InstrumentationCtor {
+  const Initializing = Base as unknown as new () => InstrumentationWithManualPatch & {
+    init(): unknown;
+  };
+  return class extends Initializing {
+    init(): unknown {
+      const definitions = super.init();
+      const list = (Array.isArray(definitions) ? definitions : [definitions]) as Array<
+        PatchableDefinition | undefined
+      >;
+      for (const definition of list) {
+        const patch = definition?.patch;
+        if (definition && patch) {
+          definition.patch = function (exports, version) {
+            onPatch();
+            return patch.call(this, exports, version);
+          };
+        }
+        for (const file of definition?.files ?? []) {
+          const filePatch = file.patch;
+          file.patch = function (exports, version) {
+            onPatch();
+            return filePatch.call(this, exports, version);
+          };
+        }
+      }
+      return definitions;
+    }
+  };
+}
+
 /** Whether the given provider key (e.g. 'anthropic', 'openAI') is currently instrumented. */
 export function isProviderInstrumented(provider: string): boolean {
   return _instrumentedProviders.has(provider);
@@ -89,28 +142,37 @@ function loadInstrumentation(pkg: string, exportName: string): InstrumentationCt
  *
  * All OpenInference instrumentations are lazy-loaded via require() so that
  * missing peer dependencies don't crash initialization.
+ *
+ * Returns the LLM integrations it wired.
  */
 export function wireInstrumentations(
   instrumentModules: InitializeOptions['instrumentModules'],
-): void {
+): WiredIntegrations {
   if (instrumentModules === undefined) {
     // Auto-instrumentation via require-in-the-middle (CJS only).
     // ESM users must pass explicit module refs.
     const instrs: Instrumentation[] = [];
+    let count = 0;
+    let patched = false;
+    const onPatch = (): void => {
+      patched = true;
+    };
     for (const [key, [pkg, exportName]] of Object.entries(OPENINFERENCE_PACKAGES)) {
       const Ctor = loadInstrumentation(pkg, exportName);
       if (Ctor) {
-        instrs.push(new Ctor());
+        instrs.push(new (isLlmIntegration(key) ? withPatchSignal(Ctor, onPatch) : Ctor)());
+        if (isLlmIntegration(key)) count += 1;
         _instrumentedProviders.add(key);
       }
     }
     if (instrs.length > 0) {
       registerInstrumentations({ instrumentations: instrs });
     }
-    return;
+    return { count, patched: () => patched };
   }
 
   const instrs: Instrumentation[] = [];
+  const keys: string[] = [];
 
   for (const [key, [pkg, exportName]] of Object.entries(OPENINFERENCE_PACKAGES)) {
     const moduleRef = instrumentModules[key as keyof typeof OPENINFERENCE_PACKAGES];
@@ -122,23 +184,31 @@ export function wireInstrumentations(
     const instr = new Ctor();
     instrs.push(instr);
     instr.manuallyInstrument(moduleRef);
+    keys.push(key);
     _instrumentedProviders.add(key);
   }
 
+  let wired = keys.filter(isLlmIntegration).length;
   if (instrumentModules.claudeAgentSDK) {
     wireClaudeAgentSDKInstrumentation(instrumentModules.claudeAgentSDK);
+    wired += 1;
   }
   if (instrumentModules.openaiAgents) {
     wireOpenAIAgentsProcessor(instrumentModules.openaiAgents);
+    wired += 1;
   }
   if (instrumentModules.piCodingAgent) {
     wirePiCodingAgentInstrumentation(instrumentModules.piCodingAgent);
+    wired += 1;
   }
   if (instrumentModules.piAgentCore) {
     instrumentPiAgentCore(instrumentModules.piAgentCore);
+    wired += 1;
   }
 
   if (instrs.length > 0) {
     registerInstrumentations({ instrumentations: instrs });
   }
+  // Each module was patched as it was wired above.
+  return { count: wired, patched: () => wired > 0 };
 }

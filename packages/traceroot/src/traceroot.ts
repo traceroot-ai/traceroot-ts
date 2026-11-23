@@ -21,7 +21,7 @@ import {
   TraceRootSpanProcessor,
   _resetProcessorState,
 } from './processor';
-import { wireInstrumentations } from './instrumentation';
+import { wireInstrumentations, type WiredIntegrations } from './instrumentation';
 import { DEFAULT_FLUSH_AT, DEFAULT_FLUSH_INTERVAL_SEC, DEFAULT_TIMEOUT_SEC } from './constants';
 import { _resetObserveState } from './observe';
 import {
@@ -33,6 +33,7 @@ import {
 } from './git_context';
 import { ContextIdGenerator, _resetTraceIdState, _setInternalMode } from './trace-id';
 import { assertValidProjectId, _resetProjectIdState } from './project-id';
+import { collector as usageCollector } from './eval/usage';
 
 const DEFAULT_BASE_URL = 'https://app.traceroot.ai';
 
@@ -54,6 +55,55 @@ let _baseUrl: string | undefined;
 let _gitRepo: string | undefined;
 let _gitRef: string | undefined;
 let _exportTarget: ExportTarget | undefined;
+// LLM integrations wired against _provider; an eval run reads usage only through one.
+let _exportIntegrations: WiredIntegrations | undefined;
+// Set by the local eval runner before it imports eval modules: a disabled initialize() then builds
+// _captureProvider, which exports nothing and whose only processor records LLM usage.
+let _usageCaptureArmed = false;
+let _captureProvider: NodeTracerProvider | undefined;
+let _captureIntegrations: WiredIntegrations | undefined;
+
+/** The provider the global OpenTelemetry API delegates to (the registered one, or a proxy). */
+function globalTracerDelegate(): unknown {
+  const globalProvider = trace.getTracerProvider();
+  return 'getDelegate' in globalProvider &&
+    typeof (globalProvider as { getDelegate: () => unknown }).getDelegate === 'function'
+    ? (globalProvider as { getDelegate: () => unknown }).getDelegate()
+    : globalProvider;
+}
+
+/**
+ * Local eval runs only. Registers an exporter-less provider whose single processor is the usage
+ * collector, then wires the integrations initialize() was asked for against it, as a reported run
+ * would. Nothing it records leaves the process. Any failure leaves the run as it was before
+ * capture existed: no provider, no integrations, usage not recorded.
+ */
+function startUsageCapture(options: InitializeOptions): void {
+  if (_captureProvider !== undefined) return;
+  const provider = new NodeTracerProvider();
+  provider.addSpanProcessor(usageCollector);
+  provider.register();
+  if (globalTracerDelegate() !== provider) {
+    // Another provider was registered first, so spans would never reach the collector. Wiring
+    // integrations into that provider could export, so leave them unwired.
+    void provider.shutdown().catch(() => {});
+    return;
+  }
+  _captureProvider = provider;
+  try {
+    _captureIntegrations = wireInstrumentations(options.instrumentModules);
+  } catch (err) {
+    trace.disable();
+    context.disable();
+    propagation.disable();
+    void provider.shutdown().catch(() => {});
+    _captureProvider = undefined;
+    _captureIntegrations = undefined;
+    console.warn(
+      `[traceroot] LLM usage is not recorded for this local run: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
 
 export interface ExportTarget {
   url: string;
@@ -177,6 +227,8 @@ export class TraceRoot {
     // Kept even with tracing disabled: eval uploads can still run on ambient credentials.
     if (!_isInitialized) _redact = options.redact;
     if (!enabled) {
+      // An explicit `enabled: false` opts out, as it would leave a reported run uninstrumented.
+      if (_usageCaptureArmed && options.enabled !== false) startUsageCapture(options);
       return;
     }
 
@@ -327,6 +379,9 @@ export class TraceRoot {
         exportSpan: options.exportSpan,
       }),
     );
+    // After the exporting processor, so a Vercel AI SDK span already carries its OpenInference
+    // attributes. Reads spans only: what is exported is unchanged.
+    _provider.addSpanProcessor(usageCollector);
     _provider.register();
 
     // register() calls trace.setGlobalTracerProvider() internally, which is a no-op
@@ -334,13 +389,7 @@ export class TraceRoot {
     // already registered. Detect that by checking whether our provider actually became
     // the global delegate: if not, spans flow through the other provider and trace-id
     // forcing silently does nothing. Surface it loudly and record it for isTracingActive().
-    const globalProvider = trace.getTracerProvider();
-    const delegate =
-      'getDelegate' in globalProvider &&
-      typeof (globalProvider as { getDelegate: () => unknown }).getDelegate === 'function'
-        ? (globalProvider as { getDelegate: () => unknown }).getDelegate()
-        : globalProvider;
-    _tracingActive = delegate === _provider;
+    _tracingActive = globalTracerDelegate() === _provider;
     if (!_tracingActive) {
       console.error(
         '[traceroot] tracer-provider registration was rejected: another OpenTelemetry ' +
@@ -357,7 +406,7 @@ export class TraceRoot {
     // leaving flush()/shutdown() operating on a provider that never received spans
     // (silent data loss).
     try {
-      wireInstrumentations(options.instrumentModules);
+      _exportIntegrations = wireInstrumentations(options.instrumentModules);
     } catch (err) {
       trace.disable();
       context.disable();
@@ -366,6 +415,7 @@ export class TraceRoot {
       _provider = undefined;
       _redactingExporter = undefined;
       _tracingActive = false;
+      _exportIntegrations = undefined;
       throw err;
     }
 
@@ -398,6 +448,7 @@ export class TraceRoot {
   static async shutdown(): Promise<void> {
     try {
       await _provider?.shutdown();
+      await _captureProvider?.shutdown();
     } finally {
       // Reset even when shutdown() rejects (e.g. a flush failure) — otherwise
       // the SDK is left claiming to be initialized with internal mode still on.
@@ -406,6 +457,9 @@ export class TraceRoot {
       _provider = undefined;
       _redactingExporter = undefined;
       _exportTarget = undefined;
+      _exportIntegrations = undefined;
+      _captureProvider = undefined;
+      _captureIntegrations = undefined;
       _setInternalMode(false);
       _resetObserveState();
 
@@ -428,6 +482,38 @@ export class TraceRoot {
     _baseUrl = undefined;
     _isInitialized = false;
   }
+
+  /** @internal Called by the local eval runner before it imports eval modules, so their
+   *  initialize() call records LLM usage in-process instead of returning disabled. */
+  static _armUsageCapture(): void {
+    _usageCaptureArmed = true;
+  }
+
+  /**
+   * @internal Whether an evaluation run should record its cases' LLM calls: the provider its spans
+   * reach carries the usage collector, and at least one LLM integration was wired against it.
+   * `local` selects the local capture provider, else the exporting one.
+   */
+  static _usageCapturable(local: boolean): boolean {
+    const provider = local ? _captureProvider : _provider;
+    const integrations = local ? _captureIntegrations : _exportIntegrations;
+    return (
+      provider !== undefined &&
+      (integrations?.count ?? 0) > 0 &&
+      globalTracerDelegate() === provider
+    );
+  }
+
+  /**
+   * @internal Whether the recorded usage can be reported: recordable, and an LLM integration has
+   * actually patched a module. Until then every client call is invisible, so usage is "not
+   * captured", never 0. Checked as each case's usage is taken, since an auto-wired hook can patch
+   * lazily, after initialize().
+   */
+  static _usageCaptured(local: boolean): boolean {
+    const integrations = local ? _captureIntegrations : _exportIntegrations;
+    return TraceRoot._usageCapturable(local) && integrations!.patched();
+  }
 }
 
 /** @internal */
@@ -438,6 +524,10 @@ export function _resetForTesting(): void {
   _provider = undefined;
   _redactingExporter = undefined;
   _exportTarget = undefined;
+  _exportIntegrations = undefined;
+  _usageCaptureArmed = false;
+  _captureProvider = undefined;
+  _captureIntegrations = undefined;
   _setInternalMode(false);
   _resetTraceIdState();
   _resetProjectIdState();

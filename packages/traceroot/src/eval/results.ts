@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 import type { Score } from './types';
 import type { ScorerSpec } from './platform';
+import { runUsage, type CaseUsage } from './usage';
 
 // --- Python-identical rendering for summary() --------------------------------
 /** The characters Python's `repr()` escapes rather than prints: exactly `str.isprintable()`'s
@@ -69,6 +70,10 @@ export interface EvalItemResult {
   traceId: string | null;
   /** Total wall-clock for this case (task + its scorers), ms; null when unknown. */
   durationMs: number | null;
+  /** The LLM calls the task and the scorers made, read from the SDK's own LLM spans; null when
+   *  they were not captured (no integration instrumented for the run). Snake_case: it is written
+   *  to the run artifacts as-is. */
+  usage?: CaseUsage | null;
 }
 
 // JSON has no NaN/Infinity: JSON.stringify turns a non-finite score value into `null`, which on
@@ -115,6 +120,7 @@ function itemToJSON(it: EvalItemResult): Record<string, unknown> {
     error: it.error,
     trace_id: it.traceId,
     duration_ms: it.durationMs,
+    usage: it.usage ?? null,
   };
 }
 
@@ -135,6 +141,7 @@ function itemFromJSON(d: Record<string, any>): EvalItemResult {
     error: d.error ?? null,
     traceId: d.trace_id ?? null,
     durationMs: d.duration_ms ?? null,
+    usage: d.usage ?? null,
   };
 }
 
@@ -235,6 +242,7 @@ export interface EvalRunResultInit {
   metadata?: Record<string, unknown> | null;
   scorerSpecs?: ScorerSpec[] | null;
   emittedMetrics?: Record<string, string[]> | null;
+  usage?: CaseUsage | null;
 }
 
 /** The full, immutable result of an evaluation run. */
@@ -257,6 +265,8 @@ export class EvalRunResult {
   // upload() re-declares it on finishRun (else a re-upload omits the manifest the platform keys
   // each emitted metric's owner on).
   emittedMetrics: Record<string, string[]> | null;
+  /** The run's LLM usage (its cases' usage summed); null when it was not captured. */
+  usage: CaseUsage | null;
 
   constructor(init: EvalRunResultInit) {
     this.name = init.name;
@@ -270,6 +280,7 @@ export class EvalRunResult {
     this.metadata = init.metadata ?? null;
     this.scorerSpecs = init.scorerSpecs ?? null;
     this.emittedMetrics = init.emittedMetrics ?? null;
+    this.usage = init.usage ?? null;
   }
 
   // --- inspection ---
@@ -331,6 +342,7 @@ export class EvalRunResult {
       score_summary: Object.fromEntries(
         Object.entries(this.scoreSummary).map(([k, v]) => [k, { ...v }]),
       ),
+      usage: this.usage,
       // fromJSON() reads `upload`, so write it here too — otherwise a save/load round trip loses
       // the run's status and dashboard URL. `failed_result_count` rides along (Python's
       // UploadState.to_dict() writes the same key): without it a reloaded run that silently
@@ -373,6 +385,7 @@ export class EvalRunResult {
       metadata: d.metadata ?? null,
       scorerSpecs: d.scorer_specs ?? null,
       emittedMetrics: d.emitted_metrics ?? null,
+      usage: d.usage ?? null,
     });
   }
 
@@ -394,6 +407,7 @@ export class EvalRunResult {
       error: c.task_error ?? null,
       traceId: c.trace_id ?? null,
       durationMs: c.duration_ms ?? null,
+      usage: c.usage ?? null,
     }));
     const ds = d.dataset;
     return new EvalRunResult({
@@ -415,6 +429,7 @@ export class EvalRunResult {
         : null,
       runId: d.run_id ?? null,
       metadata: d.metadata ?? null,
+      usage: d.usage ?? null,
     });
   }
 
@@ -543,20 +558,27 @@ export interface MakeRunResultOptions {
   metadata?: Record<string, unknown> | null;
   scorerSpecs?: ScorerSpec[] | null;
   emittedMetrics?: Record<string, string[]> | null;
+  /** Whether LLM usage capture was active for the run; decides a case-less run's usage. */
+  usageCaptured?: boolean;
 }
 
-/** Build an EvalRunResult (computes the score summary). */
+/** Build an EvalRunResult (computes the score summary and the run's usage). */
 export function makeRunResult(
   name: string,
   itemResults: EvalItemResult[],
   uploadState: UploadState,
   opts: MakeRunResultOptions = {},
 ): EvalRunResult {
+  const { usageCaptured = false, ...rest } = opts;
   return new EvalRunResult({
     name,
     itemResults,
     scoreSummary: aggregateScores(itemResults),
     uploadState,
-    ...opts,
+    usage: runUsage(
+      itemResults.map((it) => it.usage),
+      usageCaptured,
+    ),
+    ...rest,
   });
 }
