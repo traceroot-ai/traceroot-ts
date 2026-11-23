@@ -251,3 +251,75 @@ describe('a cancelled run does not wait on a case that never settles', () => {
     },
   );
 });
+
+describe('a cancelled run keeps a result whose upload is not yet acknowledged', () => {
+  // The result was computed and sent, and TraceRoot may already have saved it; only the reply is
+  // late. Leaving it out when the drain runs out would save fewer cases here than TraceRoot shows,
+  // with nothing to say why.
+  it(
+    'reports it once, counts it as unconfirmed, and still leaves out a case still computing',
+    { timeout: 20_000 },
+    async () => {
+      let acknowledge!: () => void;
+      const acknowledged = new Promise<void>((resolve) => (acknowledge = resolve));
+      class SlowAcknowledgement extends FakeTransport {
+        async recordItemResult(run: RunHandle, item: EvalItemResult): Promise<void> {
+          await super.recordItemResult(run, item);
+          if (item.caseId === 'slow') await acknowledged;
+        }
+      }
+      const t = new SlowAcknowledgement();
+      const controller = new AbortController();
+      const completed: string[] = [];
+      let release!: () => void;
+      const stalled = new Promise<void>((resolve) => (release = resolve));
+      const task = async (input: unknown) => {
+        if (input === 'stalled') await stalled;
+        return input;
+      };
+      const data = new Dataset('d');
+      for (const id of ['a', 'b', 'c', 'slow', 'stalled']) data.add(id, { id, expected: id });
+
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        const err = await evaluate({
+          name: 'r',
+          dataset: data,
+          task,
+          scorers: [ok],
+          transport: t,
+          maxConcurrency: 5,
+          signal: controller.signal,
+          onCaseComplete: (item) => {
+            completed.push(item.caseId);
+            if (completed.length === 3) controller.abort();
+          },
+        }).then(
+          () => null,
+          (e) => e,
+        );
+
+        assert.ok(err instanceof CancelledError, `expected CancelledError, got ${String(err)}`);
+        assert.equal(t.lastFinishStatus, 'incomplete');
+        assert.deepEqual([...completed].sort(), ['a', 'b', 'c', 'slow']);
+        assert.equal(err.uploadState?.unconfirmedResultCount, 1);
+        assert.equal(err.uploadState?.failedResultCount, 0);
+
+        // The acknowledgement arrives, and the stalled case finishes, after the run was finalized.
+        const callsAtFinish = t.calls.length;
+        acknowledge();
+        release();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.deepEqual([...completed].sort(), ['a', 'b', 'c', 'slow']);
+        const uploaded = t.calls.filter((call) => call[0] === 'record_item_result');
+        assert.ok(!uploaded.some((call) => call[1] === 'stalled'), 'the stalled case was uploaded');
+        assert.ok(!t.calls.slice(callsAtFinish).some((call) => call[1] === 'stalled'));
+        assert.deepEqual(unhandled, []);
+      } finally {
+        process.off('unhandledRejection', onUnhandled);
+      }
+    },
+  );
+});

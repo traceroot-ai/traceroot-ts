@@ -477,6 +477,7 @@ export function writeArtifacts(
       status: result.uploadState.status,
       dashboard_url: result.uploadState.dashboardUrl,
       failed_result_count: result.uploadState.failedResultCount ?? 0,
+      unconfirmed_result_count: result.uploadState.unconfirmedResultCount ?? 0,
     },
     artifact,
     cases: result.itemResults.map((it) => caseMetadata(it, policy)),

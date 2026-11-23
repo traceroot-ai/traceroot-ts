@@ -3,8 +3,10 @@
 // group killed if it is still alive ten seconds later (the CLI's grace period).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { ChildProcess, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,7 +17,7 @@ const SDK = join(__dirname, '..', 'src', 'eval').replace(/\\/g, '/');
 const GRACE_MS = 10_000;
 
 // 'stalled' waits a minute for a reply, as a stream that sent one chunk and went silent does.
-const EVAL_SRC = `
+const STALLED_SRC = `
 import { Dataset, Evaluation } from '${SDK}';
 const data = new Dataset('stall');
 for (const id of ['a', 'b', 'c', 'stalled']) data.add({ id }, { id, expected: id });
@@ -25,6 +27,16 @@ async function task(input: { id: string }) {
 }
 function scored() { return 1; }
 export const stall = new Evaluation({ name: 'stall', dataset: data, task, scorers: [scored], maxConcurrency: 4 });
+`;
+
+// Every case completes at once; TraceRoot is slow to acknowledge 'slow' (see fakeTraceRoot).
+const UPLOADED_SRC = `
+import { Dataset, Evaluation } from '${SDK}';
+const data = new Dataset('slow-ack');
+for (const id of ['a', 'b', 'c', 'slow']) data.add({ id }, { id, expected: id });
+function task(input: { id: string }) { return input.id; }
+function scored() { return 1; }
+export const slowAck = new Evaluation({ name: 'slow-ack', dataset: data, task, scorers: [scored], maxConcurrency: 4 });
 `;
 
 /** The fields of the runner's events and saved cases this test reads. */
@@ -46,91 +58,218 @@ function readEvents(path: string): Event[] {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+interface Runner {
+  dir: string;
+  eventFile: string;
+  child: ChildProcess;
+  output: () => string;
+  exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+}
+
+/** Starts the runner on `source` in a process group of its own, with the CLI's `variables`. */
+function startRunner(source: string, variables: Record<string, string>): Runner {
+  const dir = mkdtempSync(join(tmpdir(), 'runner-cancel-'));
+  const evalFile = join(dir, 'case.eval.ts');
+  const eventFile = join(dir, 'events.jsonl');
+  writeFileSync(evalFile, source);
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !/^(TRACEROOT_|OTEL_)/.test(key)),
+  );
+  Object.assign(env, variables, { TRACEROOT_EVAL_EVENT_FILE: eventFile });
+  const child = spawn(process.execPath, ['--import', TSX, RUNNER, evalFile], {
+    cwd: dir,
+    env,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout!.on('data', (chunk) => (output += chunk));
+  child.stderr!.on('data', (chunk) => (output += chunk));
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+    child.on('exit', (code, signal) => resolve({ code, signal })),
+  );
+  return { dir, eventFile, child, output: () => output, exited };
+}
+
+async function waitUntil(runner: Runner, ready: (events: Event[]) => boolean): Promise<void> {
+  const by = Date.now() + 30_000;
+  while (!ready(readEvents(runner.eventFile))) {
+    assert.ok(Date.now() < by, `the runner never got there:\n${runner.output()}`);
+    await sleep(50);
+  }
+}
+
+/** SIGINT to the group, then SIGKILL if it outlives the CLI's grace period. */
+async function interrupt(runner: Runner) {
+  process.kill(-runner.child.pid!, 'SIGINT');
+  const exit = await Promise.race([runner.exited, sleep(GRACE_MS).then(() => null)]);
+  if (exit === null) process.kill(-runner.child.pid!, 'SIGKILL');
+  return { killed: exit === null, ...(await runner.exited) };
+}
+
+function stop(runner: Runner): void {
+  try {
+    process.kill(-runner.child.pid!, 'SIGKILL');
+  } catch {
+    // Already gone.
+  }
+  rmSync(runner.dir, { recursive: true, force: true });
+}
+
+/** The run's terminal events and the run file and cases file it saved. */
+function saved(runner: Runner) {
+  const events = readEvents(runner.eventFile);
+  const completed = events.find((e) => e.type === 'evaluation_completed');
+  assert.ok(completed?.artifact, `no saved run:\n${runner.output()}`);
+  const run = JSON.parse(readFileSync(join(runner.dir, completed.artifact.run), 'utf8'));
+  const cases = readFileSync(join(runner.dir, completed.artifact.cases), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  return {
+    events,
+    completed,
+    last: events[events.length - 1],
+    run,
+    runIds: run.cases.map((c: Event) => c.case_id).sort(),
+    caseIds: cases.map((c: Event) => c.case_id).sort(),
+  };
+}
+
+/**
+ * A TraceRoot host with just the endpoints an uploaded run calls. It saves every case result as it
+ * arrives, but holds its reply to `heldCase`'s for `holdMs`.
+ */
+async function fakeTraceRoot(heldCase: string, holdMs: number) {
+  const results: string[] = [];
+  let completedAs: string | null = null;
+  let arrived!: () => void;
+  const heldArrived = new Promise<void>((resolve) => (arrived = resolve));
+  const timers: NodeJS.Timeout[] = [];
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const url = req.url ?? '';
+      const reply = (status: number, payload: unknown) => {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method === 'GET' && /\/public\/datasets\/[^/]+$/.test(url))
+        return reply(404, { detail: 'not found' });
+      if (url.endsWith('/versions'))
+        return reply(200, { dataset_version_id: 'dsv_1', version_number: 1 });
+      if (url.endsWith('/public/evaluation-runs'))
+        return reply(200, { evaluation_run_id: 'run_1' });
+      if (url.endsWith('/results')) {
+        const caseId = JSON.parse(body).test_case_id;
+        results.push(caseId);
+        if (caseId !== heldCase) return reply(200, {});
+        arrived();
+        timers.push(setTimeout(() => reply(200, {}), holdMs));
+        return;
+      }
+      if (url.endsWith('/complete')) completedAs = JSON.parse(body).status;
+      // Dataset metadata, completion, span export.
+      return reply(200, {});
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    results,
+    completedAs: () => completedAs,
+    heldArrived,
+    close: () => {
+      timers.forEach(clearTimeout);
+      server.closeAllConnections();
+      server.close();
+    },
+  };
+}
+
 describe('Ctrl+C while a case is stalled', () => {
   it(
     'saves the completed cases as an incomplete run and exits 130',
     { timeout: 60_000 },
     async () => {
-      const dir = mkdtempSync(join(tmpdir(), 'runner-cancel-'));
-      const evalFile = join(dir, 'stall.eval.ts');
-      const eventFile = join(dir, 'events.jsonl');
-      writeFileSync(evalFile, EVAL_SRC);
-      const env = Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !/^(TRACEROOT_|OTEL_)/.test(key)),
-      );
       // What the CLI sets for a run that stays on this machine.
-      Object.assign(env, {
+      const runner = startRunner(STALLED_SRC, {
         TRACEROOT_ENABLED: 'false',
         TRACEROOT_EVAL_OPTIONS: '{}',
-        TRACEROOT_EVAL_EVENT_FILE: eventFile,
       });
-      const child = spawn(process.execPath, ['--import', TSX, RUNNER, evalFile], {
-        cwd: dir,
-        env,
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let output = '';
-      child.stdout.on('data', (chunk) => (output += chunk));
-      child.stderr.on('data', (chunk) => (output += chunk));
-      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-        (resolve) => child.on('exit', (code, signal) => resolve({ code, signal })),
-      );
-      const group = child.pid!;
-      let killed = false;
       try {
-        // Wait for three completed cases and the stalled one running.
-        const startedBy = Date.now() + 30_000;
-        for (;;) {
-          const events = readEvents(eventFile);
-          const done = events.filter((e) => e.type === 'case_completed').length;
-          const stalled = events.some((e) => e.type === 'case_started' && e.case_id === 'stalled');
-          if (done === 3 && stalled) break;
-          assert.ok(Date.now() < startedBy, `the runner never got to the stalled case:\n${output}`);
-          await sleep(50);
-        }
+        // Three completed cases and the stalled one running.
+        await waitUntil(
+          runner,
+          (events) =>
+            events.filter((e) => e.type === 'case_completed').length === 3 &&
+            events.some((e) => e.type === 'case_started' && e.case_id === 'stalled'),
+        );
 
-        process.kill(-group, 'SIGINT');
-        const exit = await Promise.race([exited, sleep(GRACE_MS).then(() => null)]);
-        if (exit === null) {
-          killed = true;
-          process.kill(-group, 'SIGKILL');
-        }
-        const { code, signal } = await exited;
-
+        const { killed, code, signal } = await interrupt(runner);
         assert.equal(killed, false, `the runner was still running ${GRACE_MS} ms after SIGINT`);
-        assert.deepEqual({ code, signal }, { code: 130, signal: null }, output);
+        assert.deepEqual({ code, signal }, { code: 130, signal: null }, runner.output());
 
-        const events = readEvents(eventFile);
-        const last = events[events.length - 1];
+        const { events, completed, last, run, runIds, caseIds } = saved(runner);
         assert.deepEqual(last, { type: 'suite_completed', evaluations: 1, cancelled: true });
-        const completed = events.find((e) => e.type === 'evaluation_completed');
-        assert.ok(completed?.artifact, 'no saved run');
         assert.equal(completed.status, 'incomplete');
         assert.equal(completed.counts?.cases, 3);
         assert.ok(
           !events.some((e) => e.type === 'case_completed' && e.case_id === 'stalled'),
           'the stalled case was reported as completed',
         );
-
-        const runFile = join(dir, completed.artifact.run);
-        const casesFile = join(dir, completed.artifact.cases);
-        const run = JSON.parse(readFileSync(runFile, 'utf8'));
         assert.equal(run.status, 'incomplete');
         assert.equal(run.is_final, false);
-        assert.deepEqual(run.cases.map((c: Event) => c.case_id).sort(), ['a', 'b', 'c']);
-        const cases = readFileSync(casesFile, 'utf8')
-          .trim()
-          .split('\n')
-          .map((line) => JSON.parse(line));
-        assert.deepEqual(cases.map((c: Event) => c.case_id).sort(), ['a', 'b', 'c']);
+        assert.deepEqual(runIds, ['a', 'b', 'c']);
+        assert.deepEqual(caseIds, ['a', 'b', 'c']);
       } finally {
-        try {
-          process.kill(-group, 'SIGKILL');
-        } catch {
-          // Already gone.
-        }
-        rmSync(dir, { recursive: true, force: true });
+        stop(runner);
+      }
+    },
+  );
+
+  it(
+    'keeps an uploaded result TraceRoot saved but had not acknowledged, counted as unconfirmed',
+    { timeout: 60_000 },
+    async () => {
+      // TraceRoot saves 'slow' at once but replies 8 s later: past the 5 s drain, inside the 10 s.
+      const host = await fakeTraceRoot('slow', 8_000);
+      // What the CLI sets for an uploaded run.
+      const runner = startRunner(UPLOADED_SRC, {
+        TRACEROOT_API_KEY: 'tr-test-key',
+        TRACEROOT_HOST_URL: host.url,
+        TRACEROOT_ENABLED: 'true',
+        TRACEROOT_EVAL_OPTIONS: JSON.stringify({ reporting: true }),
+      });
+      try {
+        await host.heldArrived;
+        await waitUntil(
+          runner,
+          (events) => events.filter((e) => e.type === 'case_completed').length === 3,
+        );
+
+        const { killed, code, signal } = await interrupt(runner);
+        assert.equal(killed, false, `the runner was still running ${GRACE_MS} ms after SIGINT`);
+        assert.deepEqual({ code, signal }, { code: 130, signal: null }, runner.output());
+
+        const { events, completed, last, run, runIds, caseIds } = saved(runner);
+        assert.deepEqual(last, { type: 'suite_completed', evaluations: 1, cancelled: true });
+        assert.equal(completed.status, 'incomplete');
+        assert.equal(completed.counts?.cases, 4);
+        const slow = events.filter((e) => e.type === 'case_completed' && e.case_id === 'slow');
+        assert.equal(slow.length, 1);
+        assert.equal(run.status, 'incomplete');
+        assert.deepEqual(runIds, ['a', 'b', 'c', 'slow']);
+        assert.deepEqual(caseIds, ['a', 'b', 'c', 'slow']);
+        assert.equal(run.upload.unconfirmed_result_count, 1);
+        assert.equal(run.upload.failed_result_count, 0);
+        // TraceRoot has the same four, and the run closed incomplete.
+        assert.deepEqual([...host.results].sort(), ['a', 'b', 'c', 'slow']);
+        assert.equal(host.completedAs(), 'incomplete');
+      } finally {
+        stop(runner);
+        host.close();
       }
     },
   );

@@ -87,7 +87,9 @@ export interface EvaluateOptions {
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void;
   /** Cooperative cancellation: when aborted, no further cases start and the run finishes
    *  terminally (incomplete) so callers can finalize a partial result (e.g. SIGINT). Cases
-   *  already running get {@link CANCEL_DRAIN_MS} to settle; any still running then are left out. */
+   *  already running get {@link CANCEL_DRAIN_MS} to settle; any still running then are left out,
+   *  except a result already sent and waiting on its acknowledgement, which is kept and counted
+   *  in `UploadState.unconfirmedResultCount`. */
   signal?: AbortSignal;
 }
 
@@ -121,6 +123,16 @@ const ZERO_TRACE_ID = /^0+$/;
  * uploaded run as incomplete (its retries back off 0.5 s + 1 s) and flushing spans included.
  */
 export const CANCEL_DRAIN_MS = 5_000;
+
+/** What a run shares with its cases about a cancellation's drain (see CANCEL_DRAIN_MS). */
+interface Drain {
+  /** Set once a cancelled run stops waiting for the cases still running. From then on the run is
+   *  finalized without them, so one that settles later records nothing. */
+  abandoned: boolean;
+  /** Results computed and being uploaded, by case, until their upload settles. TraceRoot may have
+   *  saved one before it replies, so a drain that runs out keeps them rather than dropping them. */
+  unacknowledged: Map<EvalCase, EvalItemResult>;
+}
 
 function fmtError(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -366,7 +378,7 @@ async function runCase(
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void,
   emittedOwnership?: Map<string, Set<string>>,
   droppedResults?: string[],
-  abandoned?: () => boolean,
+  drain?: Drain,
 ): Promise<EvalItemResult> {
   onCaseStart?.(evalCase);
   try {
@@ -530,7 +542,8 @@ async function runCase(
   }
   // A cancelled run that stopped waiting for this case was finalized without it: recording it now
   // would add a result to a closed run and report a case after the run's last event.
-  if (abandoned?.()) return result;
+  if (drain?.abandoned) return result;
+  drain?.unacknowledged.set(evalCase, result);
   try {
     await transport.recordItemResult(run, result);
     await transport.recordScores(run, result.caseId, result.scores);
@@ -540,7 +553,9 @@ async function runCase(
     // "uploaded" with missing results can be told apart from a clean one.
     droppedResults?.push(fmtError(err));
   }
-  if (abandoned?.()) return result;
+  drain?.unacknowledged.delete(evalCase);
+  // A run that stopped waiting during the upload already kept this result as unconfirmed.
+  if (drain?.abandoned) return result;
   onCaseComplete?.(result, result.durationMs ?? 0);
   return result;
 }
@@ -799,6 +814,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // Per-case result POSTs the transport dropped (best-effort reporting), surfaced on the upload
   // state so a green run with silently-missing results is detectable.
   const droppedResults: string[] = [];
+  // Results a cancelled run kept although TraceRoot hadn't acknowledged their upload (see Drain).
+  let unconfirmedResults = 0;
   let bodyFailed = false;
   let bodyError: unknown;
   // A finalization failure on a CANCELLED run: kept, not thrown, so the cancellation survives.
@@ -817,9 +834,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   if (local) {
     _pushSuppressGlobalAutoInit();
   }
-  // Set once a cancelled run stops waiting for the cases still running (see CANCEL_DRAIN_MS). From
-  // then on the run is finalized without them, so one that settles later records nothing.
-  let abandoned = false;
+  const drain: Drain = { abandoned: false, unacknowledged: new Map() };
   const runCases = () =>
     runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip).
@@ -842,7 +857,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         onCaseComplete,
         emittedOwnership,
         droppedResults,
-        () => abandoned,
+        drain,
       );
     });
   try {
@@ -858,7 +873,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
       // Cancelled, and a case was still running when the drain ran out. The cases that completed
       // reached the caller through onCaseComplete; Python leaves a cancelled in-flight case out
       // the same way, rather than recording it as errored.
-      abandoned = true;
+      drain.abandoned = true;
+      // But a result already sent may be saved on TraceRoot, its reply just late: keep it, and say
+      // its upload is unconfirmed, rather than save fewer cases here than TraceRoot shows.
+      unconfirmedResults = drain.unacknowledged.size;
+      for (const result of drain.unacknowledged.values()) {
+        onCaseComplete?.(result, result.durationMs ?? 0);
+      }
     } else {
       itemResults = raw.filter((r): r is EvalItemResult => r !== null);
     }
@@ -894,6 +915,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
       uploadState = {
         ...(await active.finishRun(run, status, emitted)),
         failedResultCount: droppedResults.length,
+        unconfirmedResultCount: unconfirmedResults,
       };
     } catch (completionErr) {
       if (bodyFailed) {
