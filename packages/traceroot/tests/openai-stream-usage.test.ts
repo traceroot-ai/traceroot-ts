@@ -201,7 +201,8 @@ describe('OpenAI chat completions through the SDK provider', () => {
     }
     const spans = await llmSpans(1);
     assert.equal(spans.length, 1, 'the span ended');
-    assert.notEqual(spans[0].status.code, SpanStatusCode.ERROR);
+    // An aborted request did not run to completion, so it is neither an error nor OK.
+    assert.equal(spans[0].status.code, SpanStatusCode.UNSET);
     assert.deepEqual(tokenCounts(spans[0]), {});
   });
 });
