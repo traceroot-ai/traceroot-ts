@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import { Dataset, EvalCompletionError, FakeTransport, evaluate } from '../src/eval';
 import { CANCEL_DRAIN_MS, CANCEL_SAVE_MS, CancelledError } from '../src/eval/engine';
-import type { EvalItemResult, RunHandle, UploadState } from '../src/eval';
+import type { EvalCase, EvalItemResult, RunHandle, UploadState } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 
 function ds(n: number): Dataset {
@@ -411,6 +411,72 @@ describe('a cancelled run keeps a result whose upload is not yet acknowledged', 
         const uploaded = t.calls.filter((call) => call[0] === 'record_item_result');
         assert.ok(!uploaded.some((call) => call[1] === 'stalled'), 'the stalled case was uploaded');
         assert.ok(!t.calls.slice(callsAtFinish).some((call) => call[1] === 'stalled'));
+        assert.deepEqual(unhandled, []);
+      } finally {
+        process.off('unhandledRejection', onUnhandled);
+      }
+    },
+  );
+});
+
+describe('a cancelled run does not start a case it was finalized without', () => {
+  // Registering a case can be a network call. One still pending when the drain runs out belongs to
+  // a run that is already closed: its task must not run once registration returns.
+  it(
+    'never runs the task of a case still registering when the drain ran out',
+    { timeout: 20_000 },
+    async () => {
+      let register!: () => void;
+      const registered = new Promise<void>((resolve) => (register = resolve));
+      class SlowRegistration extends FakeTransport {
+        async registerItem(run: RunHandle, evalCase: EvalCase): Promise<void> {
+          await super.registerItem(run, evalCase);
+          if (evalCase.id === 'slow') await registered;
+        }
+      }
+      const t = new SlowRegistration();
+      const controller = new AbortController();
+      const completed: string[] = [];
+      const ran: unknown[] = [];
+      const task = async (input: unknown) => {
+        ran.push(input);
+        return input;
+      };
+      const data = new Dataset('d');
+      for (const id of ['a', 'b', 'c', 'slow']) data.add(id, { id, expected: id });
+
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        const err = await evaluate({
+          name: 'r',
+          dataset: data,
+          task,
+          scorers: [ok],
+          transport: t,
+          maxConcurrency: 4,
+          signal: controller.signal,
+          onCaseComplete: (item) => {
+            completed.push(item.caseId);
+            if (completed.length === 3) controller.abort();
+          },
+        }).then(
+          () => null,
+          (e) => e,
+        );
+
+        assert.ok(err instanceof CancelledError, `expected CancelledError, got ${String(err)}`);
+        assert.equal(t.lastFinishStatus, 'incomplete');
+        assert.deepEqual([...completed].sort(), ['a', 'b', 'c']);
+
+        // Registration returns after the run was finalized without the case.
+        const callsAtFinish = t.calls.length;
+        register();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.deepEqual([...ran].sort(), ['a', 'b', 'c']);
+        assert.deepEqual([...completed].sort(), ['a', 'b', 'c']);
+        assert.equal(t.calls.length, callsAtFinish);
         assert.deepEqual(unhandled, []);
       } finally {
         process.off('unhandledRejection', onUnhandled);

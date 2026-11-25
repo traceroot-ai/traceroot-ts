@@ -11,7 +11,8 @@ import { trace, type Span } from '@opentelemetry/api';
 
 import { Dataset, Emitter, evaluate, runSuite } from '../src/eval';
 import { TraceRoot, _resetForTesting } from '../src/traceroot';
-import { _isGlobalAutoInitSuppressed } from '../src/spans';
+import { _isGlobalAutoInitSuppressed, startSpan } from '../src/spans';
+import { CancelledError } from '../src/eval/engine';
 import { TraceRootSpanProcessor, _resetProcessorState } from '../src/processor';
 
 const realFetch = globalThis.fetch;
@@ -96,6 +97,59 @@ describe('local-leak hardening + snapshot runner input', () => {
     assert.equal(suppressedDuringTask, true, 'suppression active during a local task');
     assert.equal(_isGlobalAutoInitSuppressed(), false, 'suppression released after the run');
   });
+
+  it(
+    'a cancelled local run keeps auto-init suppressed until a case it stopped waiting for settles',
+    { timeout: 20_000 },
+    async () => {
+      process.env['TRACEROOT_API_KEY'] = 'tr-ambient';
+      // Unreachable, so nothing could leave the machine even if the exporting provider came up.
+      process.env['TRACEROOT_HOST_URL'] = 'http://127.0.0.1:9';
+      const controller = new AbortController();
+      let release!: () => void;
+      const stalled = new Promise<void>((resolve) => (release = resolve));
+      let lateSpanStarted!: () => void;
+      const lateSpan = new Promise<void>((resolve) => (lateSpanStarted = resolve));
+      const ds = new Dataset('late');
+      ds.add('a', { id: 'a' });
+      ds.add('stalled', { id: 'stalled' });
+      try {
+        const err = await evaluate({
+          name: 'late',
+          dataset: ds,
+          local: true,
+          maxConcurrency: 2,
+          signal: controller.signal,
+          task: async (input: unknown) => {
+            if (input === 'stalled') {
+              await stalled;
+              startSpan({ name: 'after the drain' }).end();
+              lateSpanStarted();
+            }
+            return input;
+          },
+          scorers: [() => 1],
+          onCaseComplete: () => controller.abort(),
+        }).then(
+          () => null,
+          (e) => e,
+        );
+        assert.ok(err instanceof CancelledError, `expected CancelledError, got ${String(err)}`);
+        assert.equal(_isGlobalAutoInitSuppressed(), true, 'released while a case still runs');
+
+        release();
+        await lateSpan;
+        assert.equal(TraceRoot.isInitialized(), false, 'the late case brought up the exporter');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(_isGlobalAutoInitSuppressed(), false, 'not released once the case settled');
+      } finally {
+        release();
+        await lateSpan;
+        await TraceRoot.shutdown().catch(() => {});
+        delete process.env['TRACEROOT_HOST_URL'];
+      }
+    },
+  );
 
   it('the runner runs an Evaluation whose dataset is a DatasetSnapshot (no caseIds crash)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'snaprun-'));
