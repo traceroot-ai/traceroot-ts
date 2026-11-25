@@ -376,6 +376,24 @@ async function withTimeout<T>(p: Promise<T>, timeout?: number, deadline?: number
 }
 
 /**
+ * Records when `signal` aborts, from the moment it is called: `at()` is the performance.now() of
+ * the abort, or undefined before it. `stop()` detaches it. Its own function, so a listener left on
+ * the signal by a run whose setup threw holds nothing of that run.
+ */
+function abortClock(signal: AbortSignal | undefined): {
+  at: () => number | undefined;
+  stop: () => void;
+} {
+  let abortedAt: number | undefined;
+  const mark = (): void => {
+    abortedAt = performance.now();
+  };
+  if (signal?.aborted) mark();
+  else signal?.addEventListener('abort', mark, { once: true });
+  return { at: () => abortedAt, stop: () => signal?.removeEventListener('abort', mark) };
+}
+
+/**
  * Close a cancelled run within `ms`. The transport is told the bound, and the run stops waiting
  * once it is up whether the transport keeps to it or not. Throws if the close isn't acknowledged.
  */
@@ -743,6 +761,10 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // local artifact.
   const runMetadata = collectRunProvenance(options.metadata, { detectDirty: false });
 
+  // CANCEL_SAVE_MS counts from when the run sees its signal abort. Started before the dataset
+  // publish and the run's registration, so a signal during either counts from when it arrived.
+  const aborted = abortClock(options.signal);
+
   // Cloud-only by default: an explicit transport wins; otherwise build a reporting transport
   // from credentials + a synced dataset.
   let active: EvalTransport;
@@ -877,13 +899,6 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     _pushSuppressGlobalAutoInit();
   }
   const drain: Drain = { abandoned: false, unacknowledged: new Map() };
-  // CANCEL_SAVE_MS counts from when the run sees its signal abort, as the drain does.
-  let abortedAt: number | undefined;
-  const markAborted = (): void => {
-    abortedAt = performance.now();
-  };
-  if (options.signal?.aborted) markAborted();
-  else options.signal?.addEventListener('abort', markAborted, { once: true });
   const runCases = () =>
     runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip).
@@ -939,7 +954,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     bodyError = err;
     throw err;
   } finally {
-    options.signal?.removeEventListener('abort', markAborted);
+    aborted.stop();
     if (local) {
       // A case the cancelled run stopped waiting for is still running. Until it settles it must not
       // bring up the exporting provider, any more than it could while the run waited for it.
@@ -974,7 +989,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
             run,
             status,
             emitted,
-            Math.max(0, (abortedAt ?? performance.now()) + CANCEL_SAVE_MS - performance.now()),
+            Math.max(0, (aborted.at() ?? performance.now()) + CANCEL_SAVE_MS - performance.now()),
           )
         : active.finishRun(run, status, emitted);
       uploadState = {
