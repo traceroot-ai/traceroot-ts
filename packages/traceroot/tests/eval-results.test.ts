@@ -142,6 +142,32 @@ describe('EvalRunResult.toJSON', () => {
     });
     assert.equal(older.uploadState.unconfirmedResultCount, 0);
   });
+
+  it('carries whether TraceRoot acknowledged closing the run, and reads true without it', () => {
+    // A cancelled run is saved even when TraceRoot doesn't acknowledge closing it in time.
+    const run = makeRunResult('r', [item('a', [{ name: 'acc', value: 1 }])], {
+      status: 'uploaded',
+      dashboardUrl: null,
+      closeConfirmed: false,
+    });
+    assert.equal((run.toJSON() as any).upload.close_confirmed, false);
+    const reloaded = EvalRunResult.fromJSON(JSON.parse(JSON.stringify(run.toJSON())));
+    assert.equal(reloaded.uploadState.closeConfirmed, false);
+    const unconfirmed = EvalRunResult.fromJSON({
+      kind: 'eval_run',
+      evaluation_name: 'r',
+      cases: [],
+      upload: { status: 'uploaded', dashboard_url: null, close_confirmed: false },
+    });
+    assert.equal(unconfirmed.uploadState.closeConfirmed, false);
+    const older = EvalRunResult.fromJSON({
+      kind: 'eval_run',
+      evaluation_name: 'r',
+      cases: [],
+      upload: { status: 'uploaded', dashboard_url: null },
+    });
+    assert.equal(older.uploadState.closeConfirmed, true);
+  });
 });
 
 describe('counts block (Python parity)', () => {

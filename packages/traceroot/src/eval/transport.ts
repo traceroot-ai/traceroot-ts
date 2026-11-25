@@ -52,10 +52,13 @@ export interface EvalTransport {
   registerItem(run: RunHandle, evalCase: EvalCase): Promise<void>;
   recordItemResult(run: RunHandle, itemResult: EvalItemResult): Promise<void>;
   recordScores(run: RunHandle, caseId: string, scores: Score[]): Promise<void>;
+  /** `timeoutMs`, when given, is how long the close may take: the engine passes it for a cancelled
+   *  run and stops waiting once it is up, so a transport should give up by then too. */
   finishRun(
     run: RunHandle,
     status?: string | null,
     emittedMetrics?: Record<string, string[]> | null,
+    options?: { timeoutMs?: number },
   ): Promise<UploadState>;
   publishDataset(datasetName: string, itemCount: number): Promise<PublishResult>;
 }

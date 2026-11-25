@@ -89,7 +89,9 @@ export interface EvaluateOptions {
    *  terminally (incomplete) so callers can finalize a partial result (e.g. SIGINT). Cases
    *  already running get {@link CANCEL_DRAIN_MS} to settle; any still running then are left out,
    *  except a result already sent and waiting on its acknowledgement, which is kept and counted
-   *  in `UploadState.unconfirmedResultCount`. */
+   *  in `UploadState.unconfirmedResultCount`. Closing the run gets what is left of
+   *  {@link CANCEL_SAVE_MS}; one not acknowledged by then is left, with
+   *  `UploadState.closeConfirmed` false. */
   signal?: AbortSignal;
 }
 
@@ -119,10 +121,17 @@ const ZERO_TRACE_ID = /^0+$/;
  * How long a cancelled run waits for the cases already running before it is finalized without
  * them. A promise can't be cancelled, so a case awaiting a stream that went silent would otherwise
  * keep the run from ever finishing. traceroot-cli kills the runner 10 s after Ctrl+C: the first
- * half lets ordinary in-flight calls finish, and the second is left for finalizing, closing an
- * uploaded run as incomplete (its retries back off 0.5 s + 1 s) and flushing spans included.
+ * half lets ordinary in-flight calls finish, and {@link CANCEL_SAVE_MS} bounds what follows.
  */
 export const CANCEL_DRAIN_MS = 5_000;
+
+/**
+ * How long after its signal a cancelled run is saved, at the latest. The runner writes the run
+ * file and cases file once the run is finalized: after the drain, and after closing an uploaded
+ * run as incomplete, which gets what the drain left of this. The last 2 s of traceroot-cli's 10
+ * are for writing the files, flushing spans and exiting.
+ */
+export const CANCEL_SAVE_MS = 8_000;
 
 /** What a run shares with its cases about a cancellation's drain (see CANCEL_DRAIN_MS). */
 interface Drain {
@@ -341,8 +350,9 @@ export class CancelledError extends Error {
   localRunId?: string;
   runId?: string | null;
   uploadState?: UploadState;
-  /** Set only when finalizing the cancelled run ALSO failed — the cancellation stays the error,
-   *  the finalization failure rides along (the run may still be 'running' on the platform). */
+  /** Set only when finalizing the cancelled run ALSO failed, or wasn't acknowledged within
+   *  {@link CANCEL_SAVE_MS} — the cancellation stays the error, the finalization failure rides
+   *  along (the run may still be 'running' on the platform). */
   completionError?: unknown;
 }
 
@@ -362,6 +372,34 @@ async function withTimeout<T>(p: Promise<T>, timeout?: number, deadline?: number
     return await Promise.race([p, timer]);
   } finally {
     clearTimeout(handle!);
+  }
+}
+
+/**
+ * Close a cancelled run within `ms`. The transport is told the bound, and the run stops waiting
+ * once it is up whether the transport keeps to it or not. Throws if the close isn't acknowledged.
+ */
+async function closeWithin(
+  transport: EvalTransport,
+  run: RunHandle,
+  status: string | null,
+  emitted: Record<string, string[]>,
+  ms: number,
+): Promise<UploadState> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`closing the run was not acknowledged within ${Math.round(ms)} ms`)),
+      ms,
+    );
+  });
+  try {
+    return await Promise.race([
+      transport.finishRun(run, status, emitted, { timeoutMs: ms }),
+      expired,
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -835,6 +873,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     _pushSuppressGlobalAutoInit();
   }
   const drain: Drain = { abandoned: false, unacknowledged: new Map() };
+  // CANCEL_SAVE_MS counts from when the run sees its signal abort, as the drain does.
+  let abortedAt: number | undefined;
+  const markAborted = (): void => {
+    abortedAt = performance.now();
+  };
+  if (options.signal?.aborted) markAborted();
+  else options.signal?.addEventListener('abort', markAborted, { once: true });
   const runCases = () =>
     runBounded<EvalItemResult | null>(cases.length, maxConcurrency, (i) => {
       // Cooperative cancellation: once aborted, workers stop pulling NEW cases (return a skip).
@@ -892,6 +937,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     bodyError = err;
     throw err;
   } finally {
+    options.signal?.removeEventListener('abort', markAborted);
     if (local) {
       _popSuppressGlobalAutoInit();
     }
@@ -912,10 +958,22 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     const emitted: Record<string, string[]> = {};
     for (const [def, metrics] of emittedOwnership) emitted[def] = [...metrics].sort();
     try {
+      // A cancelled run's close gets what is left of CANCEL_SAVE_MS, so the run is saved in time
+      // whatever TraceRoot does. Any other run's close is unbounded beyond the transport's own.
+      const closing = cancelled
+        ? closeWithin(
+            active,
+            run,
+            status,
+            emitted,
+            Math.max(0, (abortedAt ?? performance.now()) + CANCEL_SAVE_MS - performance.now()),
+          )
+        : active.finishRun(run, status, emitted);
       uploadState = {
-        ...(await active.finishRun(run, status, emitted)),
+        ...(await closing),
         failedResultCount: droppedResults.length,
         unconfirmedResultCount: unconfirmedResults,
+        closeConfirmed: true,
       };
     } catch (completionErr) {
       if (bodyFailed) {
@@ -926,6 +984,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         // leaving an aborted run indistinguishable from a broken backend — so remember the
         // failure and let the CancelledError below carry it as secondary context.
         cancelCompletionError = completionErr;
+        // The run is still saved with the cases it completed, saying its close wasn't confirmed.
+        uploadState = {
+          status: 'uploaded',
+          dashboardUrl: null,
+          failedResultCount: droppedResults.length,
+          unconfirmedResultCount: unconfirmedResults,
+          closeConfirmed: false,
+        };
       } else {
         // The run itself succeeded: one clear error naming the completion failure, with the
         // transport error carried as data rather than chained into a cause chain.
@@ -947,8 +1013,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     err.localRunId = localRunId;
     err.runId = active.runId ?? null;
     err.uploadState = uploadState;
-    // Undefined unless finalization ALSO failed (uploadState is then unset): the run may still be
-    // 'running' on the platform, and that is worth handing back with the cancellation.
+    // Undefined unless closing the run failed or wasn't acknowledged in time (closeConfirmed is
+    // then false): the run may still be 'running' on the platform, and that is worth handing back
+    // with the cancellation.
     if (cancelCompletionError !== undefined) err.completionError = cancelCompletionError;
     throw err;
   }

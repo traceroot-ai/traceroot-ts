@@ -149,17 +149,22 @@ export interface UploadState {
   /** Results a cancelled run kept whose upload TraceRoot hadn't acknowledged when the run was
    *  saved, so TraceRoot may or may not have them. The engine always sets it. */
   unconfirmedResultCount?: number;
+  /** Whether TraceRoot acknowledged closing the run. False only for a cancelled run whose close
+   *  failed or wasn't acknowledged within its time to be saved, so the run may still be `running`
+   *  on TraceRoot. The engine always sets it; read as true when absent. */
+  closeConfirmed?: boolean;
 }
 
 /** Read an `upload` block back from either artifact shape (Python: `UploadState(**d["upload"])`).
- *  Shared so both readers restore the dropped and unconfirmed result counts, not just the
- *  status/URL. */
+ *  Shared so both readers restore the dropped and unconfirmed result counts and the close's
+ *  confirmation, not just the status/URL. */
 function uploadStateFromJSON(d: Record<string, any> | undefined | null): UploadState {
   return {
     status: d?.status ?? 'uploaded',
     dashboardUrl: d?.dashboard_url ?? null,
     failedResultCount: d?.failed_result_count ?? 0,
     unconfirmedResultCount: d?.unconfirmed_result_count ?? 0,
+    closeConfirmed: d?.close_confirmed ?? true,
   };
 }
 
@@ -345,6 +350,7 @@ export class EvalRunResult {
         dashboard_url: this.uploadState.dashboardUrl,
         failed_result_count: this.uploadState.failedResultCount ?? 0,
         unconfirmed_result_count: this.uploadState.unconfirmedResultCount ?? 0,
+        close_confirmed: this.uploadState.closeConfirmed ?? true,
       },
       metadata: this.metadata,
       scorer_specs: this.scorerSpecs,

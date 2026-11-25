@@ -125,6 +125,60 @@ describe('permanent failures are not', () => {
   });
 });
 
+describe('a bounded close', () => {
+  // A cancelled run gives the close only what is left of its time to be saved.
+  it('makes a retry that fits in the bound', async () => {
+    mockFlakyBackend({ failures: 1 });
+    const t = transport();
+    t.runId = 'run_1';
+    t.retryBaseDelayMs = 100;
+    const state = await t.finishRun(RUN, 'incomplete', null, { timeoutMs: 2_000 });
+    assert.equal(state.status, 'uploaded');
+    assert.equal(tries('/complete'), 2);
+  });
+
+  it('does not start a retry whose backoff would end past the bound', async () => {
+    mockFlakyBackend({ failures: 99 });
+    const t = transport();
+    t.runId = 'run_1';
+    t.retryBaseDelayMs = 500;
+    const started = performance.now();
+    await assert.rejects(
+      () => t.finishRun(RUN, 'incomplete', null, { timeoutMs: 300 }),
+      /HTTP 503/,
+    );
+    assert.equal(tries('/complete'), 1);
+    assert.ok(performance.now() - started < 300, 'waited for a retry that could not fit');
+  });
+
+  it('aborts an attempt still waiting at the bound', { timeout: 10_000 }, async () => {
+    calls = [];
+    // A TraceRoot that never answers: the request ends only when it is aborted, and holds the
+    // process open until then as its socket would.
+    globalThis.fetch = ((url: string, init?: any) => {
+      calls.push(String(url));
+      const open = setInterval(() => {}, 1_000);
+      return new Promise((_resolve, reject) => {
+        const abort = () => {
+          clearInterval(open);
+          reject(init.signal.reason);
+        };
+        init.signal.addEventListener('abort', abort, { once: true });
+      });
+    }) as any;
+    const t = transport();
+    t.runId = 'run_1';
+    t.retryBaseDelayMs = 500;
+    const started = performance.now();
+    await assert.rejects(() => t.finishRun(RUN, 'incomplete', null, { timeoutMs: 200 }), {
+      name: 'TimeoutError',
+    });
+    const waited = performance.now() - started;
+    assert.ok(waited < 1_000, `gave up after ${waited} ms`);
+    assert.equal(tries('/complete'), 1);
+  });
+});
+
 describe('backoff', () => {
   it('the delay doubles per attempt', () => {
     // Byte-identical to the Python SDK's _retry_delay_ms.
