@@ -197,6 +197,60 @@ describe('a cancelled run does not wait on a close that never answers', () => {
       assert.ok(waited < CANCEL_SAVE_MS + 1_000, `finalized after ${waited} ms`);
     },
   );
+
+  it(
+    'counts the save budget from a signal that arrives while the run is registering',
+    { timeout: 30_000 },
+    async () => {
+      const controller = new AbortController();
+      let abortedAt = 0;
+      let offered: number | undefined;
+      // Registration takes 2 s and the signal arrives 100 ms into it; the close never answers.
+      class SlowRegistration extends FakeTransport {
+        async createRun(
+          name: string,
+          datasetName: string,
+          metadata: Record<string, unknown> | null,
+        ): Promise<RunHandle> {
+          setTimeout(() => {
+            abortedAt = performance.now();
+            controller.abort();
+          }, 100);
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          return super.createRun(name, datasetName, metadata);
+        }
+        finishRun(
+          _run: RunHandle,
+          _status?: string | null,
+          _emitted?: Record<string, string[]> | null,
+          options?: { timeoutMs?: number },
+        ): Promise<UploadState> {
+          offered = options?.timeoutMs;
+          return new Promise<UploadState>(() => {});
+        }
+      }
+      const err = await evaluate({
+        name: 'r',
+        dataset: ds(2),
+        task: echo,
+        scorers: [ok],
+        transport: new SlowRegistration(),
+        signal: controller.signal,
+      }).then(
+        () => null,
+        (e) => e,
+      );
+      const waited = performance.now() - abortedAt;
+
+      assert.ok(err instanceof CancelledError, `expected CancelledError, got ${String(err)}`);
+      assert.equal(err.uploadState?.closeConfirmed, false);
+      // The close gets what registration left of the budget, so the run is saved on time.
+      assert.ok(offered !== undefined, 'the close was not told its bound');
+      assert.ok(Math.abs(offered - (CANCEL_SAVE_MS - 1_900)) < 250, `offered ${offered} ms`);
+      assert.ok(waited >= CANCEL_SAVE_MS - 50, `finalized after ${waited} ms, before the budget`);
+      assert.ok(waited < CANCEL_SAVE_MS + 500, `finalized after ${waited} ms`);
+    },
+  );
 });
 
 describe('dropped per-case results are counted', () => {
