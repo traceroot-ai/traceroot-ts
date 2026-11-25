@@ -146,25 +146,35 @@ export const e = new Evaluation({
 });
 `;
 
+// The runner sets and clears these; each test puts back what was there before it.
+const ENV_KEYS = ['TRACEROOT_API_KEY', 'TRACEROOT_HOST_URL', 'TRACEROOT_ENABLED'] as const;
+function restoreEnv(saved: ReadonlyArray<readonly [string, string | undefined]>): void {
+  for (const [key, value] of saved) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
 describe('local runner records LLM usage end to end', () => {
   it('writes the exact usage the provider returned, and sends nothing to traceroot', async () => {
     const realFetch = globalThis.fetch;
+    const savedEnv = ENV_KEYS.map((key) => [key, process.env[key]] as const);
     const fetched: string[] = [];
-    globalThis.fetch = ((input: unknown, ...rest: unknown[]) => {
-      fetched.push(input instanceof Request ? input.url : String(input));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (realFetch as any)(input, ...rest);
-    }) as typeof fetch;
-    // Ambient credentials pointing at the fake server: any export or upload would land there.
-    process.env['TRACEROOT_API_KEY'] = 'tr-ambient';
-    process.env['TRACEROOT_HOST_URL'] = baseUrl;
-
-    const dir = mkdtempSync(join(tmpdir(), 'usage-e2e-'));
-    const evalFile = join(dir, 'usage_eval.ts');
-    writeFileSync(evalFile, EVAL_SRC(baseUrl));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const events: Record<string, any>[] = [];
     try {
+      globalThis.fetch = ((input: unknown, ...rest: unknown[]) => {
+        fetched.push(input instanceof Request ? input.url : String(input));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (realFetch as any)(input, ...rest);
+      }) as typeof fetch;
+      // Ambient credentials pointing at the fake server: any export or upload would land there.
+      process.env['TRACEROOT_API_KEY'] = 'tr-ambient';
+      process.env['TRACEROOT_HOST_URL'] = baseUrl;
+
+      const dir = mkdtempSync(join(tmpdir(), 'usage-e2e-'));
+      const evalFile = join(dir, 'usage_eval.ts');
+      writeFileSync(evalFile, EVAL_SRC(baseUrl));
       await runSuite(
         [evalFile],
         { reporting: false, out_dir: join(dir, 'runs') },
@@ -172,9 +182,7 @@ describe('local runner records LLM usage end to end', () => {
       );
     } finally {
       globalThis.fetch = realFetch;
-      delete process.env['TRACEROOT_API_KEY'];
-      delete process.env['TRACEROOT_HOST_URL'];
-      delete process.env['TRACEROOT_ENABLED'];
+      restoreEnv(savedEnv);
     }
 
     assert.ok(!events.some((e) => e.type === 'fatal'), JSON.stringify(events));

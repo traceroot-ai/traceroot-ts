@@ -148,41 +148,50 @@ function bucket(calls: number, reported: number, input: number, output: number) 
   };
 }
 
+// The runner sets and clears these; each test puts back what was there before it.
+const ENV_KEYS = ['TRACEROOT_API_KEY', 'TRACEROOT_HOST_URL', 'TRACEROOT_ENABLED'] as const;
+function restoreEnv(saved: ReadonlyArray<readonly [string, string | undefined]>): void {
+  for (const [key, value] of saved) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
 describe('local runner, a stream the server drops', () => {
   it('counts a dropped stream as one call without usage', async () => {
     const realFetch = globalThis.fetch;
+    const savedEnv = ENV_KEYS.map((key) => [key, process.env[key]] as const);
     const fetched: string[] = [];
-    globalThis.fetch = ((input: unknown, ...rest: unknown[]) => {
-      fetched.push(input instanceof Request ? input.url : String(input));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (realFetch as any)(input, ...rest);
-    }) as typeof fetch;
     const rejections: unknown[] = [];
     const onRejection = (r: unknown) => void rejections.push(r);
-    process.on('unhandledRejection', onRejection);
-    process.env['TRACEROOT_API_KEY'] = 'tr-ambient';
-    process.env['TRACEROOT_HOST_URL'] = baseUrl;
-
-    const dir = mkdtempSync(join(tmpdir(), 'usage-dropped-'));
-    const evalFile = join(dir, 'usage_eval.ts');
-    writeFileSync(evalFile, EVAL_SRC(baseUrl));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const events: Record<string, any>[] = [];
     const started = Date.now();
     try {
+      globalThis.fetch = ((input: unknown, ...rest: unknown[]) => {
+        fetched.push(input instanceof Request ? input.url : String(input));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (realFetch as any)(input, ...rest);
+      }) as typeof fetch;
+      process.on('unhandledRejection', onRejection);
+      process.env['TRACEROOT_API_KEY'] = 'tr-ambient';
+      process.env['TRACEROOT_HOST_URL'] = baseUrl;
+
+      const dir = mkdtempSync(join(tmpdir(), 'usage-dropped-'));
+      const evalFile = join(dir, 'usage_eval.ts');
+      writeFileSync(evalFile, EVAL_SRC(baseUrl));
       await runSuite(
         [evalFile],
         { reporting: false, out_dir: join(dir, 'runs'), max_concurrency: 2, timeout: 20 },
         new Emitter((ln) => events.push(JSON.parse(ln))),
       );
+      // A rejection the run left behind surfaces a tick later.
+      await new Promise((r) => setTimeout(r, 50));
     } finally {
       globalThis.fetch = realFetch;
-      delete process.env['TRACEROOT_API_KEY'];
-      delete process.env['TRACEROOT_HOST_URL'];
-      delete process.env['TRACEROOT_ENABLED'];
+      process.off('unhandledRejection', onRejection);
+      restoreEnv(savedEnv);
     }
-    await new Promise((r) => setTimeout(r, 50));
-    process.off('unhandledRejection', onRejection);
 
     assert.ok(!events.some((e) => e.type === 'fatal'), JSON.stringify(events));
     const done = events.find((e) => e.type === 'evaluation_completed');
