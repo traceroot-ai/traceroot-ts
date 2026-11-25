@@ -379,13 +379,16 @@ async function runCase(
   emittedOwnership?: Map<string, Set<string>>,
   droppedResults?: string[],
   drain?: Drain,
-): Promise<EvalItemResult> {
+): Promise<EvalItemResult | null> {
   onCaseStart?.(evalCase);
   try {
     await transport.registerItem(run, evalCase);
   } catch {
     // reporting is best-effort; a transport blip must not drop the case
   }
+  // A cancelled run that stopped waiting while this case registered was finalized without it: its
+  // task must not start now.
+  if (drain?.abandoned) return null;
 
   const startedAt = performance.now();
   // Detach from any ambient span (e.g. evaluate() called inside an @observe'd function)
@@ -829,8 +832,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // a different context is unaffected, and a span that escapes the run's context still exports.
   // The lazy-init guard below is still needed for the case where no provider exists yet: a
   // suppressed context does not stop startSpan()/observe() from BOOTING the exporting provider,
-  // so keep stopping that. Released in the finally (balanced, nestable via the depth counter). A
-  // reported run wants the global provider, so it is not suppressed.
+  // so keep stopping that. Released in the finally (balanced, nestable via the depth counter), or,
+  // when a cancelled run stopped waiting for a case, once that case settles. A reported run wants
+  // the global provider, so it is not suppressed.
   if (local) {
     _pushSuppressGlobalAutoInit();
   }
@@ -860,15 +864,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         drain,
       );
     });
+  let work: Promise<(EvalItemResult | null)[]> | undefined;
   try {
     // Scope suppression to exactly the case-execution phase of a local run: spans created under
     // this context (and their auto-instrumented descendants) are non-recording, so they never
     // forward to the exporter — including late spans whose .end() fires after the run returns.
-    const raw = await drainOnAbort(
-      local ? context.with(suppressTracing(context.active()), runCases) : runCases(),
-      options.signal,
-      CANCEL_DRAIN_MS,
-    );
+    work = local ? context.with(suppressTracing(context.active()), runCases) : runCases();
+    const raw = await drainOnAbort(work, options.signal, CANCEL_DRAIN_MS);
     if (raw === null) {
       // Cancelled, and a case was still running when the drain ran out. The cases that completed
       // reached the caller through onCaseComplete; Python leaves a cancelled in-flight case out
@@ -893,7 +895,13 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     throw err;
   } finally {
     if (local) {
-      _popSuppressGlobalAutoInit();
+      // A case the cancelled run stopped waiting for is still running. Until it settles it must not
+      // bring up the exporting provider, any more than it could while the run waited for it.
+      if (drain.abandoned && work !== undefined) {
+        void work.then(_popSuppressGlobalAutoInit, _popSuppressGlobalAutoInit);
+      } else {
+        _popSuppressGlobalAutoInit();
+      }
     }
     reporter?.finish();
     // Finish the run inside finally so a mid-run failure never leaves it open on the backend.
