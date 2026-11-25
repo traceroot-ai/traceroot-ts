@@ -32,6 +32,7 @@ import { collectRunProvenance } from './provenance';
 import { declaredVersion, describeScorers, scorerName } from './scorers';
 import { newRunId } from './ids';
 import { ConsoleProgress, printRunUrl, shouldShowProgress } from './progress';
+import { CaseUsageRecorder, withUsageScope } from './usage';
 
 export type TaskFn = (input: unknown) => unknown | Promise<unknown>;
 export type ScoreLike =
@@ -297,6 +298,9 @@ export class CancelledError extends Error {
   /** Set only when finalizing the cancelled run ALSO failed — the cancellation stays the error,
    *  the finalization failure rides along (the run may still be 'running' on the platform). */
   completionError?: unknown;
+  /** Whether LLM usage capture was active, so a partial result with no finished case still
+   *  reports zero calls rather than "not captured". */
+  usageCaptured?: boolean;
 }
 
 /** Race `p` against the case's shared deadline. `deadline` is an absolute performance.now() ms
@@ -331,6 +335,7 @@ async function runCase(
   onCaseComplete?: (item: EvalItemResult, durationMs: number) => void,
   emittedOwnership?: Map<string, Set<string>>,
   droppedResults?: string[],
+  usageCaptured?: () => boolean,
 ): Promise<EvalItemResult> {
   onCaseStart?.(evalCase);
   try {
@@ -349,6 +354,8 @@ async function runCase(
   const rawTraceId = root.traceId;
   // A reported run exports its per-case spans, so the result carries the trace id.
   const traceId = !ZERO_TRACE_ID.test(rawTraceId) ? rawTraceId : null;
+  // The LLM calls the task and each scorer make, read from their spans; null when not captured.
+  const usage = usageCaptured ? new CaseUsageRecorder() : null;
 
   let result: EvalItemResult;
   try {
@@ -379,7 +386,11 @@ async function runCase(
       );
       try {
         output = await usingSpan(taskSpan, () =>
-          withTimeout(Promise.resolve(task(evalCase.input)), timeout, deadline),
+          withTimeout(
+            Promise.resolve(withUsageScope(usage, 'task', () => task(evalCase.input))),
+            timeout,
+            deadline,
+          ),
         );
         taskSpan.update({ output });
       } catch (err) {
@@ -435,7 +446,11 @@ async function runCase(
             );
             try {
               const raw = await usingSpan(scorerSpan, () =>
-                withTimeout(Promise.resolve(scorer(ctx)), timeout, deadline),
+                withTimeout(
+                  Promise.resolve(withUsageScope(usage, 'scorer', () => scorer(ctx))),
+                  timeout,
+                  deadline,
+                ),
               );
               const produced = stampScorerVersion(normalizeScoreLike(raw, name), scorer);
               scores.push(...produced);
@@ -487,9 +502,16 @@ async function runCase(
         error,
         traceId,
         durationMs: Math.max(0, performance.now() - startedAt),
+        usage: null,
       };
     });
+    // Read after the case: calls made before a task error still count.
+    if (usage !== null) {
+      const recorded = await usage.finish();
+      result.usage = usageCaptured!() ? recorded : null;
+    }
   } finally {
+    usage?.close();
     root.end();
   }
   try {
@@ -718,6 +740,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // non-exporting tracer: the span tree carries the case input and the task output as span I/O, so
   // exporting it would send off-process exactly the payloads `local: true` promises to keep in.
   const evalSpanTracer = evalTracer(local);
+  // Whether to record each case's LLM calls from their spans (see TraceRoot._usageCapturable).
+  const captureUsage = TraceRoot._usageCapturable(local);
   const localRunId = newRunId();
   const run = await active.createRun(name, datasetName, runMetadata ?? null, localRunId);
 
@@ -774,6 +798,10 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // suppressed context does not stop startSpan()/observe() from BOOTING the exporting provider,
   // so keep stopping that. Released in the finally (balanced, nestable via the depth counter). A
   // reported run wants the global provider, so it is not suppressed.
+  // A local run that records usage is not suppressed either: its global provider is the runner's
+  // capture provider, which has no exporter, so its spans stay in-process while still reaching
+  // the usage collector (a suppressed context would make them non-recording, and some
+  // integrations skip creating spans altogether under one).
   if (local) {
     _pushSuppressGlobalAutoInit();
   }
@@ -799,15 +827,17 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         onCaseComplete,
         emittedOwnership,
         droppedResults,
+        captureUsage ? () => TraceRoot._usageCaptured(local) : undefined,
       );
     });
   try {
     // Scope suppression to exactly the case-execution phase of a local run: spans created under
     // this context (and their auto-instrumented descendants) are non-recording, so they never
     // forward to the exporter — including late spans whose .end() fires after the run returns.
-    const raw = local
-      ? await context.with(suppressTracing(context.active()), runCases)
-      : await runCases();
+    const raw =
+      local && !captureUsage
+        ? await context.with(suppressTracing(context.active()), runCases)
+        : await runCases();
     itemResults = raw.filter((r): r is EvalItemResult => r !== null);
     // If every case was already in flight when the abort arrived, no worker pulled a new case, so
     // the flag above never flipped — re-check the signal after runBounded settles so an
@@ -864,6 +894,8 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
       }
     }
   }
+  // Decided once the cases are done: an auto-wired integration can patch during the run.
+  const usageCaptured = captureUsage && TraceRoot._usageCaptured(local);
   if (cancelled) {
     // Surface the run's real identity + upload so the caller's partial artifact stays associated
     // with the backend run that was created and finalized.
@@ -871,6 +903,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     err.localRunId = localRunId;
     err.runId = active.runId ?? null;
     err.uploadState = uploadState;
+    err.usageCaptured = usageCaptured;
     // Undefined unless finalization ALSO failed (uploadState is then unset): the run may still be
     // 'running' on the platform, and that is worth handing back with the cancellation.
     if (cancelCompletionError !== undefined) err.completionError = cancelCompletionError;
@@ -899,6 +932,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     emittedMetrics: Object.fromEntries(
       [...emittedOwnership].map(([def, metrics]) => [def, [...metrics].sort()]),
     ),
+    usageCaptured,
   });
 
   // When the bar was shown (interactive), print the run's summary too — so calling evaluate() on a

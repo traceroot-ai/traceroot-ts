@@ -5,6 +5,7 @@ export type { EvalCase, Score, ScorerContext, DatasetSnapshot } from './types';
 export { ulid, newId, newDatasetId, newTestCaseId, newRunId } from './ids';
 export { EvalRunResult, aggregateScores, caseStatus, makeRunResult } from './results';
 export type { EvalItemResult, UploadState, ScoreSummary, RunDatasetRef } from './results';
+export type { CaseUsage, UsageBucket } from './usage';
 export { evaluate, evaluateAsync } from './engine';
 export type { EvaluateOptions, TaskFn, ScorerFn, ScoreLike } from './engine';
 export { Evaluation } from './evaluation';

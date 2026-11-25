@@ -82,4 +82,6 @@ export type {
   DatasetSyncTransport,
   ScorerDescriptor,
   DatasetSnapshot,
+  CaseUsage,
+  UsageBucket,
 } from './eval';
