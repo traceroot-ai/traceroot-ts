@@ -1,6 +1,7 @@
 // Ctrl+C reaching the runner while a case is stalled, driven the way traceroot-cli drives it: the
-// runner entry under tsx, in a process group of its own, with SIGINT sent to that group and the
-// group killed if it is still alive ten seconds later (the CLI's grace period).
+// runner entry under tsx, in a process group of its own, with the signal sent to that group and the
+// group killed if it is still alive ten seconds later (the CLI's grace period). The CLI forwards
+// SIGINT, SIGTERM and SIGHUP alike.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ChildProcess, spawn } from 'node:child_process';
@@ -101,9 +102,9 @@ async function waitUntil(runner: Runner, ready: (events: Event[]) => boolean): P
   }
 }
 
-/** SIGINT to the group, then SIGKILL if it outlives the CLI's grace period. */
-async function interrupt(runner: Runner) {
-  process.kill(-runner.child.pid!, 'SIGINT');
+/** `sig` to the group, then SIGKILL if it outlives the CLI's grace period. */
+async function interrupt(runner: Runner, sig: NodeJS.Signals = 'SIGINT') {
+  process.kill(-runner.child.pid!, sig);
   const exit = await Promise.race([runner.exited, sleep(GRACE_MS).then(() => null)]);
   if (exit === null) process.kill(-runner.child.pid!, 'SIGKILL');
   return { killed: exit === null, ...(await runner.exited) };
@@ -334,4 +335,53 @@ describe('Ctrl+C while TraceRoot never answers closing the run', () => {
       }
     },
   );
+});
+
+describe('SIGTERM or SIGHUP while a case is stalled', () => {
+  // `kill`, a cancelled CI job or a stopped container sends SIGTERM; closing the terminal, SIGHUP.
+  for (const sig of ['SIGTERM', 'SIGHUP'] as const) {
+    it(
+      `${sig} saves the completed cases and closes the uploaded run as incomplete, as Ctrl+C does`,
+      { timeout: 60_000 },
+      async () => {
+        const host = await fakeTraceRoot();
+        const runner = startRunner(STALLED_SRC, {
+          TRACEROOT_API_KEY: 'tr-test-key',
+          TRACEROOT_HOST_URL: host.url,
+          TRACEROOT_ENABLED: 'true',
+          TRACEROOT_EVAL_OPTIONS: JSON.stringify({ reporting: true }),
+        });
+        try {
+          await waitUntil(
+            runner,
+            (events) =>
+              events.filter((e) => e.type === 'case_completed').length === 3 &&
+              events.some((e) => e.type === 'case_started' && e.case_id === 'stalled'),
+          );
+
+          const { killed, code, signal } = await interrupt(runner, sig);
+          assert.equal(killed, false, `the runner was still running ${GRACE_MS} ms after ${sig}`);
+          assert.deepEqual({ code, signal }, { code: 130, signal: null }, runner.output());
+
+          const { events, completed, last, run, runIds, caseIds } = saved(runner);
+          assert.deepEqual(last, { type: 'suite_completed', evaluations: 1, cancelled: true });
+          assert.equal(completed.status, 'incomplete');
+          assert.ok(
+            !events.some((e) => e.type === 'case_completed' && e.case_id === 'stalled'),
+            'the stalled case was reported as completed',
+          );
+          assert.equal(run.status, 'incomplete');
+          assert.equal(run.is_final, false);
+          assert.deepEqual(runIds, ['a', 'b', 'c']);
+          assert.deepEqual(caseIds, ['a', 'b', 'c']);
+          assert.equal(run.upload.close_confirmed, true);
+          assert.equal(host.completedAs(), 'incomplete');
+          assert.deepEqual([...host.results].sort(), ['a', 'b', 'c']);
+        } finally {
+          stop(runner);
+          host.close();
+        }
+      },
+    );
+  }
 });

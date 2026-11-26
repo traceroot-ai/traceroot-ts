@@ -7,7 +7,7 @@
 // (TRACEROOT_EVAL_EVENT_FD) or a file (TRACEROOT_EVAL_EVENT_FILE). Options come from the
 // JSON env var TRACEROOT_EVAL_OPTIONS; eval files come from argv. The runner ALWAYS exits 0
 // when the harness functioned (pass/fail is in the events); it emits `fatal` before dying,
-// and exits 130 on SIGINT after finalizing a partial artifact.
+// and exits 130 on SIGINT, SIGTERM or SIGHUP after finalizing a partial artifact.
 
 import {
   chmodSync,
@@ -20,6 +20,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
+import { constants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -53,6 +54,10 @@ export function capabilities(): Record<string, boolean> {
 }
 
 const DEFAULT_RUN_DIR = '.traceroot/eval/runs';
+
+/** The signals that cancel a run the way Ctrl+C does. traceroot-cli forwards all three; `kill`, a
+ *  cancelled CI job or a stopped container sends SIGTERM, and closing the terminal sends SIGHUP. */
+const CANCEL_SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
 type EventSink = (line: string) => void;
 type RunnerOptions = Record<string, any>;
@@ -752,21 +757,24 @@ export async function main(argv?: string[]): Promise<number> {
   const paths = argv ?? process.argv.slice(2);
   const emitter = new Emitter(openChannel());
 
-  let sigint = false;
-  // Abort the active run on Ctrl+C so it stops promptly and finalizes a partial artifact,
-  // instead of running every remaining case and reporting a misleading "completed".
+  let signalled = false;
+  // Abort the active run on any of CANCEL_SIGNALS so it stops promptly and finalizes a partial
+  // artifact, instead of running every remaining case and reporting a misleading "completed" or
+  // dying with nothing saved. A repeated signal changes nothing.
   const controller = new AbortController();
-  process.on('SIGINT', () => {
-    sigint = true;
+  const cancel = (): void => {
+    signalled = true;
     controller.abort();
-  });
+  };
+  // Only the signals this platform has.
+  for (const sig of CANCEL_SIGNALS) if (sig in constants.signals) process.on(sig, cancel);
 
   try {
     // Parse options inside the error boundary so malformed TRACEROOT_EVAL_OPTIONS surfaces as a
     // `fatal` NDJSON event instead of escaping the harness with an unhandled throw.
     const options = loadOptions();
     const cancelled = await runSuite(paths, options, emitter, controller.signal);
-    if (cancelled || sigint) return 130;
+    if (cancelled || signalled) return 130;
   } catch (exc) {
     emitter.emit({ type: 'fatal', kind: 'harness_error', message: fmt(exc) });
   } finally {
@@ -774,6 +782,8 @@ export async function main(argv?: string[]): Promise<number> {
     // at hard exit (process.exit skips the beforeExit auto-flush) is a run whose trace drill-down
     // is permanently empty.
     await flushSpans();
+    // main() can run inside a longer-lived process, which must not be left ignoring these signals.
+    for (const sig of CANCEL_SIGNALS) process.off(sig, cancel);
   }
   return 0;
 }

@@ -248,6 +248,22 @@ describe('runner: flush before exit', () => {
   });
 });
 
+describe('runner: signal handlers', () => {
+  it('main removes the handlers it installed once it returns', async () => {
+    // main() can run inside a longer-lived process, which must not be left ignoring these signals.
+    const file = writeEval('two_eval.ts', TWO_CASE_EVAL);
+    process.env['TRACEROOT_EVAL_EVENT_FILE'] = join(dir, 'events.ndjson');
+    process.env['TRACEROOT_EVAL_OPTIONS'] = JSON.stringify({ reporting: true, no_artifact: true });
+    TraceRoot.flush = async () => {};
+    const listening = () =>
+      (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((sig) => process.listenerCount(sig));
+    const before = listening();
+
+    assert.equal(await main([file]), 0);
+    assert.deepEqual(listening(), before);
+  });
+});
+
 describe('runner: a payload whose serialization is not reproducible', () => {
   // The safety probe and the real serialization must be the SAME serialization. Probing with one
   // JSON.stringify and then writing the ORIGINAL value serializes it a second time — a payload
