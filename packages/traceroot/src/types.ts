@@ -90,6 +90,13 @@ export interface InitializeOptions {
     bedrock?: unknown;
     typeSafe?: unknown;
     /**
+     * @google/genai module ref. Pass `import * as genai from '@google/genai'` —
+     * the module namespace, NOT the GoogleGenAI class. Traces each generateContent
+     * request, streamed or not, including those made by chats and automatic
+     * function calling. Not auto-instrumented when instrumentModules is omitted.
+     */
+    googleGenAI?: unknown;
+    /**
      * @openai/agents module ref. Pass `import * as agents from '@openai/agents'`.
      *
      * Replaces the SDK's default OpenAI tracing processor with traceroot's —

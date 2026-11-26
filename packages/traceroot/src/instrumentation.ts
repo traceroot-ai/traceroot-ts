@@ -7,6 +7,7 @@ import { wireClaudeAgentSDKInstrumentation } from './claude-agent-sdk';
 import { wirePiCodingAgentInstrumentation } from './pi';
 import { instrumentPiAgentCore } from './pi-agent-core';
 import { withAnthropicFallback } from './anthropic';
+import { instrumentGoogleGenAI } from './google-genai';
 
 type InstrumentationWithManualPatch = Instrumentation & {
   manuallyInstrument(moduleRef: unknown): void;
@@ -125,6 +126,9 @@ export function wireInstrumentations(
     _instrumentedProviders.add(key);
   }
 
+  if (instrumentModules.googleGenAI && instrumentGoogleGenAI(instrumentModules.googleGenAI)) {
+    _instrumentedProviders.add('googleGenAI');
+  }
   if (instrumentModules.claudeAgentSDK) {
     wireClaudeAgentSDKInstrumentation(instrumentModules.claudeAgentSDK);
   }
