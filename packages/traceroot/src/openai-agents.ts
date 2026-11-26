@@ -1,5 +1,5 @@
 import { context, SpanStatusCode, trace } from '@opentelemetry/api';
-import type { Context, Span as OTelSpan } from '@opentelemetry/api';
+import type { AttributeValue, Context, Span as OTelSpan } from '@opentelemetry/api';
 import type { SpanData } from '@openai/agents';
 import {
   AGENT_NAME,
@@ -47,6 +47,8 @@ const SPAN_KIND: Record<SpanData['type'], string> = {
   speech: 'LLM',
   speech_group: 'CHAIN',
   mcp_tools: 'TOOL',
+  task: 'CHAIN',
+  turn: 'CHAIN',
 };
 
 export function getSpanName(data: SpanData): string {
@@ -73,6 +75,10 @@ export function getSpanName(data: SpanData): string {
       return 'speech_group';
     case 'mcp_tools':
       return data.server ? `mcp_tools [${data.server}]` : 'mcp_tools';
+    case 'task':
+      return data.name;
+    case 'turn':
+      return `turn ${data.turn}`;
   }
 }
 
@@ -143,6 +149,7 @@ export function getSpanAttributes(data: SpanData): Record<string, string | numbe
 export class OpenAIAgentsProcessor {
   private readonly spanMap = new Map<string, OTelSpan>();
   private readonly ctxMap = new Map<string, Context>();
+  private readonly traceIO = new Map<string, { input?: AttributeValue; output?: AttributeValue }>();
   private readonly tracer = trace.getTracer('@traceroot-ai/openai-agents');
 
   async onTraceStart(t: OpenAIAgentsTrace): Promise<void> {
@@ -154,9 +161,14 @@ export class OpenAIAgentsProcessor {
   }
 
   async onTraceEnd(t: OpenAIAgentsTrace): Promise<void> {
-    this.spanMap.get(t.traceId)?.end();
+    const root = this.spanMap.get(t.traceId);
+    const io = this.traceIO.get(t.traceId);
+    if (root && io?.input != null) root.setAttribute(OI_INPUT_VALUE, io.input);
+    if (root && io?.output != null) root.setAttribute(OI_OUTPUT_VALUE, io.output);
+    root?.end();
     this.spanMap.delete(t.traceId);
     this.ctxMap.delete(t.traceId);
+    this.traceIO.delete(t.traceId);
   }
 
   async onSpanStart(s: OpenAIAgentsSpan): Promise<void> {
@@ -178,6 +190,12 @@ export class OpenAIAgentsProcessor {
     if (otelSpan) {
       const attrs = getSpanAttributes(s.spanData);
       for (const [k, v] of Object.entries(attrs)) otelSpan.setAttribute(k, v);
+      if (s.spanData.type === 'response' || s.spanData.type === 'generation') {
+        const io = this.traceIO.get(s.traceId) ?? {};
+        io.input ??= attrs[OI_INPUT_VALUE];
+        io.output = attrs[OI_OUTPUT_VALUE] ?? io.output;
+        this.traceIO.set(s.traceId, io);
+      }
       if (s.error) otelSpan.setStatus({ code: SpanStatusCode.ERROR, message: s.error.message });
       otelSpan.end(s.endedAt ? new Date(s.endedAt) : undefined);
     }

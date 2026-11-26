@@ -65,7 +65,7 @@
     "@earendil-works/pi-coding-agent": "^0.80.0",
     "@eslint/js": "^9.0.0",
     "@langchain/core": "^1.1.39",
-    "@openai/agents": ">=0.0.1",
+    "@openai/agents": "^0.22.0",
     "@types/node": "^20.0.0",
     "anthropic": "^0.0.0",
     "anthropic-legacy": "npm:@anthropic-ai/sdk@0.91.1",

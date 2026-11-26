@@ -57,6 +57,12 @@ describe('getSpanName()', () => {
   it('mcp_tools without server', () => {
     assert.equal(getSpanName({ type: 'mcp_tools' }), 'mcp_tools');
   });
+  it('task → task name', () => {
+    assert.equal(getSpanName({ type: 'task', name: 'Agent workflow' }), 'Agent workflow');
+  });
+  it('turn → turn number', () => {
+    assert.equal(getSpanName({ type: 'turn', turn: 2, agent_name: 'Weather Assistant' }), 'turn 2');
+  });
 });
 
 describe('getSpanAttributes()', () => {
@@ -73,6 +79,8 @@ describe('getSpanAttributes()', () => {
       [{ type: 'speech' }, 'LLM'],
       [{ type: 'speech_group' }, 'CHAIN'],
       [{ type: 'mcp_tools' }, 'TOOL'],
+      [{ type: 'task', name: 'x' }, 'CHAIN'],
+      [{ type: 'turn', turn: 1, agent_name: 'x' }, 'CHAIN'],
     ];
     for (const [data, kind] of cases) {
       assert.equal(
@@ -337,6 +345,95 @@ describe('OpenAIAgentsProcessor', () => {
     assert.ok(errSpan, 'error span missing');
     assert.equal(errSpan.status.code, 2 /* SpanStatusCode.ERROR */);
     assert.equal(errSpan.status.message, 'tool exploded');
+  });
+
+  it('names task/turn spans and lifts the run I/O onto the root (@openai/agents 0.22 tree)', async () => {
+    const userInput = [{ type: 'message', role: 'user', content: "What's the weather in Tokyo?" }];
+    const finalOutput = [
+      {
+        type: 'message',
+        id: 'msg_1',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'It is 72F and sunny in Tokyo.', annotations: [] }],
+      },
+    ];
+    const span = (spanId: string, parentId: string, spanData: SpanData) => ({
+      type: 'trace.span' as const,
+      spanId,
+      traceId: 'trace_abc',
+      parentId,
+      spanData,
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      error: null,
+    });
+    const task = span('task', 'trace_abc', { type: 'task', name: 'Agent workflow' });
+    const agent = span('agent', 'task', {
+      type: 'agent',
+      name: 'Weather Assistant',
+      tools: ['get_weather'],
+    });
+    const turn1 = span('turn1', 'agent', {
+      type: 'turn',
+      turn: 1,
+      agent_name: 'Weather Assistant',
+    });
+    const response1 = span('response1', 'turn1', {
+      type: 'response',
+      _input: userInput,
+      _response: {
+        model: 'gpt-4o-mini',
+        output: [{ type: 'function_call', call_id: 'call_1', name: 'get_weather' }],
+      },
+    });
+    const tool = span('tool', 'turn1', {
+      type: 'function',
+      name: 'get_weather',
+      input: '{"city": "Tokyo"}',
+      output: 'The weather in Tokyo is 72°F and sunny.',
+    });
+    const turn2 = span('turn2', 'agent', {
+      type: 'turn',
+      turn: 2,
+      agent_name: 'Weather Assistant',
+    });
+    const response2 = span('response2', 'turn2', {
+      type: 'response',
+      _input: [...userInput, { type: 'function_call_result', callId: 'call_1' }],
+      _response: { model: 'gpt-4o-mini', output: finalOutput },
+    });
+
+    await processor.onTraceStart({ type: 'trace', traceId: 'trace_abc', name: 'Agent workflow' });
+    for (const s of [task, agent, turn1, response1]) await processor.onSpanStart(s);
+    await processor.onSpanEnd(response1);
+    await processor.onSpanStart(tool);
+    await processor.onSpanEnd(tool);
+    await processor.onSpanEnd(turn1);
+    await processor.onSpanStart(turn2);
+    await processor.onSpanStart(response2);
+    for (const s of [response2, turn2, agent, task]) await processor.onSpanEnd(s);
+    await processor.onTraceEnd({ type: 'trace', traceId: 'trace_abc', name: 'Agent workflow' });
+
+    const spans = exporter.getFinishedSpans();
+    assert.deepEqual(
+      spans.map((s) => s.name),
+      [
+        'response',
+        'get_weather',
+        'turn 1',
+        'response',
+        'turn 2',
+        'Weather Assistant',
+        'Agent workflow',
+        'Agent workflow',
+      ],
+    );
+    for (const s of spans) assert.ok(s.attributes['openinference.span.kind'], `no kind: ${s.name}`);
+
+    const root = spans.find((s) => !s.parentSpanId)!;
+    assert.equal(root.attributes['input.value'], JSON.stringify(userInput));
+    assert.equal(root.attributes['output.value'], JSON.stringify(finalOutput));
   });
 
   it('cleans up internal maps after onSpanEnd and onTraceEnd', async () => {
