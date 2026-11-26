@@ -525,8 +525,8 @@ export class PlatformTransport implements EvalTransport {
     this.baseUrl = baseUrl;
   }
 
-  private request(method: string, path: string, body?: unknown): Promise<any> {
-    return httpJson(method, `${this.baseUrl}${path}`, this.apiKey, body);
+  private request(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<any> {
+    return httpJson(method, `${this.baseUrl}${path}`, this.apiKey, body, timeoutMs);
   }
 
   /**
@@ -538,14 +538,27 @@ export class PlatformTransport implements EvalTransport {
    * no such isolation — a blip on register aborts the evaluation before a single case runs, and
    * one on complete leaves a finished run stuck in 'running' — so those two alone get another
    * chance. Only transient failures; a rejected payload is re-thrown at once.
+   *
+   * With `timeoutMs`, the whole call gives up once that has passed: an attempt still waiting then
+   * is aborted, and a retry whose backoff would end past it is not made.
    */
-  private async requestWithRetry(method: string, path: string, body?: unknown): Promise<any> {
+  private async requestWithRetry(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs?: number,
+  ): Promise<any> {
+    const deadline = performance.now() + (timeoutMs ?? Number.POSITIVE_INFINITY);
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.request(method, path, body);
+        // Whole milliseconds: AbortSignal.timeout() rejects a fraction.
+        const left = Math.max(0, Math.floor(deadline - performance.now()));
+        return await this.request(method, path, body, Math.min(HTTP_TIMEOUT_MS, left));
       } catch (err) {
         if (attempt >= this.retryAttempts || !isRetryable(err)) throw err;
-        await sleep(retryDelayMs(attempt, this.retryBaseDelayMs));
+        const delay = retryDelayMs(attempt, this.retryBaseDelayMs);
+        if (performance.now() + delay >= deadline) throw err;
+        await sleep(delay);
       }
     }
   }
@@ -721,6 +734,7 @@ export class PlatformTransport implements EvalTransport {
     _run: RunHandle,
     statusOverride?: string | null,
     emittedMetrics?: Record<string, string[]> | null,
+    options?: { timeoutMs?: number },
   ): Promise<UploadState> {
     // Pure reporter: the engine passes the terminal status (e.g. 'incomplete' on cancellation).
     // Derive the completion aggregate from the per-case map, so counts always match the distinct
@@ -753,6 +767,7 @@ export class PlatformTransport implements EvalTransport {
       'POST',
       `/api/v1/public/evaluation-runs/${this.runId}/complete`,
       body,
+      options?.timeoutMs,
     );
     // Join the backend's UI-relative run path with our host; null when absent.
     // Prefer the backend's absolute run_url; fall back to baseUrl + run_path for a control

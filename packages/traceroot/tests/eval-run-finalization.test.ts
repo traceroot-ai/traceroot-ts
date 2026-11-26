@@ -7,9 +7,10 @@
 // "uploaded" with silently-missing results is detectable.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 
 import { Dataset, EvalCompletionError, FakeTransport, evaluate } from '../src/eval';
-import { CANCEL_DRAIN_MS, CancelledError } from '../src/eval/engine';
+import { CANCEL_DRAIN_MS, CANCEL_SAVE_MS, CancelledError } from '../src/eval/engine';
 import type { EvalCase, EvalItemResult, RunHandle, UploadState } from '../src/eval';
 import type { ScorerContext } from '../src/eval';
 
@@ -101,6 +102,176 @@ describe('a cancelled run keeps its cancellation identity', () => {
     assert.ok(!(err instanceof EvalCompletionError));
     // The completion failure is not lost — it rides along as secondary context.
     assert.match(String((err as { completionError?: Error }).completionError?.message), /400/);
+    // And the run is still handed back to be saved, saying TraceRoot didn't confirm the close.
+    assert.equal(err.uploadState?.closeConfirmed, false);
+    assert.equal(err.uploadState?.failedResultCount, 0);
+    assert.equal(err.uploadState?.unconfirmedResultCount, 0);
+  });
+
+  it('a close TraceRoot acknowledges is confirmed, cancelled or not', async () => {
+    const run = await evaluate({
+      name: 'r',
+      dataset: ds(2),
+      task: echo,
+      scorers: [ok],
+      transport: new FakeTransport(),
+    });
+    assert.equal(run.uploadState.closeConfirmed, true);
+    const controller = new AbortController();
+    controller.abort();
+    const err = await evaluate({
+      name: 'r',
+      dataset: ds(2),
+      task: echo,
+      scorers: [ok],
+      transport: new FakeTransport(),
+      signal: controller.signal,
+    }).then(
+      () => null,
+      (e) => e,
+    );
+    assert.ok(err instanceof CancelledError, `expected CancelledError, got ${String(err)}`);
+    assert.equal(err.uploadState?.closeConfirmed, true);
+  });
+});
+
+describe('a cancelled run does not wait on a close that never answers', () => {
+  // traceroot-cli kills the runner 10 s after the signal, so a close still waiting then would take
+  // the run's completed cases down with it.
+  it(
+    'stops waiting once the save budget runs out and says the close is unconfirmed',
+    { timeout: 30_000 },
+    async () => {
+      let offered: number | undefined;
+      // Ignores the bound it is given, so the run itself has to stop waiting.
+      class SilentClose extends FakeTransport {
+        finishRun(
+          _run: RunHandle,
+          _status?: string | null,
+          _emitted?: Record<string, string[]> | null,
+          options?: { timeoutMs?: number },
+        ): Promise<UploadState> {
+          offered = options?.timeoutMs;
+          return new Promise<UploadState>(() => {});
+        }
+      }
+      const controller = new AbortController();
+      const completed: string[] = [];
+      const task = async (input: unknown) => {
+        if (input === 'stalled') await new Promise(() => {});
+        return input;
+      };
+      const data = new Dataset('d');
+      for (const id of ['a', 'b', 'c', 'stalled']) data.add(id, { id, expected: id });
+
+      let abortedAt = 0;
+      const err = await evaluate({
+        name: 'r',
+        dataset: data,
+        task,
+        scorers: [ok],
+        transport: new SilentClose(),
+        maxConcurrency: 4,
+        signal: controller.signal,
+        onCaseComplete: (item) => {
+          completed.push(item.caseId);
+          if (completed.length === 3) {
+            abortedAt = performance.now();
+            controller.abort();
+          }
+        },
+      }).then(
+        () => null,
+        (e) => e,
+      );
+      const waited = performance.now() - abortedAt;
+
+      assert.ok(err instanceof CancelledError, `expected CancelledError, got ${String(err)}`);
+      assert.deepEqual([...completed].sort(), ['a', 'b', 'c']);
+      assert.equal(err.uploadState?.closeConfirmed, false);
+      assert.ok(err.completionError instanceof Error);
+      // The close gets what the drain left of the budget, and the run waits no longer than that.
+      assert.ok(offered !== undefined, 'the close was not told its bound');
+      const remainder = CANCEL_SAVE_MS - CANCEL_DRAIN_MS;
+      assert.ok(Math.abs(offered - remainder) < 250, `the close was offered ${offered} ms`);
+      assert.ok(waited >= CANCEL_SAVE_MS - 50, `finalized after ${waited} ms, before the budget`);
+      assert.ok(waited < CANCEL_SAVE_MS + 1_000, `finalized after ${waited} ms`);
+    },
+  );
+
+  it(
+    'counts the save budget from a signal that arrives while the run is registering',
+    { timeout: 30_000 },
+    async () => {
+      const controller = new AbortController();
+      let abortedAt = 0;
+      let offered: number | undefined;
+      // Registration takes 2 s and the signal arrives 100 ms into it; the close never answers.
+      class SlowRegistration extends FakeTransport {
+        async createRun(
+          name: string,
+          datasetName: string,
+          metadata: Record<string, unknown> | null,
+        ): Promise<RunHandle> {
+          setTimeout(() => {
+            abortedAt = performance.now();
+            controller.abort();
+          }, 100);
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          return super.createRun(name, datasetName, metadata);
+        }
+        finishRun(
+          _run: RunHandle,
+          _status?: string | null,
+          _emitted?: Record<string, string[]> | null,
+          options?: { timeoutMs?: number },
+        ): Promise<UploadState> {
+          offered = options?.timeoutMs;
+          return new Promise<UploadState>(() => {});
+        }
+      }
+      const err = await evaluate({
+        name: 'r',
+        dataset: ds(2),
+        task: echo,
+        scorers: [ok],
+        transport: new SlowRegistration(),
+        signal: controller.signal,
+      }).then(
+        () => null,
+        (e) => e,
+      );
+      const waited = performance.now() - abortedAt;
+
+      assert.ok(err instanceof CancelledError, `expected CancelledError, got ${String(err)}`);
+      assert.equal(err.uploadState?.closeConfirmed, false);
+      // The close gets what registration left of the budget, so the run is saved on time.
+      assert.ok(offered !== undefined, 'the close was not told its bound');
+      assert.ok(Math.abs(offered - (CANCEL_SAVE_MS - 1_900)) < 250, `offered ${offered} ms`);
+      assert.ok(waited >= CANCEL_SAVE_MS - 50, `finalized after ${waited} ms, before the budget`);
+      assert.ok(waited < CANCEL_SAVE_MS + 500, `finalized after ${waited} ms`);
+    },
+  );
+
+  it('leaves no listener on the signal when the run fails to register', async () => {
+    const controller = new AbortController();
+    class FailingRegistration extends FakeTransport {
+      async createRun(): Promise<RunHandle> {
+        throw new Error('HTTP 503: registration failed');
+      }
+    }
+    await assert.rejects(
+      evaluate({
+        name: 'r',
+        dataset: ds(1),
+        task: echo,
+        scorers: [ok],
+        transport: new FailingRegistration(),
+        signal: controller.signal,
+      }),
+      /registration failed/,
+    );
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
   });
 });
 

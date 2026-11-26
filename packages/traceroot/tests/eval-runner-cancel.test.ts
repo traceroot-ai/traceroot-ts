@@ -4,12 +4,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ChildProcess, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+import { CANCEL_SAVE_MS } from '../src/eval/engine';
 
 const RUNNER = join(__dirname, '..', 'src', 'eval', 'runner.ts');
 const TSX = pathToFileURL(require.resolve('tsx')).href;
@@ -121,8 +123,10 @@ function saved(runner: Runner) {
   const events = readEvents(runner.eventFile);
   const completed = events.find((e) => e.type === 'evaluation_completed');
   assert.ok(completed?.artifact, `no saved run:\n${runner.output()}`);
-  const run = JSON.parse(readFileSync(join(runner.dir, completed.artifact.run), 'utf8'));
-  const cases = readFileSync(join(runner.dir, completed.artifact.cases), 'utf8')
+  const runFile = join(runner.dir, completed.artifact.run);
+  const casesFile = join(runner.dir, completed.artifact.cases);
+  const run = JSON.parse(readFileSync(runFile, 'utf8'));
+  const cases = readFileSync(casesFile, 'utf8')
     .trim()
     .split('\n')
     .map((line) => JSON.parse(line));
@@ -133,14 +137,19 @@ function saved(runner: Runner) {
     run,
     runIds: run.cases.map((c: Event) => c.case_id).sort(),
     caseIds: cases.map((c: Event) => c.case_id).sort(),
+    writtenAt: Math.max(statSync(runFile).mtimeMs, statSync(casesFile).mtimeMs),
   };
 }
 
 /**
  * A TraceRoot host with just the endpoints an uploaded run calls. It saves every case result as it
- * arrives, but holds its reply to `heldCase`'s for `holdMs`.
+ * arrives, but holds its reply to `heldCase`'s for `holdMs`. With `silentClose` it takes the
+ * request closing the run and never answers it.
  */
-async function fakeTraceRoot(heldCase: string, holdMs: number) {
+async function fakeTraceRoot(
+  options: { heldCase?: string; holdMs?: number; silentClose?: boolean } = {},
+) {
+  const { heldCase, holdMs = 0, silentClose = false } = options;
   const results: string[] = [];
   let completedAs: string | null = null;
   let arrived!: () => void;
@@ -169,7 +178,10 @@ async function fakeTraceRoot(heldCase: string, holdMs: number) {
         timers.push(setTimeout(() => reply(200, {}), holdMs));
         return;
       }
-      if (url.endsWith('/complete')) completedAs = JSON.parse(body).status;
+      if (url.endsWith('/complete')) {
+        completedAs = JSON.parse(body).status;
+        if (silentClose) return;
+      }
       // Dataset metadata, completion, span export.
       return reply(200, {});
     });
@@ -234,7 +246,7 @@ describe('Ctrl+C while a case is stalled', () => {
     { timeout: 60_000 },
     async () => {
       // TraceRoot saves 'slow' at once but replies 8 s later: past the 5 s drain, inside the 10 s.
-      const host = await fakeTraceRoot('slow', 8_000);
+      const host = await fakeTraceRoot({ heldCase: 'slow', holdMs: 8_000 });
       // What the CLI sets for an uploaded run.
       const runner = startRunner(UPLOADED_SRC, {
         TRACEROOT_API_KEY: 'tr-test-key',
@@ -264,9 +276,58 @@ describe('Ctrl+C while a case is stalled', () => {
         assert.deepEqual(caseIds, ['a', 'b', 'c', 'slow']);
         assert.equal(run.upload.unconfirmed_result_count, 1);
         assert.equal(run.upload.failed_result_count, 0);
+        assert.equal(run.upload.close_confirmed, true);
         // TraceRoot has the same four, and the run closed incomplete.
         assert.deepEqual([...host.results].sort(), ['a', 'b', 'c', 'slow']);
         assert.equal(host.completedAs(), 'incomplete');
+      } finally {
+        stop(runner);
+        host.close();
+      }
+    },
+  );
+});
+
+describe('Ctrl+C while TraceRoot never answers closing the run', () => {
+  it(
+    'saves the completed cases within the save budget, with the close unconfirmed, and exits 130',
+    { timeout: 60_000 },
+    async () => {
+      const host = await fakeTraceRoot({ silentClose: true });
+      const runner = startRunner(STALLED_SRC, {
+        TRACEROOT_API_KEY: 'tr-test-key',
+        TRACEROOT_HOST_URL: host.url,
+        TRACEROOT_ENABLED: 'true',
+        TRACEROOT_EVAL_OPTIONS: JSON.stringify({ reporting: true }),
+      });
+      try {
+        await waitUntil(
+          runner,
+          (events) =>
+            events.filter((e) => e.type === 'case_completed').length === 3 &&
+            events.some((e) => e.type === 'case_started' && e.case_id === 'stalled'),
+        );
+
+        const signalledAt = Date.now();
+        const { killed, code, signal } = await interrupt(runner);
+        assert.equal(killed, false, `the runner was still running ${GRACE_MS} ms after SIGINT`);
+        assert.deepEqual({ code, signal }, { code: 130, signal: null }, runner.output());
+
+        const { completed, last, run, runIds, caseIds, writtenAt } = saved(runner);
+        // The budget counts from when the runner sees the signal; allow for delivery and the writes.
+        const after = writtenAt - signalledAt;
+        assert.ok(after < CANCEL_SAVE_MS + 1_000, `the run was saved ${after} ms after the signal`);
+        assert.deepEqual(last, { type: 'suite_completed', evaluations: 1, cancelled: true });
+        assert.equal(completed.status, 'incomplete');
+        assert.equal(run.status, 'incomplete');
+        assert.deepEqual(runIds, ['a', 'b', 'c']);
+        assert.deepEqual(caseIds, ['a', 'b', 'c']);
+        assert.equal(run.upload.close_confirmed, false);
+        assert.equal(run.upload.unconfirmed_result_count, 0);
+        assert.equal(run.upload.failed_result_count, 0);
+        // TraceRoot got the request closing the run as incomplete; it just never answered.
+        assert.equal(host.completedAs(), 'incomplete');
+        assert.deepEqual([...host.results].sort(), ['a', 'b', 'c']);
       } finally {
         stop(runner);
         host.close();

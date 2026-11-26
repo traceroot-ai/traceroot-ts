@@ -89,7 +89,9 @@ export interface EvaluateOptions {
    *  terminally (incomplete) so callers can finalize a partial result (e.g. SIGINT). Cases
    *  already running get {@link CANCEL_DRAIN_MS} to settle; any still running then are left out,
    *  except a result already sent and waiting on its acknowledgement, which is kept and counted
-   *  in `UploadState.unconfirmedResultCount`. */
+   *  in `UploadState.unconfirmedResultCount`. Closing the run gets what is left of
+   *  {@link CANCEL_SAVE_MS}; one not acknowledged by then is left, with
+   *  `UploadState.closeConfirmed` false. */
   signal?: AbortSignal;
 }
 
@@ -119,10 +121,17 @@ const ZERO_TRACE_ID = /^0+$/;
  * How long a cancelled run waits for the cases already running before it is finalized without
  * them. A promise can't be cancelled, so a case awaiting a stream that went silent would otherwise
  * keep the run from ever finishing. traceroot-cli kills the runner 10 s after Ctrl+C: the first
- * half lets ordinary in-flight calls finish, and the second is left for finalizing, closing an
- * uploaded run as incomplete (its retries back off 0.5 s + 1 s) and flushing spans included.
+ * half lets ordinary in-flight calls finish, and {@link CANCEL_SAVE_MS} bounds what follows.
  */
 export const CANCEL_DRAIN_MS = 5_000;
+
+/**
+ * How long after its signal a cancelled run is saved, at the latest. The runner writes the run
+ * file and cases file once the run is finalized: after the drain, and after closing an uploaded
+ * run as incomplete, which gets what the drain left of this. The last 2 s of traceroot-cli's 10
+ * are for writing the files, flushing spans and exiting.
+ */
+export const CANCEL_SAVE_MS = 8_000;
 
 /** What a run shares with its cases about a cancellation's drain (see CANCEL_DRAIN_MS). */
 interface Drain {
@@ -341,8 +350,9 @@ export class CancelledError extends Error {
   localRunId?: string;
   runId?: string | null;
   uploadState?: UploadState;
-  /** Set only when finalizing the cancelled run ALSO failed — the cancellation stays the error,
-   *  the finalization failure rides along (the run may still be 'running' on the platform). */
+  /** Set only when finalizing the cancelled run ALSO failed, or wasn't acknowledged within
+   *  {@link CANCEL_SAVE_MS} — the cancellation stays the error, the finalization failure rides
+   *  along (the run may still be 'running' on the platform). */
   completionError?: unknown;
 }
 
@@ -362,6 +372,52 @@ async function withTimeout<T>(p: Promise<T>, timeout?: number, deadline?: number
     return await Promise.race([p, timer]);
   } finally {
     clearTimeout(handle!);
+  }
+}
+
+/**
+ * Records when `signal` aborts, from the moment it is called: `at()` is the performance.now() of
+ * the abort, or undefined before it. `stop()` detaches it. Its own function, so a listener left on
+ * the signal by a run whose setup threw holds nothing of that run.
+ */
+function abortClock(signal: AbortSignal | undefined): {
+  at: () => number | undefined;
+  stop: () => void;
+} {
+  let abortedAt: number | undefined;
+  const mark = (): void => {
+    abortedAt = performance.now();
+  };
+  if (signal?.aborted) mark();
+  else signal?.addEventListener('abort', mark, { once: true });
+  return { at: () => abortedAt, stop: () => signal?.removeEventListener('abort', mark) };
+}
+
+/**
+ * Close a cancelled run within `ms`. The transport is told the bound, and the run stops waiting
+ * once it is up whether the transport keeps to it or not. Throws if the close isn't acknowledged.
+ */
+async function closeWithin(
+  transport: EvalTransport,
+  run: RunHandle,
+  status: string | null,
+  emitted: Record<string, string[]>,
+  ms: number,
+): Promise<UploadState> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`closing the run was not acknowledged within ${Math.round(ms)} ms`)),
+      ms,
+    );
+  });
+  try {
+    return await Promise.race([
+      transport.finishRun(run, status, emitted, { timeoutMs: ms }),
+      expired,
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -705,79 +761,93 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // local artifact.
   const runMetadata = collectRunProvenance(options.metadata, { detectDirty: false });
 
-  // Cloud-only by default: an explicit transport wins; otherwise build a reporting transport
-  // from credentials + a synced dataset.
+  // CANCEL_SAVE_MS counts from when the run sees its signal abort. Started before the dataset
+  // publish and the run's registration, so a signal during either counts from when it arrived.
+  const aborted = abortClock(options.signal);
+
+  const specs = describeScorers(scorers);
   let active: EvalTransport;
-  if (local) {
-    // local: true IS transport: new FakeTransport(), spelled as intent rather than as a class the
-    // user has to import: the run executes in full and records itself in memory, but nothing
-    // leaves the process. Selected ahead of the auto path so it also short-circuits the
-    // auto-publish below — a local run needs no credentials and versions no dataset, even one
-    // that is already synced.
-    active = new FakeTransport();
-  } else if (transport !== undefined) {
-    active = transport;
-  } else {
-    // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
-    // server-side version to attach to -- the user never writes a manual "sync then run" step.
-    // Idempotent: unchanged content reuses the
-    // current version. Only for a local Dataset with credentials; an explicit datasetId or an
-    // explicit transport skip this.
-    //
-    // A dataset that IS pinned republishes only once it has drifted from the version it is pinned
-    // to. A Dataset is mutable and evaluate() is re-runnable, so pinning the version from a
-    // previous run (or from the pull) would attribute the cases this run actually scored to
-    // content that never contained them.
-    if (data instanceof Dataset && options.datasetId === undefined) {
-      const { apiKey } = TraceRoot.resolveCredentials();
-      if (apiKey && (data.datasetVersionId === undefined || pinnedContentChanged(data))) {
-        await autoPublish(data);
+  let evalSpanTracer: ReturnType<typeof evalTracer>;
+  let localRunId: string;
+  let run: RunHandle;
+  // The case-execution finally below detaches the clock. A step before it that throws (the
+  // dataset publish, a run with no transport, the registration) detaches it here instead.
+  try {
+    // Cloud-only by default: an explicit transport wins; otherwise build a reporting transport
+    // from credentials + a synced dataset.
+    if (local) {
+      // local: true IS transport: new FakeTransport(), spelled as intent rather than as a class the
+      // user has to import: the run executes in full and records itself in memory, but nothing
+      // leaves the process. Selected ahead of the auto path so it also short-circuits the
+      // auto-publish below — a local run needs no credentials and versions no dataset, even one
+      // that is already synced.
+      active = new FakeTransport();
+    } else if (transport !== undefined) {
+      active = transport;
+    } else {
+      // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
+      // server-side version to attach to -- the user never writes a manual "sync then run" step.
+      // Idempotent: unchanged content reuses the
+      // current version. Only for a local Dataset with credentials; an explicit datasetId or an
+      // explicit transport skip this.
+      //
+      // A dataset that IS pinned republishes only once it has drifted from the version it is pinned
+      // to. A Dataset is mutable and evaluate() is re-runnable, so pinning the version from a
+      // previous run (or from the pull) would attribute the cases this run actually scored to
+      // content that never contained them.
+      if (data instanceof Dataset && options.datasetId === undefined) {
+        const { apiKey } = TraceRoot.resolveCredentials();
+        if (apiKey && (data.datasetVersionId === undefined || pinnedContentChanged(data))) {
+          await autoPublish(data);
+        }
       }
-    }
-    const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
-    if (auto === null) {
-      // autoTransport returns null for two unrelated reasons; saying "no credentials" for both
-      // misdirects a user who HAS a key but passed inline cases or an unsynced dataset.
-      if (TraceRoot.resolveCredentials().apiKey) {
+      const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
+      if (auto === null) {
+        // autoTransport returns null for two unrelated reasons; saying "no credentials" for both
+        // misdirects a user who HAS a key but passed inline cases or an unsynced dataset.
+        if (TraceRoot.resolveCredentials().apiKey) {
+          throw new Error(
+            'evaluate() reports to the traceroot platform, but this run has no synced dataset to ' +
+              'report against. Pass a Dataset that was pulled or pushed (pullDataset(...) / ' +
+              'Dataset.push(...)), or pass datasetId, or pass local: true to run without ' +
+              'reporting.',
+          );
+        }
         throw new Error(
-          'evaluate() reports to the traceroot platform, but this run has no synced dataset to ' +
-            'report against. Pass a Dataset that was pulled or pushed (pullDataset(...) / ' +
-            'Dataset.push(...)), or pass datasetId, or pass local: true to run without ' +
-            'reporting.',
+          'evaluate() reports to the traceroot platform, but no credentials were found. Set ' +
+            'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass local: true to ' +
+            'run without reporting.',
         );
       }
-      throw new Error(
-        'evaluate() reports to the traceroot platform, but no credentials were found. Set ' +
-          'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass local: true to ' +
-          'run without reporting.',
-      );
+      // A reported run records every score with a per-metric `passed`; no overall run-level pass/fail
+      // is invented (there is no headline metric).
+      active = auto;
     }
-    // A reported run records every score with a per-metric `passed`; no overall run-level pass/fail
-    // is invented (there is no headline metric).
-    active = auto;
-  }
 
-  // Forward scorer comparison metadata to a transport that accepts specs (before createRun).
-  const specs = describeScorers(scorers);
-  if ('scorerSpecs' in active && (active as PlatformTransport).scorerSpecs === undefined) {
-    (active as PlatformTransport).scorerSpecs = specs;
-  }
-  // Same seam for the evaluation's stable identity: fill it only when the transport has the field
-  // and nothing has set it, so a transport constructed with an explicit key keeps it.
-  if (
-    options.evaluationKey !== undefined &&
-    'evaluationKey' in active &&
-    (active as PlatformTransport).evaluationKey == null
-  ) {
-    (active as PlatformTransport).evaluationKey = options.evaluationKey;
-  }
+    // Forward scorer comparison metadata to a transport that accepts specs (before createRun).
+    if ('scorerSpecs' in active && (active as PlatformTransport).scorerSpecs === undefined) {
+      (active as PlatformTransport).scorerSpecs = specs;
+    }
+    // Same seam for the evaluation's stable identity: fill it only when the transport has the field
+    // and nothing has set it, so a transport constructed with an explicit key keeps it.
+    if (
+      options.evaluationKey !== undefined &&
+      'evaluationKey' in active &&
+      (active as PlatformTransport).evaluationKey == null
+    ) {
+      (active as PlatformTransport).evaluationKey = options.evaluationKey;
+    }
 
-  // A reported run's structural spans export and are linked to its results. A local run gets a
-  // non-exporting tracer: the span tree carries the case input and the task output as span I/O, so
-  // exporting it would send off-process exactly the payloads `local: true` promises to keep in.
-  const evalSpanTracer = evalTracer(local);
-  const localRunId = newRunId();
-  const run = await active.createRun(name, datasetName, runMetadata ?? null, localRunId);
+    // A reported run's structural spans export and are linked to its results. A local run gets a
+    // non-exporting tracer: the span tree carries the case input and the task output as span I/O, so
+    // exporting it would send off-process exactly the payloads `local: true` promises to keep in.
+    evalSpanTracer = evalTracer(local);
+    localRunId = newRunId();
+    run = await active.createRun(name, datasetName, runMetadata ?? null, localRunId);
+  } catch (err) {
+    aborted.stop();
+    throw err;
+  }
 
   const identity: RunIdentity = {
     name,
@@ -894,6 +964,7 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     bodyError = err;
     throw err;
   } finally {
+    aborted.stop();
     if (local) {
       // A case the cancelled run stopped waiting for is still running. Until it settles it must not
       // bring up the exporting provider, any more than it could while the run waited for it.
@@ -920,10 +991,22 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     const emitted: Record<string, string[]> = {};
     for (const [def, metrics] of emittedOwnership) emitted[def] = [...metrics].sort();
     try {
+      // A cancelled run's close gets what is left of CANCEL_SAVE_MS, so the run is saved in time
+      // whatever TraceRoot does. Any other run's close is unbounded beyond the transport's own.
+      const closing = cancelled
+        ? closeWithin(
+            active,
+            run,
+            status,
+            emitted,
+            Math.max(0, (aborted.at() ?? performance.now()) + CANCEL_SAVE_MS - performance.now()),
+          )
+        : active.finishRun(run, status, emitted);
       uploadState = {
-        ...(await active.finishRun(run, status, emitted)),
+        ...(await closing),
         failedResultCount: droppedResults.length,
         unconfirmedResultCount: unconfirmedResults,
+        closeConfirmed: true,
       };
     } catch (completionErr) {
       if (bodyFailed) {
@@ -934,6 +1017,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
         // leaving an aborted run indistinguishable from a broken backend — so remember the
         // failure and let the CancelledError below carry it as secondary context.
         cancelCompletionError = completionErr;
+        // The run is still saved with the cases it completed, saying its close wasn't confirmed.
+        uploadState = {
+          status: 'uploaded',
+          dashboardUrl: null,
+          failedResultCount: droppedResults.length,
+          unconfirmedResultCount: unconfirmedResults,
+          closeConfirmed: false,
+        };
       } else {
         // The run itself succeeded: one clear error naming the completion failure, with the
         // transport error carried as data rather than chained into a cause chain.
@@ -955,8 +1046,9 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
     err.localRunId = localRunId;
     err.runId = active.runId ?? null;
     err.uploadState = uploadState;
-    // Undefined unless finalization ALSO failed (uploadState is then unset): the run may still be
-    // 'running' on the platform, and that is worth handing back with the cancellation.
+    // Undefined unless closing the run failed or wasn't acknowledged in time (closeConfirmed is
+    // then false): the run may still be 'running' on the platform, and that is worth handing back
+    // with the cancellation.
     if (cancelCompletionError !== undefined) err.completionError = cancelCompletionError;
     throw err;
   }
