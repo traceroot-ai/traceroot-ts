@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
+import vm from 'node:vm';
 import {
   autoDetectGitContext,
   captureSourceLocation,
+  getGitRoot,
   harvestCiGitContext,
   gitContextFromFiles,
 } from '../src/git_context';
@@ -184,6 +187,18 @@ describe('captureSourceLocation()', () => {
         `file path must not be absolute, got: ${result.file}`,
       );
     }
+  });
+
+  it('resolves the file for a caller in an ES module, whose frames are file:// URLs', () => {
+    const gitRoot = getGitRoot();
+    assert.ok(gitRoot, 'the tests run inside a git checkout');
+    // V8 reports an ES module's frames by URL; a script given a URL filename does the same.
+    const call = vm.runInThisContext('(capture) => capture()', {
+      filename: pathToFileURL(path.join(gitRoot, 'app', 'my handler.mjs')).href,
+    });
+    const result = call(captureSourceLocation);
+    assert.equal(result.file, path.join('app', 'my handler.mjs'));
+    assert.equal(result.line, 1);
   });
 
   it('functionName is defined when called from a named function', () => {
