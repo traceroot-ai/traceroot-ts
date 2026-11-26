@@ -436,38 +436,46 @@ describe('OpenAIAgentsProcessor', () => {
     assert.equal(root.attributes['output.value'], JSON.stringify(finalOutput));
   });
 
-  it("keeps an agent-based guardrail's LLM call out of the trace I/O", async () => {
-    const answer = [{ type: 'message', role: 'assistant', content: 'It is 72F and sunny.' }];
-    const verdict = [{ type: 'message', role: 'assistant', content: 'The answer is safe.' }];
-    const spans = [
-      span('task', 'trace_abc', { type: 'task', name: 'Agent workflow' }),
-      span('agent', 'task', { type: 'agent', name: 'Weather Assistant' }),
-      span('turn1', 'agent', { type: 'turn', turn: 1, agent_name: 'Weather Assistant' }),
-      span('response', 'turn1', {
-        type: 'response',
-        _input: "What's the weather in Tokyo?",
-        _response: { output: answer },
-      }),
-      span('guardrail', 'agent', { type: 'guardrail', name: 'agent check', triggered: false }),
-      span('guardTask', 'guardrail', { type: 'task', name: 'Agent workflow' }),
-      span('guardAgent', 'guardTask', { type: 'agent', name: 'Guard' }),
-      span('guardTurn', 'guardAgent', { type: 'turn', turn: 1, agent_name: 'Guard' }),
-      span('guardResponse', 'guardTurn', {
-        type: 'response',
-        _input: 'Check: It is 72F and sunny.',
-        _response: { output: verdict },
-      }),
-    ];
+  for (const guardrailEndsFirst of [true, false]) {
+    it(`keeps a guardrail agent's LLM call out of the trace I/O (guardrail ends ${guardrailEndsFirst ? 'before' : 'after'} the main response)`, async () => {
+      const answer = [{ type: 'message', role: 'assistant', content: 'It is 72F and sunny.' }];
+      const verdict = [{ type: 'message', role: 'assistant', content: 'The answer is safe.' }];
+      const spans = [
+        span('task', 'trace_abc', { type: 'task', name: 'Agent workflow' }),
+        span('agent', 'task', { type: 'agent', name: 'Weather Assistant' }),
+        span('turn1', 'agent', { type: 'turn', turn: 1, agent_name: 'Weather Assistant' }),
+        span('response', 'turn1', {
+          type: 'response',
+          _input: "What's the weather in Tokyo?",
+          _response: { output: answer },
+        }),
+        span('guardrail', 'agent', { type: 'guardrail', name: 'agent check', triggered: false }),
+        span('guardTask', 'guardrail', { type: 'task', name: 'Agent workflow' }),
+        span('guardAgent', 'guardTask', { type: 'agent', name: 'Guard' }),
+        span('guardTurn', 'guardAgent', { type: 'turn', turn: 1, agent_name: 'Guard' }),
+        span('guardResponse', 'guardTurn', {
+          type: 'response',
+          _input: 'Check: It is 72F and sunny.',
+          _response: { output: verdict },
+        }),
+      ];
 
-    await processor.onTraceStart(mockTrace);
-    for (const s of spans) await processor.onSpanStart(s);
-    for (const s of [...spans].reverse()) await processor.onSpanEnd(s);
-    await processor.onTraceEnd(mockTrace);
+      const [task, agent, turn1, response, ...guardrail] = spans;
+      const guardrailChain = [...guardrail].reverse();
+      const endOrder = guardrailEndsFirst
+        ? [...guardrailChain, response, turn1, agent, task]
+        : [response, ...guardrailChain, turn1, agent, task];
 
-    const root = exporter.getFinishedSpans().find((s) => !s.parentSpanId)!;
-    assert.equal(root.attributes['input.value'], "What's the weather in Tokyo?");
-    assert.equal(root.attributes['output.value'], JSON.stringify(answer));
-  });
+      await processor.onTraceStart(mockTrace);
+      for (const s of spans) await processor.onSpanStart(s);
+      for (const s of endOrder) await processor.onSpanEnd(s);
+      await processor.onTraceEnd(mockTrace);
+
+      const root = exporter.getFinishedSpans().find((s) => !s.parentSpanId)!;
+      assert.equal(root.attributes['input.value'], "What's the weather in Tokyo?");
+      assert.equal(root.attributes['output.value'], JSON.stringify(answer));
+    });
+  }
 
   it('cleans up internal maps after onSpanEnd and onTraceEnd', async () => {
     const s = {
