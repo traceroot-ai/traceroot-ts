@@ -765,79 +765,89 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
   // publish and the run's registration, so a signal during either counts from when it arrived.
   const aborted = abortClock(options.signal);
 
-  // Cloud-only by default: an explicit transport wins; otherwise build a reporting transport
-  // from credentials + a synced dataset.
+  const specs = describeScorers(scorers);
   let active: EvalTransport;
-  if (local) {
-    // local: true IS transport: new FakeTransport(), spelled as intent rather than as a class the
-    // user has to import: the run executes in full and records itself in memory, but nothing
-    // leaves the process. Selected ahead of the auto path so it also short-circuits the
-    // auto-publish below — a local run needs no credentials and versions no dataset, even one
-    // that is already synced.
-    active = new FakeTransport();
-  } else if (transport !== undefined) {
-    active = transport;
-  } else {
-    // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
-    // server-side version to attach to -- the user never writes a manual "sync then run" step.
-    // Idempotent: unchanged content reuses the
-    // current version. Only for a local Dataset with credentials; an explicit datasetId or an
-    // explicit transport skip this.
-    //
-    // A dataset that IS pinned republishes only once it has drifted from the version it is pinned
-    // to. A Dataset is mutable and evaluate() is re-runnable, so pinning the version from a
-    // previous run (or from the pull) would attribute the cases this run actually scored to
-    // content that never contained them.
-    if (data instanceof Dataset && options.datasetId === undefined) {
-      const { apiKey } = TraceRoot.resolveCredentials();
-      if (apiKey && (data.datasetVersionId === undefined || pinnedContentChanged(data))) {
-        await autoPublish(data);
+  let evalSpanTracer: ReturnType<typeof evalTracer>;
+  let localRunId: string;
+  let run: RunHandle;
+  // The case-execution finally below detaches the clock. A step before it that throws (the
+  // dataset publish, a run with no transport, the registration) detaches it here instead.
+  try {
+    // Cloud-only by default: an explicit transport wins; otherwise build a reporting transport
+    // from credentials + a synced dataset.
+    if (local) {
+      // local: true IS transport: new FakeTransport(), spelled as intent rather than as a class the
+      // user has to import: the run executes in full and records itself in memory, but nothing
+      // leaves the process. Selected ahead of the auto path so it also short-circuits the
+      // auto-publish below — a local run needs no credentials and versions no dataset, even one
+      // that is already synced.
+      active = new FakeTransport();
+    } else if (transport !== undefined) {
+      active = transport;
+    } else {
+      // Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
+      // server-side version to attach to -- the user never writes a manual "sync then run" step.
+      // Idempotent: unchanged content reuses the
+      // current version. Only for a local Dataset with credentials; an explicit datasetId or an
+      // explicit transport skip this.
+      //
+      // A dataset that IS pinned republishes only once it has drifted from the version it is pinned
+      // to. A Dataset is mutable and evaluate() is re-runnable, so pinning the version from a
+      // previous run (or from the pull) would attribute the cases this run actually scored to
+      // content that never contained them.
+      if (data instanceof Dataset && options.datasetId === undefined) {
+        const { apiKey } = TraceRoot.resolveCredentials();
+        if (apiKey && (data.datasetVersionId === undefined || pinnedContentChanged(data))) {
+          await autoPublish(data);
+        }
       }
-    }
-    const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
-    if (auto === null) {
-      // autoTransport returns null for two unrelated reasons; saying "no credentials" for both
-      // misdirects a user who HAS a key but passed inline cases or an unsynced dataset.
-      if (TraceRoot.resolveCredentials().apiKey) {
+      const auto = autoTransport(data, options.datasetId, scorers, candidateVersion, environment);
+      if (auto === null) {
+        // autoTransport returns null for two unrelated reasons; saying "no credentials" for both
+        // misdirects a user who HAS a key but passed inline cases or an unsynced dataset.
+        if (TraceRoot.resolveCredentials().apiKey) {
+          throw new Error(
+            'evaluate() reports to the traceroot platform, but this run has no synced dataset to ' +
+              'report against. Pass a Dataset that was pulled or pushed (pullDataset(...) / ' +
+              'Dataset.push(...)), or pass datasetId, or pass local: true to run without ' +
+              'reporting.',
+          );
+        }
         throw new Error(
-          'evaluate() reports to the traceroot platform, but this run has no synced dataset to ' +
-            'report against. Pass a Dataset that was pulled or pushed (pullDataset(...) / ' +
-            'Dataset.push(...)), or pass datasetId, or pass local: true to run without ' +
-            'reporting.',
+          'evaluate() reports to the traceroot platform, but no credentials were found. Set ' +
+            'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass local: true to ' +
+            'run without reporting.',
         );
       }
-      throw new Error(
-        'evaluate() reports to the traceroot platform, but no credentials were found. Set ' +
-          'TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass local: true to ' +
-          'run without reporting.',
-      );
+      // A reported run records every score with a per-metric `passed`; no overall run-level pass/fail
+      // is invented (there is no headline metric).
+      active = auto;
     }
-    // A reported run records every score with a per-metric `passed`; no overall run-level pass/fail
-    // is invented (there is no headline metric).
-    active = auto;
-  }
 
-  // Forward scorer comparison metadata to a transport that accepts specs (before createRun).
-  const specs = describeScorers(scorers);
-  if ('scorerSpecs' in active && (active as PlatformTransport).scorerSpecs === undefined) {
-    (active as PlatformTransport).scorerSpecs = specs;
-  }
-  // Same seam for the evaluation's stable identity: fill it only when the transport has the field
-  // and nothing has set it, so a transport constructed with an explicit key keeps it.
-  if (
-    options.evaluationKey !== undefined &&
-    'evaluationKey' in active &&
-    (active as PlatformTransport).evaluationKey == null
-  ) {
-    (active as PlatformTransport).evaluationKey = options.evaluationKey;
-  }
+    // Forward scorer comparison metadata to a transport that accepts specs (before createRun).
+    if ('scorerSpecs' in active && (active as PlatformTransport).scorerSpecs === undefined) {
+      (active as PlatformTransport).scorerSpecs = specs;
+    }
+    // Same seam for the evaluation's stable identity: fill it only when the transport has the field
+    // and nothing has set it, so a transport constructed with an explicit key keeps it.
+    if (
+      options.evaluationKey !== undefined &&
+      'evaluationKey' in active &&
+      (active as PlatformTransport).evaluationKey == null
+    ) {
+      (active as PlatformTransport).evaluationKey = options.evaluationKey;
+    }
 
-  // A reported run's structural spans export and are linked to its results. A local run gets a
-  // non-exporting tracer: the span tree carries the case input and the task output as span I/O, so
-  // exporting it would send off-process exactly the payloads `local: true` promises to keep in.
-  const evalSpanTracer = evalTracer(local);
-  const localRunId = newRunId();
-  const run = await active.createRun(name, datasetName, runMetadata ?? null, localRunId);
+    // A reported run's structural spans export and are linked to its results. A local run gets a
+    // non-exporting tracer: the span tree carries the case input and the task output as span I/O, so
+    // exporting it would send off-process exactly the payloads `local: true` promises to keep in.
+    evalSpanTracer = evalTracer(local);
+    localRunId = newRunId();
+    run = await active.createRun(name, datasetName, runMetadata ?? null, localRunId);
+  } catch (err) {
+    aborted.stop();
+    throw err;
+  }
 
   const identity: RunIdentity = {
     name,
