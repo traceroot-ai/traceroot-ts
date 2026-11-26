@@ -3,11 +3,15 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
+import vm from 'node:vm';
 import {
   autoDetectGitContext,
   captureSourceLocation,
+  getGitRoot,
   harvestCiGitContext,
   gitContextFromFiles,
+  relativePath,
 } from '../src/git_context';
 
 describe('autoDetectGitContext()', () => {
@@ -186,6 +190,30 @@ describe('captureSourceLocation()', () => {
     }
   });
 
+  it('resolves the file for a caller in an ES module, whose frames are file:// URLs', () => {
+    const gitRoot = getGitRoot();
+    assert.ok(gitRoot, 'the tests run inside a git checkout');
+    // V8 reports an ES module's frames by URL; a script given a URL filename does the same.
+    const call = vm.runInThisContext('(capture) => capture()', {
+      filename: pathToFileURL(path.join(gitRoot, 'app', 'my handler.mjs')).href,
+    });
+    const result = call(captureSourceLocation);
+    assert.equal(result.file, 'app/my handler.mjs');
+    assert.equal(result.line, 1);
+  });
+
+  it('skips node_modules frames written with Windows separators', () => {
+    // On Windows every frame is a C:\ path; the installed SDK's own frames sit under node_modules.
+    const sdk = vm.runInThisContext('(capture) => capture()', {
+      filename: 'C:\\app\\node_modules\\traceroot\\dist\\index.js',
+    });
+    const caller = vm.runInThisContext('\n(sdk, capture) => sdk(capture)', {
+      filename: 'C:\\app\\src\\main.js',
+    });
+    const result = caller(sdk, captureSourceLocation);
+    assert.equal(result.line, 2, "the line must be the caller's, not the SDK's");
+  });
+
   it('functionName is defined when called from a named function', () => {
     function myTestFn() {
       return captureSourceLocation();
@@ -197,5 +225,25 @@ describe('captureSourceLocation()', () => {
         `functionName should include "myTestFn", got: ${result.functionName}`,
       );
     }
+  });
+});
+
+describe('relativePath()', () => {
+  it('relates a Windows frame to the forward-slash root git prints on Windows', () => {
+    assert.equal(relativePath('C:\\repo\\src\\app.js', 'C:/repo'), 'src/app.js');
+  });
+
+  it('ignores a lowercase drive letter in the frame', () => {
+    assert.equal(relativePath('c:\\repo\\src\\app.js', 'C:/repo'), 'src/app.js');
+  });
+
+  it('does not match a sibling directory that shares the root as a prefix', () => {
+    assert.equal(relativePath('/work/repo-other/app.js', '/work/repo'), undefined);
+  });
+
+  it('returns undefined without a git root', () => {
+    // A path inside the real checkout, so a fallback to the detected root would be caught.
+    const inCheckout = path.join(getGitRoot() ?? '/', 'app.js');
+    assert.equal(relativePath(inCheckout, undefined), undefined);
   });
 });

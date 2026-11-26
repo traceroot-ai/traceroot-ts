@@ -2,6 +2,7 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { GITHUB_REPOSITORY, GITHUB_SHA } from './constants';
 
 const REPO_URL_RE = /(?:https?:\/\/|ssh:\/\/git@|git@)github\.com[:/](.+?)(?:\.git)?$/;
@@ -22,11 +23,27 @@ export function getGitRoot(): string | undefined {
   return _gitRootCache || undefined;
 }
 
-function relativePath(filepath: string): string | undefined {
-  const gitRoot = getGitRoot();
-  if (gitRoot && filepath.startsWith(gitRoot)) {
-    return filepath.slice(gitRoot.length).replace(/^[/\\]/, '');
+// Windows frames use backslashes (and sometimes a lowercase drive) while git prints C:/..., so
+// compare and report paths in one form.
+function toPosix(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^[a-z]:/, (d) => d.toUpperCase());
+}
+
+/** @internal */
+export function relativePath(frameFile: string, gitRoot: string | undefined): string | undefined {
+  let filepath = frameFile;
+  // An ES module's stack frames carry a file:// URL, not a path.
+  if (filepath.startsWith('file://')) {
+    try {
+      filepath = fileURLToPath(filepath);
+    } catch {
+      return undefined; // not a local file URL
+    }
   }
+  if (!gitRoot) return undefined;
+  const root = toPosix(gitRoot).replace(/\/$/, '');
+  filepath = toPosix(filepath);
+  if (filepath.startsWith(root + '/')) return filepath.slice(root.length + 1);
   // If we can't make the path relative, don't stamp it — avoid leaking absolute paths.
   return undefined;
 }
@@ -175,7 +192,8 @@ export function captureSourceLocation(): { file?: string; line?: number; functio
   if (!stack) return {};
 
   const lines = stack.split('\n').slice(1); // remove "Error" header line
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\\/g, '/'); // Windows frames use backslashes
     if (line.includes('/packages/traceroot/src/')) continue;
     if (line.includes('/node_modules/')) continue;
     if (line.includes('(node:')) continue; // skip Node.js built-in frames (e.g. node:internal/async_local_storage)
@@ -186,7 +204,7 @@ export function captureSourceLocation(): { file?: string; line?: number; functio
 
     const [, fnName, file, lineStr] = match;
     return {
-      file: relativePath(file),
+      file: relativePath(file, getGitRoot()),
       line: parseInt(lineStr, 10),
       functionName: fnName || undefined,
     };
