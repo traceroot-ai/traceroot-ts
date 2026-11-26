@@ -227,3 +227,62 @@ describe('data coercion and config errors', () => {
     });
   }
 });
+
+describe('dataset revision', () => {
+  const inc = (x: unknown) => (x as number) + 1;
+  const revisionOf = async (dataset: EvalOpts['dataset']) =>
+    (await evaluate({ name: 'r', dataset, task: inc, scorers: [exact] })).dataset.revision;
+
+  it('an inline dataset records the content revision the Python SDK records', async () => {
+    const result = await evaluate({
+      name: 'r',
+      dataset: [
+        { input: 1, expected: 2 },
+        { input: 5, expected: 6 },
+      ],
+      task: inc,
+      scorers: [exact],
+    });
+    assert.equal(result.dataset.datasetId, 'ds_inline');
+    // traceroot (Python) 0.5.1 records this revision for the same inline rows.
+    assert.equal(result.dataset.revision, 'rev_2e129889a90ff03f');
+  });
+
+  it("changing a case's input or expected changes an inline dataset's revision", async () => {
+    const revisions = [
+      await revisionOf([
+        { input: 1, expected: 2 },
+        { input: 5, expected: 6 },
+      ]),
+      await revisionOf([
+        { input: 3, expected: 4 },
+        { input: 9, expected: 10 },
+      ]),
+      await revisionOf([
+        { input: 2, expected: 2 },
+        { input: 5, expected: 6 },
+      ]),
+      await revisionOf([
+        { input: 1, expected: 3 },
+        { input: 5, expected: 6 },
+      ]),
+    ];
+    assert.equal(new Set(revisions).size, revisions.length);
+  });
+
+  it('reordering inline cases with explicit ids keeps the revision', async () => {
+    const a = { id: 'a', input: 1, expected: 2 };
+    const b = { id: 'b', input: 5, expected: 6 };
+    // traceroot (Python) 0.5.1 records this revision for these rows in either order.
+    assert.equal(await revisionOf([a, b]), 'rev_16ce94ebfe660e18');
+    assert.equal(await revisionOf([b, a]), 'rev_16ce94ebfe660e18');
+  });
+
+  it('a Dataset or DatasetSnapshot keeps its own revision', async () => {
+    const d = ds(2);
+    const snap = d.snapshot();
+    assert.equal(await revisionOf(d), snap.revision);
+    // A revision its cases don't hash to, so a snapshot's revision recomputed from them fails here.
+    assert.equal(await revisionOf({ ...snap, revision: 'rev_pinned' }), 'rev_pinned');
+  });
+});

@@ -17,7 +17,15 @@ import type { Tracer } from '@opentelemetry/api';
 import { context, ROOT_CONTEXT } from '@opentelemetry/api';
 import { suppressTracing } from '@opentelemetry/core';
 import { evalTracer } from './tracer';
-import { Dataset, DatasetSnapshot, DeferredScore, EvalCase, Score, ScorerContext } from './types';
+import {
+  contentRevision,
+  Dataset,
+  DatasetSnapshot,
+  DeferredScore,
+  EvalCase,
+  Score,
+  ScorerContext,
+} from './types';
 import {
   EvalItemResult,
   EvalRunResult,
@@ -634,12 +642,14 @@ export async function evaluateAsync(options: EvaluateOptions): Promise<EvalRunRe
 
   // A snapshot already IS the immutable description of what ran, so its own name/revision are
   // reported verbatim rather than re-derived (Python: _to_snapshot returns `data` unchanged).
+  // Inline cases carry no revision, so theirs is the content hash of the cases that run (Python:
+  // _to_snapshot hashes them with _content_revision).
   const snapshot = isDatasetSnapshot(data) ? data : null;
   const datasetName = data instanceof Dataset ? data.name : (snapshot?.name ?? INLINE_DATASET);
   const snapshotRevision =
     data instanceof Dataset
       ? data.snapshot().revision
-      : (snapshot?.revision ?? `local-${cases.length}`);
+      : (snapshot?.revision ?? contentRevision(cases));
   // A run is not identified by which SDK produced it, so no SDK-language identity is reported.
   // But git/CI provenance (commit/branch/dirty, CI build) is NON-IDENTITY reproducibility
   // metadata — it rides the wire as free-form run metadata (user keys win on conflict), so the
