@@ -54,6 +54,7 @@ class FakeBackend {
         this.versions.set(versionId, {
           dataset_id: datasetId,
           dataset_version_id: versionId,
+          version_number: this.published,
           items: changes,
         });
         this.current.set(datasetId, versionId);
@@ -101,10 +102,13 @@ describe('dataset push/pull round trip', () => {
     await sync.pushDataset(snapshot, null);
     assert.equal(backend.published, 1);
 
-    const pulled = await (
-      sync as unknown as { publishedRevision(d: string, v: string): Promise<string | null> }
+    const [pulled, pulledNumber] = await (
+      sync as unknown as {
+        publishedRevision(d: string, v: string): Promise<[string | null, number | null]>;
+      }
     ).publishedRevision(snapshot.datasetId, 'dsv_1');
     assert.equal(pulled, snapshot.revision);
+    assert.equal(pulledNumber, 1);
   });
 
   it('a second push of unchanged content is a no-op and never prompts', async () => {
@@ -119,6 +123,9 @@ describe('dataset push/pull round trip', () => {
 
     assert.equal(backend.published, 1); // no second version
     assert.equal(result.datasetVersionId, 'dsv_1');
+    // The no-op reports the version it KEPT, not a blank: a caller re-pushing unchanged content
+    // sees the same versionNumber the original push returned.
+    assert.equal(result.versionNumber, 1);
   });
 
   it('the wire payload is the canonical form that was hashed', async () => {
