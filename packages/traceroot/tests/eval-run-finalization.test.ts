@@ -7,6 +7,7 @@
 // "uploaded" with silently-missing results is detectable.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 
 import { Dataset, EvalCompletionError, FakeTransport, evaluate } from '../src/eval';
 import { CANCEL_DRAIN_MS, CANCEL_SAVE_MS, CancelledError } from '../src/eval/engine';
@@ -251,6 +252,27 @@ describe('a cancelled run does not wait on a close that never answers', () => {
       assert.ok(waited < CANCEL_SAVE_MS + 500, `finalized after ${waited} ms`);
     },
   );
+
+  it('leaves no listener on the signal when the run fails to register', async () => {
+    const controller = new AbortController();
+    class FailingRegistration extends FakeTransport {
+      async createRun(): Promise<RunHandle> {
+        throw new Error('HTTP 503: registration failed');
+      }
+    }
+    await assert.rejects(
+      evaluate({
+        name: 'r',
+        dataset: ds(1),
+        task: echo,
+        scorers: [ok],
+        transport: new FailingRegistration(),
+        signal: controller.signal,
+      }),
+      /registration failed/,
+    );
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+  });
 });
 
 describe('dropped per-case results are counted', () => {
