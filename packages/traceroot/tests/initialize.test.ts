@@ -163,6 +163,10 @@ describe('TraceRoot.initialize()', () => {
       1,
       'git-context warning should fire exactly once per initialize()',
     );
+    assert.ok(
+      messages.some((m) => m.includes('https://traceroot.ai/docs/tracing/git-context')),
+      'git-context warning should link to the live docs host',
+    );
   });
 
   it('treats empty-string TRACEROOT_GIT_* env vars as unset (warns)', () => {

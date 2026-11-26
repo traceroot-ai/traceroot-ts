@@ -283,7 +283,7 @@ export class TraceRoot {
           (gitRef ?? 'unset') +
           '). The AI agent needs both to correlate traces to source. ' +
           'Set TRACEROOT_GIT_REPO / TRACEROOT_GIT_REF (see ' +
-          'https://docs.traceroot.ai/tracing/git-context).',
+          'https://traceroot.ai/docs/tracing/git-context).',
       );
     }
 
