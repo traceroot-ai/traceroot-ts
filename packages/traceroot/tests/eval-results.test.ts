@@ -124,6 +124,24 @@ describe('EvalRunResult.toJSON', () => {
     });
     assert.equal(reloaded.uploadState.failedResultCount, 2);
   });
+
+  it('the runner artifact shape carries the unconfirmed count, and reads 0 without one', () => {
+    // A cancelled run can keep results TraceRoot hadn't acknowledged; a reloaded run still says so.
+    const reloaded = EvalRunResult.fromJSON({
+      kind: 'eval_run',
+      evaluation_name: 'r',
+      cases: [],
+      upload: { status: 'uploaded', dashboard_url: null, unconfirmed_result_count: 1 },
+    });
+    assert.equal(reloaded.uploadState.unconfirmedResultCount, 1);
+    const older = EvalRunResult.fromJSON({
+      kind: 'eval_run',
+      evaluation_name: 'r',
+      cases: [],
+      upload: { status: 'uploaded', dashboard_url: null },
+    });
+    assert.equal(older.uploadState.unconfirmedResultCount, 0);
+  });
 });
 
 describe('counts block (Python parity)', () => {
