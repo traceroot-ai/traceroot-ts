@@ -173,7 +173,15 @@ export class TraceRoot {
   }
 
   static initialize(options: InitializeOptions = {}): void {
-    const enabled = options.enabled ?? process.env['TRACEROOT_ENABLED'] !== 'false';
+    // Match the Python SDK: false/0/no/off (case-insensitive) disable tracing; an
+    // unset or empty value keeps it enabled. Trim so values from .env/CI files that
+    // carry stray whitespace are still recognized.
+    const rawEnabled = process.env['TRACEROOT_ENABLED']?.trim().toLowerCase();
+    const envEnabled =
+      rawEnabled === undefined || rawEnabled === ''
+        ? true
+        : !['false', '0', 'no', 'off'].includes(rawEnabled);
+    const enabled = options.enabled ?? envEnabled;
     // Kept even with tracing disabled: eval uploads can still run on ambient credentials.
     if (!_isInitialized) _redact = options.redact;
     if (!enabled) {

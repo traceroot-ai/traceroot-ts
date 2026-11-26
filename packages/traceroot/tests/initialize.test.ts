@@ -82,12 +82,46 @@ describe('TraceRoot.initialize()', () => {
     assert.equal(TraceRoot.isInitialized(), false);
   });
 
-  it('skips initialization when TRACEROOT_ENABLED=false env var is set', () => {
+  for (const value of ['false', 'False', 'FALSE', '0', 'no', 'NO', 'off', 'Off', '  false  ']) {
+    it(`skips initialization when TRACEROOT_ENABLED=${JSON.stringify(value)}`, () => {
+      const prev = process.env['TRACEROOT_ENABLED'];
+      process.env['TRACEROOT_ENABLED'] = value;
+      try {
+        TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+        assert.equal(TraceRoot.isInitialized(), false);
+      } finally {
+        if (prev === undefined) {
+          delete process.env['TRACEROOT_ENABLED'];
+        } else {
+          process.env['TRACEROOT_ENABLED'] = prev;
+        }
+      }
+    });
+  }
+
+  for (const value of ['true', 'TRUE', '1', 'yes', 'on', '', '   ']) {
+    it(`initializes when TRACEROOT_ENABLED=${JSON.stringify(value)}`, () => {
+      const prev = process.env['TRACEROOT_ENABLED'];
+      process.env['TRACEROOT_ENABLED'] = value;
+      try {
+        TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
+        assert.equal(TraceRoot.isInitialized(), true);
+      } finally {
+        if (prev === undefined) {
+          delete process.env['TRACEROOT_ENABLED'];
+        } else {
+          process.env['TRACEROOT_ENABLED'] = prev;
+        }
+      }
+    });
+  }
+
+  it('lets explicit enabled: true override TRACEROOT_ENABLED=false', () => {
     const prev = process.env['TRACEROOT_ENABLED'];
     process.env['TRACEROOT_ENABLED'] = 'false';
     try {
-      TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true });
-      assert.equal(TraceRoot.isInitialized(), false);
+      TraceRoot.initialize({ apiKey: 'test-key', disableBatch: true, enabled: true });
+      assert.equal(TraceRoot.isInitialized(), true);
     } finally {
       if (prev === undefined) {
         delete process.env['TRACEROOT_ENABLED'];
