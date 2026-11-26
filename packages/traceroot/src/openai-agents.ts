@@ -150,6 +150,7 @@ export class OpenAIAgentsProcessor {
   private readonly spanMap = new Map<string, OTelSpan>();
   private readonly ctxMap = new Map<string, Context>();
   private readonly traceIO = new Map<string, { input?: AttributeValue; output?: AttributeValue }>();
+  private readonly insideGuardrail = new Set<string>();
   private readonly tracer = trace.getTracer('@traceroot-ai/openai-agents');
 
   async onTraceStart(t: OpenAIAgentsTrace): Promise<void> {
@@ -183,6 +184,8 @@ export class OpenAIAgentsProcessor {
     );
     this.spanMap.set(s.spanId, otelSpan);
     this.ctxMap.set(s.spanId, trace.setSpan(parentCtx, otelSpan));
+    const parentInGuardrail = s.parentId != null && this.insideGuardrail.has(s.parentId);
+    if (s.spanData.type === 'guardrail' || parentInGuardrail) this.insideGuardrail.add(s.spanId);
   }
 
   async onSpanEnd(s: OpenAIAgentsSpan): Promise<void> {
@@ -190,7 +193,8 @@ export class OpenAIAgentsProcessor {
     if (otelSpan) {
       const attrs = getSpanAttributes(s.spanData);
       for (const [k, v] of Object.entries(attrs)) otelSpan.setAttribute(k, v);
-      if (s.spanData.type === 'response' || s.spanData.type === 'generation') {
+      const isLLM = s.spanData.type === 'response' || s.spanData.type === 'generation';
+      if (isLLM && !this.insideGuardrail.has(s.spanId)) {
         const io = this.traceIO.get(s.traceId) ?? {};
         io.input ??= attrs[OI_INPUT_VALUE];
         io.output = attrs[OI_OUTPUT_VALUE] ?? io.output;
@@ -201,6 +205,7 @@ export class OpenAIAgentsProcessor {
     }
     this.spanMap.delete(s.spanId);
     this.ctxMap.delete(s.spanId);
+    this.insideGuardrail.delete(s.spanId);
   }
 
   async shutdown(): Promise<void> {}

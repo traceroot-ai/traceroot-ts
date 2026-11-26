@@ -183,6 +183,16 @@ describe('OpenAIAgentsProcessor', () => {
   let processor: OpenAIAgentsProcessor;
 
   const mockTrace = { type: 'trace' as const, traceId: 'trace_abc', name: 'Test Workflow' };
+  const span = (spanId: string, parentId: string, spanData: SpanData) => ({
+    type: 'trace.span' as const,
+    spanId,
+    traceId: 'trace_abc',
+    parentId,
+    spanData,
+    startedAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+    error: null,
+  });
 
   beforeEach(() => {
     exporter = new InMemorySpanExporter();
@@ -358,16 +368,6 @@ describe('OpenAIAgentsProcessor', () => {
         content: [{ type: 'output_text', text: 'It is 72F and sunny in Tokyo.', annotations: [] }],
       },
     ];
-    const span = (spanId: string, parentId: string, spanData: SpanData) => ({
-      type: 'trace.span' as const,
-      spanId,
-      traceId: 'trace_abc',
-      parentId,
-      spanData,
-      startedAt: new Date().toISOString(),
-      endedAt: new Date().toISOString(),
-      error: null,
-    });
     const task = span('task', 'trace_abc', { type: 'task', name: 'Agent workflow' });
     const agent = span('agent', 'task', {
       type: 'agent',
@@ -434,6 +434,39 @@ describe('OpenAIAgentsProcessor', () => {
     const root = spans.find((s) => !s.parentSpanId)!;
     assert.equal(root.attributes['input.value'], JSON.stringify(userInput));
     assert.equal(root.attributes['output.value'], JSON.stringify(finalOutput));
+  });
+
+  it("keeps an agent-based guardrail's LLM call out of the trace I/O", async () => {
+    const answer = [{ type: 'message', role: 'assistant', content: 'It is 72F and sunny.' }];
+    const verdict = [{ type: 'message', role: 'assistant', content: 'The answer is safe.' }];
+    const spans = [
+      span('task', 'trace_abc', { type: 'task', name: 'Agent workflow' }),
+      span('agent', 'task', { type: 'agent', name: 'Weather Assistant' }),
+      span('turn1', 'agent', { type: 'turn', turn: 1, agent_name: 'Weather Assistant' }),
+      span('response', 'turn1', {
+        type: 'response',
+        _input: "What's the weather in Tokyo?",
+        _response: { output: answer },
+      }),
+      span('guardrail', 'agent', { type: 'guardrail', name: 'agent check', triggered: false }),
+      span('guardTask', 'guardrail', { type: 'task', name: 'Agent workflow' }),
+      span('guardAgent', 'guardTask', { type: 'agent', name: 'Guard' }),
+      span('guardTurn', 'guardAgent', { type: 'turn', turn: 1, agent_name: 'Guard' }),
+      span('guardResponse', 'guardTurn', {
+        type: 'response',
+        _input: 'Check: It is 72F and sunny.',
+        _response: { output: verdict },
+      }),
+    ];
+
+    await processor.onTraceStart(mockTrace);
+    for (const s of spans) await processor.onSpanStart(s);
+    for (const s of [...spans].reverse()) await processor.onSpanEnd(s);
+    await processor.onTraceEnd(mockTrace);
+
+    const root = exporter.getFinishedSpans().find((s) => !s.parentSpanId)!;
+    assert.equal(root.attributes['input.value'], "What's the weather in Tokyo?");
+    assert.equal(root.attributes['output.value'], JSON.stringify(answer));
   });
 
   it('cleans up internal maps after onSpanEnd and onTraceEnd', async () => {
